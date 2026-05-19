@@ -1,0 +1,5 @@
+client_id: user
+client_key: pass
+tapis_base_url: https://icicleai.tapis.io
+tenant: icicleai
+app_base_url: https://localhost:11112

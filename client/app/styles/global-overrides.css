@@ -1,0 +1,90 @@
+/*
+ * Global CSS overrides for third-party components whose internals can't be
+ * modified directly.
+ */
+
+/**
+ * FormikTapisFile (from @tapis/tapisui-common)
+ * FieldWrapper renders a <FormGroup><span>…</span></FormGroup> structure.
+ * The <span> is inline by default which prevents InputGroup from stretching
+ * to full width. Wrapping usage sites with .tapis-file-field fixes this.
+ */
+.tapis-file-field .form-group > span {
+  display: block;
+  width: 100%;
+}
+
+.tapis-file-field .form-group .input-group {
+  width: 100%;
+  display: flex;
+  flex-wrap: nowrap;
+}
+
+.tapis-file-field .form-group .input-group input {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.tapis-file-field .form-group .form-label {
+  font-weight: 500;
+  margin-bottom: 0.5rem;
+}
+
+/**
+ * FileSelectModal (from @tapis/tapisui-common)
+ * The modal opens as a large panel below the button, causing layout distortion.
+ * These styles ensure it renders as a centered, fixed-position modal that doesn't
+ * affect the document flow.
+ */
+
+/* Modal backdrop — overlay the entire viewport */
+.modal.fade {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  z-index: 1050 !important;
+  background-color: rgba(0, 0, 0, 0.5) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.modal.show {
+  display: flex !important;
+}
+
+/* Modal content — center on screen */
+.modal-dialog {
+  position: relative !important;
+  margin: 0 auto !important;
+  width: 90vw !important;
+  max-width: 900px !important;
+  z-index: 1051 !important;
+}
+
+.modal-content {
+  background-color: #ffffff !important;
+  max-height: 90vh !important;
+  overflow-y: auto !important;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.16) !important;
+  border: none !important;
+  border-radius: 8px !important;
+}
+
+.modal-header {
+  background-color: #f8f9fa !important;
+  border-bottom: 1px solid #dee2e6 !important;
+  border-radius: 8px 8px 0 0 !important;
+}
+
+.modal-body {
+  background-color: #ffffff !important;
+  color: #000000 !important;
+}
+
+.modal-footer {
+  background-color: #f8f9fa !important;
+  border-top: 1px solid #dee2e6 !important;
+}

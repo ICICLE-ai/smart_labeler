@@ -1,0 +1,17 @@
+name: smart-labeler
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - libpq
+  - pip:
+      - flask
+      - flask-cors
+      - numpy
+      - opencv-python
+      - pillow
+      - psycopg2
+      - requests
+      - iciflaskn
+prefix: /home/lieber.31/miniconda3/envs/smart-labeler
