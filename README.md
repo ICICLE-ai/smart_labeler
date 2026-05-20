@@ -5,9 +5,8 @@ A 7-step HPC-backed pipeline for few-shot object detection — from interactive 
 ### License
 
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![AI4CI](https://img.shields.io/badge/AI4CI-blue)](https://github.com/topics/ai4ci)
-[![CI4AI](https://img.shields.io/badge/CI4AI-blue)](https://github.com/topics/ci4ai)
-[![Software](https://img.shields.io/badge/Software-blue)](https://github.com/topics/software)
+
+**Tags:** AI4CI, CI4AI, Software
 
 ## References
 
