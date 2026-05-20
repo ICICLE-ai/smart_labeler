@@ -37,6 +37,7 @@ type Pipeline = {
   description?: string;
   slurm_account?: string;
   is_demo?: boolean;
+  type?: string;
 };
 
 type FileUploadState = { progress: number; status: "idle" | "uploading" | "done" | "error" };
@@ -79,6 +80,7 @@ export default function DashBoardPage() {
   const [createName, setCreateName] = useState("");
   const [createDesc, setCreateDesc] = useState("");
   const [createSlurm, setCreateSlurm] = useState("");
+  const [createType, setCreateType] = useState<TYPE>(TYPE.DETECTION);
   const [creating, setCreating] = useState(false);
 
   const [renameId, setRenameId] = useState<string | null>(null);
@@ -104,7 +106,7 @@ export default function DashBoardPage() {
 
   useEffect(() => {
     if (createdPipeId) {
-      navigate(`/object-detection/image-annotator/${createdPipeId}`);
+      navigate(`/annotation/image-annotator/${createdPipeId}`);
     }
   }, [createdPipeId]);
 
@@ -187,6 +189,7 @@ export default function DashBoardPage() {
     setCreateName("");
     setCreateDesc("");
     setCreateSlurm("");
+    setCreateType(TYPE.DETECTION);
     setCreateOpen(true);
   };
 
@@ -199,7 +202,7 @@ export default function DashBoardPage() {
         name: createName.trim(),
         slurm: createSlurm.trim(),
         description: createDesc.trim(),
-        type: TYPE.DETECTION,
+        type: createType,
       }, token);
       pipeId = res != null ? String(res) : null;
     } finally {
@@ -336,7 +339,7 @@ export default function DashBoardPage() {
                 key={p.pid}
                 pipeline={p}
                 onGo={() =>
-                  navigate(`/object-detection/image-annotator/${p.pid}`)
+                  navigate(`/annotation/image-annotator/${p.pid}`)
                 }
                 onRename={() => openRename(p)}
                 onDelete={() => handleDelete(p.pid)}
@@ -362,7 +365,7 @@ export default function DashBoardPage() {
                   pipeline={p}
                   onGo={() => {
                     console.log("Navigating to demo pipeline with ID:", p.pid);
-                    navigate(`/object-detection/image-annotator/${p.pid}`);}
+                    navigate(`/annotation/image-annotator/${p.pid}`);}
                   }
                   onRename={() => openRename(p)}
                   onDelete={() => handleDelete(p.pid)}
@@ -395,6 +398,16 @@ export default function DashBoardPage() {
               placeholder="e.g. PAS1234"
               value={createSlurm}
               onChange={(e) => setCreateSlurm(e.currentTarget.value)}
+              required
+            />
+            <Select
+              label="Pipeline Type"
+              data={[
+                { value: TYPE.DETECTION, label: "Detection" },
+                { value: TYPE.SEGMENTATION, label: "Segmentation" },
+              ]}
+              value={createType}
+              onChange={(v) => setCreateType((v as TYPE) ?? TYPE.DETECTION)}
               required
             />
             <Textarea

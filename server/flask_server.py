@@ -270,6 +270,7 @@ def getpipes():
                 "description": pipe["description"],
                 "slurm_account": pipe["slurmaccount"],
                 "is_demo": pipe["pipelineuser"] == 0,
+                "type": pipe.get("type", "DETECTION"),
             })
     except Exception as e:
         print(e)
@@ -289,6 +290,7 @@ def getpipe(pipe_id):
         "description": pipe["description"],
         "slurm_account": pipe["slurmaccount"],
         "is_demo": pipe["pipelineuser"] == 0,
+        "type": pipe.get("type", "DETECTION"),
     })
 
 @app.route("/pipe/create", methods=["POST"])

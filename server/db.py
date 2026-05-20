@@ -177,6 +177,7 @@ execute_query(
 
 # Migrations for existing databases
 execute_query("ALTER TABLE pipeline ADD COLUMN IF NOT EXISTS description TEXT DEFAULT ''", None)
+execute_query("ALTER TABLE pipeline ADD COLUMN IF NOT EXISTS type TEXT DEFAULT 'DETECTION'", None)
 execute_query("ALTER TABLE pipeline DROP CONSTRAINT IF EXISTS pipeline_pipelineuser_fkey", None)
 execute_query("ALTER TABLE pipeline DROP COLUMN IF EXISTS metadata", None)
 execute_query("ALTER TABLE object_detection DROP COLUMN IF EXISTS percentcomplete", None)

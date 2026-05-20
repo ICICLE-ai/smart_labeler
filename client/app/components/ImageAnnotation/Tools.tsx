@@ -128,6 +128,7 @@ const Tools = (props: {
    annotationFilePath?: string;
    annotationSystem?: string;
    annotationIsCoco?: boolean;
+   hideNextStep?: boolean;
 }) => {
    const navigate = useNavigate();
    const [downloadAnchor, setDownloadAnchor] = useState<HTMLElement | null>(null);
@@ -341,26 +342,28 @@ const Tools = (props: {
                {/* Spacer */}
                <Box sx={{ flex: 1 }} />
 
-               {/* Next Step */}
-               <Button
-                  variant="contained"
-                  color="success"
-                  size="small"
-                  endIcon={<ArrowForwardIcon />}
-                  onClick={() =>
-                     navigate(`/object-detection/build-class-supports/${pipeId}`)
-                  }
-                  sx={{
-                     fontWeight: 700,
-                     borderRadius: "999px",
-                     px: 2,
-                     textTransform: "none",
-                     boxShadow: "none",
-                     "&:hover": { boxShadow: "none" },
-                  }}
-               >
-                  Next Step
-               </Button>
+               {/* Next Step — hidden for pipeline types where annotation is the final step */}
+               {!props.hideNextStep && (
+                  <Button
+                     variant="contained"
+                     color="success"
+                     size="small"
+                     endIcon={<ArrowForwardIcon />}
+                     onClick={() =>
+                        navigate(`/object-detection/build-class-supports/${pipeId}`)
+                     }
+                     sx={{
+                        fontWeight: 700,
+                        borderRadius: "999px",
+                        px: 2,
+                        textTransform: "none",
+                        boxShadow: "none",
+                        "&:hover": { boxShadow: "none" },
+                     }}
+                  >
+                     Next Step
+                  </Button>
+               )}
             </Toolbar>
          </AppBar>
 
