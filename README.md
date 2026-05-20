@@ -6,11 +6,12 @@ A 7-step HPC-backed pipeline for few-shot object detection — from interactive 
 
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+**Tags:** AI4CI, CI4AI, Software
+
 ## References
 
 - [Tapis v3 — HPC job execution framework](https://tapis-project.org)
-- [Patra Model Registry — ICICLE AI model catalog](https://patra.readthedocs.io)
-- [SAM3 — Segment Anything Model 3 inference service](https://sam3-sailab.nrp-nautilus.io)
+- [Patra Model Registry — ICICLE AI model catalog](https://patra.pods.icicleai.tapis.io/)
 - [SAHI — Slicing Aided Hyper Inference for small-object detection](https://github.com/obss/sahi)
 - [COCO JSON format specification](https://cocodataset.org/#format-data)
 
