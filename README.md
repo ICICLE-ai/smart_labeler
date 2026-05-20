@@ -13,7 +13,6 @@ A 7-step HPC-backed pipeline for few-shot object detection — from interactive 
 
 - [Tapis v3 — HPC job execution framework](https://tapis-project.org)
 - [Patra Model Registry — ICICLE AI model catalog](https://patra.pods.icicleai.tapis.io/)
-- [SAM3 — Segment Anything Model 3 inference service](https://huggingface.co/facebook/sam3)
 - [SAHI — Slicing Aided Hyper Inference for small-object detection](https://github.com/obss/sahi)
 - [COCO JSON format specification](https://cocodataset.org/#format-data)
 
