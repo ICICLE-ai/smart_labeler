@@ -26,7 +26,10 @@ export interface QueryImageConfiguration {
    tile_size?: number;
    overlap_ratio?: number;
    batch_size?: number;
-
+   node_count?: number;
+   cores_per_node?: number;
+   memory_mb?: number;
+   max_minutes?: number;
 }
 
 // ---------------------------------------------------------------------------

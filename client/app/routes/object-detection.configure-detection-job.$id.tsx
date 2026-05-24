@@ -81,6 +81,12 @@ const ConfigureDetectionJob: React.FC = () => {
   const [sahiTileSize, setSahiTileSize] = useState<string>("960");
   const [sahiOverlapRatio, setSahiOverlapRatio] = useState<string>("0.25");
 
+  // HPC resource settings
+  const [nodeCount, setNodeCount] = useState<string>("1");
+  const [coresPerNode, setCoresPerNode] = useState<string>("8");
+  const [memoryMB, setMemoryMB] = useState<string>("64800");
+  const [maxMinutes, setMaxMinutes] = useState<string>("210");
+
   // Configuration history and pipeline state
   const [configurations, setConfigurations] = useState<
     QueryImageConfiguration[]
@@ -198,6 +204,10 @@ const ConfigureDetectionJob: React.FC = () => {
         setEmbedderModels(embedderModels);
 
         setName(config.name ?? "Predict objects");
+        setNodeCount(String(config.node_count ?? 1));
+        setCoresPerNode(String(config.cores_per_node ?? 8));
+        setMemoryMB(String(config.memory_mb ?? 64800));
+        setMaxMinutes(String(config.max_minutes ?? 210));
       }
     }
   }, [currentConfigurationId, configurations]);
@@ -219,6 +229,10 @@ const ConfigureDetectionJob: React.FC = () => {
     setEnableSAHI(false);
     setSahiTileSize("960");
     setSahiOverlapRatio("0.25");
+    setNodeCount("1");
+    setCoresPerNode("8");
+    setMemoryMB("64800");
+    setMaxMinutes("210");
     setCurrentConfigurationId(null);
     formRef.current?.resetForm();
   };
@@ -267,6 +281,10 @@ const ConfigureDetectionJob: React.FC = () => {
       is_query_dir: isImageFile(values.queryImagePath) ? false : true,
       name: name,
       newPatra: true,
+      node_count: parseInt(nodeCount),
+      cores_per_node: parseInt(coresPerNode),
+      memory_mb: parseInt(memoryMB),
+      max_minutes: parseInt(maxMinutes),
     };
 
     if (enableSAHI) {
@@ -612,6 +630,48 @@ const ConfigureDetectionJob: React.FC = () => {
                             setNmsIoUThreshold(e.currentTarget.value)
                           }
                         />
+                      </Stack>
+                    </Paper>
+
+                    {/* HPC Resource Settings */}
+                    <Paper
+                      withBorder
+                      p="md"
+                      radius="md"
+                      style={{ background: "#f9fafb" }}
+                    >
+                      <Stack gap="md">
+                        <Text size="lg" fw={700}>
+                          HPC Resource Settings
+                        </Text>
+                        <Group grow>
+                          <TextInput
+                            label="Node Count"
+                            placeholder="1"
+                            value={nodeCount}
+                            onChange={(e) => setNodeCount(e.currentTarget.value)}
+                          />
+                          <TextInput
+                            label="Cores Per Node"
+                            placeholder="8"
+                            value={coresPerNode}
+                            onChange={(e) => setCoresPerNode(e.currentTarget.value)}
+                          />
+                        </Group>
+                        <Group grow>
+                          <TextInput
+                            label="Memory (MB)"
+                            placeholder="64800"
+                            value={memoryMB}
+                            onChange={(e) => setMemoryMB(e.currentTarget.value)}
+                          />
+                          <TextInput
+                            label="Max Minutes"
+                            placeholder="210"
+                            value={maxMinutes}
+                            onChange={(e) => setMaxMinutes(e.currentTarget.value)}
+                          />
+                        </Group>
                       </Stack>
                     </Paper>
 

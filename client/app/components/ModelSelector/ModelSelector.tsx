@@ -56,10 +56,27 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
    const [hfTokenSaving, setHfTokenSaving] = useState(false);
    const [pendingModelId, setPendingModelId] = useState<string | null>(null);
    const [pendingModelName, setPendingModelName] = useState<string | null>(null);
+   const [hfDetailsLoading, setHfDetailsLoading] = useState(false);
    const [detailsModalId, setDetailsModalId] = useState<string | null>(null);
    const [detailsLoading, setDetailsLoading] = useState<boolean>(false);
    const [cookie] = useCookies(["tapis-token"]);
 
+
+   // Fetch model details when HF modal opens, so license/location are available
+   useEffect(() => {
+      if (!hfModalOpen || !pendingModelId) return;
+      if (patraDetailsMap.has(pendingModelId)) return;
+      setHfDetailsLoading(true);
+      fetch(`${getBaseURL()}/patra/download_mc/${pendingModelId}?new=true`, {
+         headers: { "Tapis-Token": cookie["tapis-token"]["access_token"] },
+      })
+         .then((res) => res.json())
+         .then((details: PatraModelDetails) => {
+            setPatraDetailsMap((prev) => new Map(prev).set(pendingModelId, details));
+         })
+         .catch((e) => console.error("Failed to fetch model details for HF modal:", e))
+         .finally(() => setHfDetailsLoading(false));
+   }, [hfModalOpen, pendingModelId]);
 
    // Handle opening model details modal
    const openDetails = (uuid: string) => {
@@ -334,6 +351,31 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                      to continue.
                   </Text>
                </Alert>
+
+               {(() => {
+                  const details = pendingModelId ? patraDetailsMap.get(pendingModelId) : undefined;
+                  const license = details?.ai_model?.license;
+                  const location = details?.ai_model?.location;
+                  if (hfDetailsLoading) return <Text size="xs" c="dimmed">Loading model details…</Text>;
+                  if (!license && !location) return null;
+                  return (
+                     <Stack gap={4}>
+                        {license && (
+                           <Text size="sm">
+                              <strong>License:</strong> {license}
+                           </Text>
+                        )}
+                        {location && (
+                           <Text size="sm">
+                              <strong>Request access:</strong>{" "}
+                              <a href={location} target="_blank" rel="noreferrer" style={{ color: "var(--mantine-color-blue-6)" }}>
+                                 {location}
+                              </a>
+                           </Text>
+                        )}
+                     </Stack>
+                  );
+               })()}
 
                <PasswordInput
                   label="Hugging Face API Token"
