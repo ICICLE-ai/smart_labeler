@@ -7,7 +7,6 @@ import {
   Card,
   Center,
   Container,
-  Divider,
   Group,
   Loader,
   Modal,
@@ -15,6 +14,7 @@ import {
   Select,
   SimpleGrid,
   Stack,
+  Tabs,
   Text,
   Textarea,
   TextInput,
@@ -249,8 +249,16 @@ export default function DashBoardPage() {
     }
   };
 
+  const [search, setSearch] = useState("");
+  const q = search.trim().toLowerCase();
+
   const userPipelines = pipelines.filter((p) => !p.is_demo);
+  const detectionPipelines = userPipelines.filter((p) => !p.type || p.type === TYPE.DETECTION);
+  const segmentationPipelines = userPipelines.filter((p) => p.type === TYPE.SEGMENTATION);
   const demoPipelines = pipelines.filter((p) => p.is_demo);
+
+  const filterBySearch = (list: Pipeline[]) =>
+    q ? list.filter((p) => (p.name ?? "").toLowerCase().includes(q) || String(p.pid).includes(q)) : list;
 
   if (loadingPipelines) {
     return (
@@ -306,7 +314,6 @@ export default function DashBoardPage() {
           </Text>
         </Alert>
 
-        {/* User pipelines */}
         {pipelinesError ? (
           <Alert color="red" variant="light" mb="md" title="Failed to load pipelines">
             <Text size="sm" mb="sm">
@@ -316,65 +323,101 @@ export default function DashBoardPage() {
               Retry
             </Button>
           </Alert>
-        ) : userPipelines.length === 0 ? (
-          <Card withBorder radius="md" p="xl" ta="center">
-            <Text c="dimmed" size="lg">
-              No pipelines yet.
-            </Text>
-            <Text c="dimmed" size="sm" mt={4}>
-              Create your first pipeline to start annotating images.
-            </Text>
-            <Button
-              leftSection={<IconPlus size={16} />}
-              mt="md"
-              onClick={openCreate}
-            >
-              New Pipeline
-            </Button>
-          </Card>
         ) : (
-          <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
-            {userPipelines.map((p) => (
-              <PipelineCard
-                key={p.pid}
-                pipeline={p}
-                onGo={() =>
-                  navigate(`/annotation/image-annotator/${p.pid}`)
-                }
-                onRename={() => openRename(p)}
-                onDelete={() => handleDelete(p.pid)}
-                deleting={deletingId === p.pid}
-              />
-            ))}
-          </SimpleGrid>
-        )}
+          <Tabs defaultValue="detection" keepMounted={false}>
+            <Tabs.List mb="md">
+              <Tabs.Tab value="detection" rightSection={<Badge size="xs" variant="light">{detectionPipelines.length}</Badge>}>
+                Detection
+              </Tabs.Tab>
+              <Tabs.Tab value="segmentation" rightSection={<Badge size="xs" variant="light">{segmentationPipelines.length}</Badge>}>
+                Segmentation
+              </Tabs.Tab>
+              {demoPipelines.length > 0 && (
+                <Tabs.Tab value="demo" rightSection={<Badge size="xs" variant="light" color="gray">{demoPipelines.length}</Badge>}>
+                  Demo
+                </Tabs.Tab>
+              )}
+            </Tabs.List>
 
-        {/* Demo pipelines */}
-        {demoPipelines.length > 0 && (
-          <>
-            <Divider
-              label="Demo Pipelines"
-              labelPosition="left"
-              mt="xl"
+            <TextInput
+              leftSection={<IconSearch size={14} />}
+              placeholder="Search pipelines by name or ID…"
+              value={search}
+              onChange={(e) => setSearch(e.currentTarget.value)}
               mb="md"
+              style={{ maxWidth: 340 }}
             />
-            <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
-              {demoPipelines.map((p) => (
-                <PipelineCard
-                  key={p.pid}
-                  pipeline={p}
-                  onGo={() => {
-                    console.log("Navigating to demo pipeline with ID:", p.pid);
-                    navigate(`/annotation/image-annotator/${p.pid}`);}
-                  }
-                  onRename={() => openRename(p)}
-                  onDelete={() => handleDelete(p.pid)}
-                  deleting={deletingId === p.pid}
-                  readOnly
-                />
-              ))}
-            </SimpleGrid>
-          </>
+
+            <Tabs.Panel value="detection">
+              {filterBySearch(detectionPipelines).length === 0 ? (
+                <Card withBorder radius="md" p="xl" ta="center">
+                  <Text c="dimmed" size="lg">{q ? "No matching pipelines." : "No detection pipelines yet."}</Text>
+                  {!q && (
+                    <Button leftSection={<IconPlus size={16} />} mt="md" onClick={openCreate}>New Pipeline</Button>
+                  )}
+                </Card>
+              ) : (
+                <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
+                  {filterBySearch(detectionPipelines).map((p) => (
+                    <PipelineCard
+                      key={p.pid}
+                      pipeline={p}
+                      onGo={() => navigate(`/annotation/image-annotator/${p.pid}`)}
+                      onRename={() => openRename(p)}
+                      onDelete={() => handleDelete(p.pid)}
+                      deleting={deletingId === p.pid}
+                    />
+                  ))}
+                </SimpleGrid>
+              )}
+            </Tabs.Panel>
+
+            <Tabs.Panel value="segmentation">
+              {filterBySearch(segmentationPipelines).length === 0 ? (
+                <Card withBorder radius="md" p="xl" ta="center">
+                  <Text c="dimmed" size="lg">{q ? "No matching pipelines." : "No segmentation pipelines yet."}</Text>
+                  {!q && (
+                    <Button leftSection={<IconPlus size={16} />} mt="md" onClick={openCreate}>New Pipeline</Button>
+                  )}
+                </Card>
+              ) : (
+                <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
+                  {filterBySearch(segmentationPipelines).map((p) => (
+                    <PipelineCard
+                      key={p.pid}
+                      pipeline={p}
+                      onGo={() => navigate(`/annotation/image-annotator/${p.pid}`)}
+                      onRename={() => openRename(p)}
+                      onDelete={() => handleDelete(p.pid)}
+                      deleting={deletingId === p.pid}
+                    />
+                  ))}
+                </SimpleGrid>
+              )}
+            </Tabs.Panel>
+
+            <Tabs.Panel value="demo">
+              {filterBySearch(demoPipelines).length === 0 ? (
+                <Card withBorder radius="md" p="xl" ta="center">
+                  <Text c="dimmed" size="lg">No matching demo pipelines.</Text>
+                </Card>
+              ) : (
+                <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
+                  {filterBySearch(demoPipelines).map((p) => (
+                    <PipelineCard
+                      key={p.pid}
+                      pipeline={p}
+                      onGo={() => navigate(`/annotation/image-annotator/${p.pid}`)}
+                      onRename={() => openRename(p)}
+                      onDelete={() => handleDelete(p.pid)}
+                      deleting={deletingId === p.pid}
+                      readOnly
+                    />
+                  ))}
+                </SimpleGrid>
+              )}
+            </Tabs.Panel>
+          </Tabs>
         )}
 
         {/* Create Modal */}

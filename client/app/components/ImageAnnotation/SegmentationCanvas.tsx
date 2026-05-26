@@ -74,12 +74,68 @@ function flagColor(flag: string): string {
    return FLAG_PALETTE[Math.abs(h) % FLAG_PALETTE.length];
 }
 
-function bboxToPoints(bbox: any): { x: number; y: number }[] {
+// Ramer–Douglas–Peucker polygon simplification.
+// Removes vertices whose perpendicular distance from the chord is < epsilon.
+function _perpDist(
+   p: { x: number; y: number },
+   a: { x: number; y: number },
+   b: { x: number; y: number }
+): number {
+   const dx = b.x - a.x, dy = b.y - a.y;
+   if (dx === 0 && dy === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+   const t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy);
+   return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+function rdpSimplify(pts: { x: number; y: number }[], eps: number): { x: number; y: number }[] {
+   if (pts.length <= 2) return pts;
+   let maxD = 0, maxI = 0;
+   for (let i = 1; i < pts.length - 1; i++) {
+      const d = _perpDist(pts[i], pts[0], pts[pts.length - 1]);
+      if (d > maxD) { maxD = d; maxI = i; }
+   }
+   if (maxD > eps) {
+      const l = rdpSimplify(pts.slice(0, maxI + 1), eps);
+      const r = rdpSimplify(pts.slice(maxI), eps);
+      return [...l.slice(0, -1), ...r];
+   }
+   return [pts[0], pts[pts.length - 1]];
+}
+
+// Simplify a polygon when it has more than `threshold` vertices.
+// epsilon=1.5 px is conservative — preserves shape while cutting 250-pt SAM3
+// masks down to ~30–60 pts, which eliminates self-intersection transparency loss.
+function simplifyPolygon(
+   pts: { x: number; y: number }[],
+   threshold = 60,
+   epsilon = 1.5
+): { x: number; y: number }[] {
+   if (pts.length <= threshold) return pts;
+   const simplified = rdpSimplify(pts, epsilon);
+   return simplified.length >= 3 ? simplified : pts;
+}
+
+// Converts a SAM3 mask/bbox response object to a polygon point array.
+// m.segmentation is [[x,y],[x,y],...] ordered contour points from cv2.findContours.
+function extractPoints(m: any): { x: number; y: number }[] {
+   // m.segmentation: ordered contour from server (cv2.findContours output)
+   if (m.segmentation) {
+      const seg = m.segmentation;
+      if (Array.isArray(seg) && seg.length >= 3 && Array.isArray(seg[0]) && seg[0].length === 2) {
+         const pts = (seg as number[][]).map((p) => ({ x: p[0], y: p[1] }));
+         return simplifyPolygon(pts);
+      }
+   }
+
+   // m.points: already {x,y} contour objects
+   if (Array.isArray(m.points) && m.points.length >= 3) return simplifyPolygon(m.points);
+
+   // Bounding-box fallback
    return [
-      { x: bbox.x_min, y: bbox.y_min },
-      { x: bbox.x_max, y: bbox.y_min },
-      { x: bbox.x_max, y: bbox.y_max },
-      { x: bbox.x_min, y: bbox.y_max },
+      { x: m.x_min, y: m.y_min },
+      { x: m.x_max, y: m.y_min },
+      { x: m.x_max, y: m.y_max },
+      { x: m.x_min, y: m.y_max },
    ];
 }
 
@@ -357,7 +413,7 @@ const SegmentationCanvas = (props: {
          ann.points.slice(1).forEach((p) => ctx.lineTo(p.x, p.y));
          ctx.closePath();
          ctx.fillStyle = `${stroke}28`;
-         ctx.fill();
+         ctx.fill("evenodd");
          if (isMultiSel && !isSel) ctx.setLineDash([8, 4]);
          ctx.strokeStyle = stroke;
          ctx.lineWidth = isMultiSel ? lineWidth + 1 : lineWidth;
@@ -409,7 +465,7 @@ const SegmentationCanvas = (props: {
          ann.points.slice(1).forEach((p) => ctx.lineTo(p.x, p.y));
          ctx.closePath();
          ctx.fillStyle = "#e6510028";
-         ctx.fill();
+         ctx.fill("evenodd");
          ctx.strokeStyle = "#e65100";
          ctx.lineWidth = lineWidth;
          ctx.stroke();
@@ -565,7 +621,7 @@ const SegmentationCanvas = (props: {
                if (!srcList?.length) { alert("No segments found in the clicked area."); return; }
                const newAnns: SegmentationAnnotation[] = srcList.map((m: any, i: number) => ({
                   id: `${Date.now()}-${i}`,
-                  points: m.points ?? bboxToPoints(m),
+                  points: extractPoints(m),
                   label: labelValue || `Segment ${annotations.length + i + 1}`,
                   score: m.confidence,
                }));
@@ -604,7 +660,7 @@ const SegmentationCanvas = (props: {
             if (!srcList?.length) { alert("No segments found matching the text prompt."); return; }
             const newAnns: SegmentationAnnotation[] = srcList.map((m: any, i: number) => ({
                id: `${Date.now()}-${i}`,
-               points: m.points ?? bboxToPoints(m),
+               points: extractPoints(m),
                label: m.label || textPrompts[0] || `Segment ${annotations.length + i + 1}`,
                score: m.confidence,
             }));
