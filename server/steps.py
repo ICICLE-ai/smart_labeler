@@ -283,7 +283,7 @@ class ObjectClassification:
         if res["status"] == "success":
             sid = res["uuid"]
             print(f"Classification job submitted successfully with UUID: {sid}")
-            update_query_image_configuration(body["id"], {"classificationJobId": sid})
+            update_query_image_configuration(body["id"], {"detectionJobId": sid})
             update_object_detection(digid, {"current_query_image_configuration": body["id"]})
         else:
             print("Error submitting job:", res["message"])

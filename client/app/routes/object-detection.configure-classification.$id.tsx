@@ -29,6 +29,7 @@ import { HeroTitle } from "~/components/HeroTitle/HeroTitle";
 import { isImageFile, steps } from "~/components/ImageAnnotation/utils";
 import { allowed_systems, fetchAndReturnData, SubmitData } from "~/utils/utils";
 import { ModelSelector } from "~/components/ModelSelector/ModelSelector";
+import { usePipeline } from "~/context/PipelineContext";
 
 interface ClassificationConfig {
     id?: number;
@@ -76,6 +77,8 @@ const ConfigureClassification: React.FC = () => {
     const navigate = useNavigate();
     const [cookie] = useCookies(["tapis-token"]);
     const { pipeid } = useLoaderData<{ pipeid: string }>();
+
+    const { notifyJobSubmitted } = usePipeline();
 
 
     // Fetch files from a directory
@@ -284,6 +287,7 @@ const ConfigureClassification: React.FC = () => {
                     alert("Failed to submit classification configuration");
                     return;
                 }
+                notifyJobSubmitted();
                 alert("Classification configuration submitted successfully");
                 navigate(`/object-detection/classification/${pipeid}`);
             })
