@@ -110,6 +110,8 @@ Open **Step 4 — Configure Detection Job**. Enter a configuration name, provide
 
 ![Configure Detection Job — Advanced](./doc/images/proposals/configure_detection_job_2.png)
 
+![Configure Detection Job — HPC configuration](./doc/images2/proposal_config_3.png)
+
 ### Step 5 — Visualize Proposals
 
 Open **Step 5 — Visualize Proposals** once the detection job completes. Select a proposal file from the right panel. Drag the objectness threshold slider to filter boxes in real time.
