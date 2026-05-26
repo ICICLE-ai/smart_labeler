@@ -14,6 +14,10 @@ from utils import (
 SMART_LABELER_CLASS_SUPPORT_IMAGE = os.getenv("SMART_LABELER_CLASS_SUPPORT_IMAGE")
 SMART_LABELER_PROPOSAL_GENERATION_IMAGE = os.getenv("SMART_LABELER_PROPOSAL_GENERATION_IMAGE")
 SMART_LABELER_CLASSIFICATION_IMAGE = os.getenv("SMART_LABELER_CLASSIFICATION_IMAGE")
+HPC_MAX_RUNTIME_MINUTES = os.getenv("HPC_MAX_RUNTIME_MINUTES", 210)
+HPC_MEMORY_MB = os.getenv("HPC_MEMORY_MB", 64800)
+HPC_CORES_PER_NODE = os.getenv("HPC_CORES_PER_NODE", 8)
+HPC_NUMBER_OF_NODES = os.getenv("HPC_NUMBER_OF_NODES", 1)
 
 
 class ObjectDetectionClassSupports:
@@ -30,10 +34,10 @@ class ObjectDetectionClassSupports:
             "name": body["name"],
             **app_config,
             "description": "Test job for generate class supports object-detection",
-            "nodeCount": 1,
-            "coresPerNode": 8,
-            "memoryMB": 64800,
-            "maxMinutes": 210,
+            "nodeCount": HPC_NUMBER_OF_NODES,
+            "coresPerNode": HPC_CORES_PER_NODE,
+            "memoryMB": HPC_MEMORY_MB,
+            "maxMinutes": HPC_MAX_RUNTIME_MINUTES,
             "execSystemId": system,
             "execSystemLogicalQueue": queue,
             "archiveSystemId": system,
@@ -126,10 +130,10 @@ class ObjectDetection:
             "name": body["name"],
             **app_config,
             "description": "Test job for optimize objectness threshold",
-            "nodeCount": body.get("node_count", 1),
-            "coresPerNode": body.get("cores_per_node", 8),
-            "memoryMB": body.get("memory_mb", 64800),
-            "maxMinutes": body.get("max_minutes", 210),
+            "nodeCount": body.get("node_count", HPC_NUMBER_OF_NODES),
+            "coresPerNode": body.get("cores_per_node", HPC_CORES_PER_NODE),
+            "memoryMB": body.get("memory_mb", HPC_MEMORY_MB),
+            "maxMinutes": body.get("max_minutes", HPC_MAX_RUNTIME_MINUTES),
             "execSystemId": system,
             "execSystemLogicalQueue": queue,
             "archiveSystemId": system,
