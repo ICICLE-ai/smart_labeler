@@ -777,7 +777,11 @@ def object_detection(pipeid, id):
             "is_sahi": data.get("is_sahi", False),
             "is_query_dir": data.get("is_query_dir", False),
             "embedder_models": ",".join(embedder_names) if embedder_names else "",
-            "proposer_models": ",".join(proposer_names) if proposer_names else ""
+            "proposer_models": ",".join(proposer_names) if proposer_names else "",
+            "node_count": data.get("node_count", 1),
+            "cores_per_node": data.get("cores_per_node", 8),
+            "memory_mb": data.get("memory_mb", 64800),
+            "max_minutes": data.get("max_minutes", 210),
         }
     
     if int(id) == 0:

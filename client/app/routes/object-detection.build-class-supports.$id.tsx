@@ -154,16 +154,14 @@ const GenerateClassSupports: React.FC = () => {
                alert("Failed to submit class supports generation job");
                return;
             }
-            console.log(res);
+            notifyJobSubmitted();
+            alert("Class supports generation job submitted successfully");
+            navigate(`/object-detection/optimize-patch-size/${pipeid}`);
          })
          .catch((err) => {
             console.error(err);
             alert("Failed to submit class supports generation job");
          });
-
-      notifyJobSubmitted();
-      alert("Class supports generation job submitted successfully");
-      navigate(`/object-detection/optimize-patch-size/${pipeid}`);
    };
 
    return (

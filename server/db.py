@@ -131,10 +131,25 @@ execute_query(
         embedder_models TEXT DEFAULT '',
         class_support_paths TEXT DEFAULT '',
         proposal_tensor_paths TEXT DEFAULT '',
+        node_count INTEGER DEFAULT 1,
+        cores_per_node INTEGER DEFAULT 8,
+        memory_mb INTEGER DEFAULT 64800,
+        max_minutes INTEGER DEFAULT 210,
         FOREIGN KEY(parentpipelineid) REFERENCES pipeline(pipelineid)
     )""",
     None,
 )
+
+for col, defval in [
+    ("node_count", "1"),
+    ("cores_per_node", "8"),
+    ("memory_mb", "64800"),
+    ("max_minutes", "210"),
+]:
+    execute_query(
+        f"ALTER TABLE query_image_configuration ADD COLUMN IF NOT EXISTS {col} INTEGER DEFAULT {defval}",
+        None,
+    )
 
 execute_query(
     """CREATE TABLE IF NOT EXISTS object_detection(
@@ -457,8 +472,9 @@ def create_query_image_configuration(pipeline_id, query_data):
     rows = execute_query(
         """INSERT INTO query_image_configuration
         (objectnessThreshold, nmsIoUThreshold, similarityThreshold,
-        queryImagePath, outputDir, device, proposer_ids, embedder_ids, batch_size, is_sahi, tile_size, overlap_ratio, method, parentpipelineid, system, is_query_dir, name)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        queryImagePath, outputDir, device, proposer_ids, embedder_ids, batch_size, is_sahi, tile_size, overlap_ratio, method, parentpipelineid, system, is_query_dir, name,
+        node_count, cores_per_node, memory_mb, max_minutes)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
         (
             query_data.get("objectnessThreshold", 0.1),
             query_data.get("nmsIoUThreshold", 0.5),
@@ -477,6 +493,10 @@ def create_query_image_configuration(pipeline_id, query_data):
             query_data["system"],
             query_data.get("is_query_dir", False),
             query_data.get("name", ""),
+            query_data.get("node_count", 1),
+            query_data.get("cores_per_node", 8),
+            query_data.get("memory_mb", 64800),
+            query_data.get("max_minutes", 210),
         ),
     )
     return rows
@@ -522,6 +542,10 @@ def get_all_query_configurations(pipeline_id):
             "embedder_models": row.get("embedder_models", ""),
             "class_support_paths": row.get("class_support_paths", ""),
             "proposal_tensor_paths": row.get("proposal_tensor_paths", ""),
+            "node_count": row.get("node_count", 1),
+            "cores_per_node": row.get("cores_per_node", 8),
+            "memory_mb": row.get("memory_mb", 64800),
+            "max_minutes": row.get("max_minutes", 210),
         }
         for row in rows
     ]
@@ -555,6 +579,10 @@ def update_query_image_configuration(query_id, updates):
             "name",
             "class_support_paths",
             "proposal_tensor_paths",
+            "node_count",
+            "cores_per_node",
+            "memory_mb",
+            "max_minutes",
         ]:
             update_fields.append(f"{key} = %s")
             values.append(value)

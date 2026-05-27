@@ -21,6 +21,7 @@ import { getBaseURL } from "~/utils/utils";
 import { PatraCard, PatraModelDetails, PatraDetailsContent } from "~/components/PatraModelCards/PatraModelCards";
 import { checkSecretExists, saveHfTokenToVault } from "~/utils/hfTokenManager";
 import { useCookies } from "react-cookie";
+import hfGuideUrl from "~/assets/Hugging_Face_Enhanced.pdf?url";
 
 // type ModelFilterType = "proposer" | "embedder" | "all";
 
@@ -56,10 +57,28 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
    const [hfTokenSaving, setHfTokenSaving] = useState(false);
    const [pendingModelId, setPendingModelId] = useState<string | null>(null);
    const [pendingModelName, setPendingModelName] = useState<string | null>(null);
+   const [hfDetailsLoading, setHfDetailsLoading] = useState(false);
    const [detailsModalId, setDetailsModalId] = useState<string | null>(null);
    const [detailsLoading, setDetailsLoading] = useState<boolean>(false);
+   const [pdfModalOpen, setPdfModalOpen] = useState(false);
    const [cookie] = useCookies(["tapis-token"]);
 
+
+   // Fetch model details when HF modal opens, so license/location are available
+   useEffect(() => {
+      if (!hfModalOpen || !pendingModelId) return;
+      if (patraDetailsMap.has(pendingModelId)) return;
+      setHfDetailsLoading(true);
+      fetch(`${getBaseURL()}/patra/download_mc/${pendingModelId}?new=true`, {
+         headers: { "Tapis-Token": cookie["tapis-token"]["access_token"] },
+      })
+         .then((res) => res.json())
+         .then((details: PatraModelDetails) => {
+            setPatraDetailsMap((prev) => new Map(prev).set(pendingModelId, details));
+         })
+         .catch((e) => console.error("Failed to fetch model details for HF modal:", e))
+         .finally(() => setHfDetailsLoading(false));
+   }, [hfModalOpen, pendingModelId]);
 
    // Handle opening model details modal
    const openDetails = (uuid: string) => {
@@ -335,6 +354,31 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                   </Text>
                </Alert>
 
+               {(() => {
+                  const details = pendingModelId ? patraDetailsMap.get(pendingModelId) : undefined;
+                  const license = details?.ai_model?.license;
+                  const location = details?.ai_model?.location;
+                  if (hfDetailsLoading) return <Text size="xs" c="dimmed">Loading model details…</Text>;
+                  if (!license && !location) return null;
+                  return (
+                     <Stack gap={4}>
+                        {license && (
+                           <Text size="sm">
+                              <strong>License:</strong> {license}
+                           </Text>
+                        )}
+                        {location && (
+                           <Text size="sm">
+                              <strong>Request access:</strong>{" "}
+                              <a href={location} target="_blank" rel="noreferrer" style={{ color: "var(--mantine-color-blue-6)" }}>
+                                 {location}
+                              </a>
+                           </Text>
+                        )}
+                     </Stack>
+                  );
+               })()}
+
                <PasswordInput
                   label="Hugging Face API Token"
                   placeholder="hf_xxxxxxxxxxxxx"
@@ -345,6 +389,18 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                   }}
                   disabled={hfTokenSaving}
                />
+               <Text size="xs" c="dimmed">
+                  Don't have a token?{" "}
+                  <Text
+                     component="span"
+                     size="xs"
+                     c="blue"
+                     style={{ cursor: "pointer", textDecoration: "underline" }}
+                     onClick={() => setPdfModalOpen(true)}
+                  >
+                     How to create one
+                  </Text>
+               </Text>
 
                {hfTokenError && (
                   <Alert icon={<IconAlertCircle size={16} />} color="red">
@@ -369,6 +425,21 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                   </Button>
                </Group>
             </Stack>
+         </Modal>
+
+         {/* HF Setup Guide PDF Modal */}
+         <Modal
+            opened={pdfModalOpen}
+            onClose={() => setPdfModalOpen(false)}
+            title="Hugging Face Setup Guide"
+            size="xl"
+            centered
+         >
+            <iframe
+               src={hfGuideUrl}
+               style={{ width: "100%", height: "70vh", border: "none" }}
+               title="Hugging Face Setup Guide"
+            />
          </Modal>
 
          {/* Model Card Details Modal */}

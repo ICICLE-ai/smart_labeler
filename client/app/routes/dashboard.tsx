@@ -21,7 +21,7 @@ import {
   Title,
   Tooltip,
 } from "@mantine/core";
-import { IconEdit, IconInfoCircle, IconPlus, IconRocket, IconTrash, IconUpload, IconX, IconCheck, IconFile } from "@tabler/icons-react";
+import { IconAlertCircle, IconEdit, IconInfoCircle, IconPlus, IconRocket, IconTrash, IconUpload, IconX, IconCheck, IconFile } from "@tabler/icons-react";
 import { useLoaderData, useNavigate } from "@remix-run/react";
 import { Formik } from "formik";
 import { useEffect, useRef, useState } from "react";
@@ -96,6 +96,7 @@ export default function DashBoardPage() {
   const [uploadItems, setUploadItems] = useState<{ file: File; relativePath: string }[]>([]);
   const [uploadStates, setUploadStates] = useState<Record<string, FileUploadState>>({});
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadResult, setUploadResult] = useState<"success" | "partial" | "error" | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dirInputRef = useRef<HTMLInputElement>(null);
@@ -163,16 +164,20 @@ export default function DashBoardPage() {
     const destPath = uploadFormRef.current?.values?.destPath?.trim() ?? "";
     if (!uploadItems.length || !uploadSystem || !destPath) return;
     setIsUploading(true);
-    try {
-      await Promise.all(uploadItems.map(uploadSingleFile));
-    } finally {
-      setIsUploading(false);
-    }
+    setUploadResult(null);
+    const results = await Promise.allSettled(uploadItems.map(uploadSingleFile));
+    setIsUploading(false);
+    const succeeded = results.filter((r) => r.status === "fulfilled").length;
+    const failed = results.filter((r) => r.status === "rejected").length;
+    if (failed === 0) setUploadResult("success");
+    else if (succeeded === 0) setUploadResult("error");
+    else setUploadResult("partial");
   };
 
   const openUpload = () => {
     setUploadItems([]);
     setUploadStates({});
+    setUploadResult(null);
     setUploadSystem(allowed_systems[0]?.value ?? "");
     uploadFormRef.current?.resetForm?.();
     setUploadOpen(true);
@@ -528,11 +533,27 @@ export default function DashBoardPage() {
                   </Group>
                 </Box>
 
+                {uploadResult === "success" && (
+                  <Alert icon={<IconCheck size={16} />} color="green" variant="light">
+                    All {uploadItems.length} file{uploadItems.length > 1 ? "s" : ""} uploaded successfully.
+                  </Alert>
+                )}
+                {uploadResult === "partial" && (
+                  <Alert icon={<IconAlertCircle size={16} />} color="orange" variant="light">
+                    Some files failed to upload. Check the list below for details.
+                  </Alert>
+                )}
+                {uploadResult === "error" && (
+                  <Alert icon={<IconAlertCircle size={16} />} color="red" variant="light">
+                    Upload failed. Please check your connection and destination path, then try again.
+                  </Alert>
+                )}
+
                 <Button
                   leftSection={<IconUpload size={16} />}
                   onClick={handleUpload}
                   loading={isUploading}
-                  disabled={!uploadItems.length || !uploadSystem || !values.destPath.trim() || isUploading}
+                  disabled={!uploadItems.length || !uploadSystem || !values.destPath.trim() || isUploading || uploadResult !== null}
                 >
                   Upload {uploadItems.length > 0 ? `${uploadItems.length} file${uploadItems.length > 1 ? "s" : ""}` : ""}
                 </Button>

@@ -95,7 +95,6 @@ export const PipelineProvider: React.FC<PipelineProviderProps> = ({ children, pi
                 const stepJobIds: Record<number, string> = {};
                 if (classSupportsJobId) stepJobIds[3] = classSupportsJobId;
                 if (objectnessJobId)    stepJobIds[5] = objectnessJobId;
-                if (classificationJobId) stepJobIds[6] = classificationJobId;
                 if (detectionJobId)     stepJobIds[7] = detectionJobId;
 
                 // Fetch statuses for all steps that have a jobId in parallel
