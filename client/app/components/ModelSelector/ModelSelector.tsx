@@ -125,9 +125,9 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
       return cards.filter((card) => {
          if (selectedModelIds.includes(card.uuid)) return true;
          return filterList.some((filter) =>
-            card.uuid === filter ||
-            card.name.toLowerCase().includes(filter.toLowerCase()) ||
-            card.categories.toLowerCase().includes(filter.toLowerCase())
+            card?.uuid === filter ||
+            card?.name?.toLowerCase().includes(filter?.toLowerCase()) ||
+            card?.categories?.toLowerCase().includes(filter?.toLowerCase())
          );
       });
    };
