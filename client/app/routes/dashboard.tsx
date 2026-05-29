@@ -21,7 +21,7 @@ import {
   Title,
   Tooltip,
 } from "@mantine/core";
-import { IconAlertCircle, IconEdit, IconInfoCircle, IconPlus, IconRocket, IconTrash, IconUpload, IconX, IconCheck, IconFile } from "@tabler/icons-react";
+import { IconSearch, IconAlertCircle, IconEdit, IconInfoCircle, IconPlus, IconRocket, IconTrash, IconUpload, IconX, IconCheck, IconFile } from "@tabler/icons-react";
 import { useLoaderData, useNavigate } from "@remix-run/react";
 import { Formik } from "formik";
 import { useEffect, useRef, useState } from "react";
@@ -362,7 +362,7 @@ export default function DashBoardPage() {
                     <PipelineCard
                       key={p.pid}
                       pipeline={p}
-                      onGo={() => navigate(`/annotation/image-annotator/${p.pid}`)}
+                      onGo={() => navigate(`/object-detection/image-annotator/${p.pid}`)}
                       onRename={() => openRename(p)}
                       onDelete={() => handleDelete(p.pid)}
                       deleting={deletingId === p.pid}
@@ -407,7 +407,7 @@ export default function DashBoardPage() {
                     <PipelineCard
                       key={p.pid}
                       pipeline={p}
-                      onGo={() => navigate(`/annotation/image-annotator/${p.pid}`)}
+                      onGo={() => navigate(`/object-detection/image-annotator/${p.pid}`)}
                       onRename={() => openRename(p)}
                       onDelete={() => handleDelete(p.pid)}
                       deleting={deletingId === p.pid}

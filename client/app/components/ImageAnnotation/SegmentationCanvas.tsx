@@ -222,6 +222,8 @@ const SegmentationCanvas = (props: {
 
    // ── SAM3 ──
    const [sam3PatchSize, setSam3PatchSize] = useState(0);
+   const [sam3DetectionConfidence, setSam3DetectionConfidence] = useState(0.3);
+   const [sam3MaskPrecision, setSam3MaskPrecision] = useState(0.3);
    const [isSam3Loading, setIsSam3Loading] = useState(false);
 
    const [cookie] = useCookies(["tapis-token"]);
@@ -274,7 +276,7 @@ const SegmentationCanvas = (props: {
       const canvas = canvasRef.current;
       if (!canvas || !image) return;
       const rect = canvas.getBoundingClientRect();
-      setTrueScale(Math.min(1, Math.min(rect.width / naturalWidth, rect.height / naturalHeight)));
+      setTrueScale(rect.width / naturalWidth);
    }, [image, annotations, selectedId, generatedAnnotations]);
 
    useEffect(() => {
@@ -296,6 +298,20 @@ const SegmentationCanvas = (props: {
       window.addEventListener("resize", handleResize);
       return () => window.removeEventListener("resize", handleResize);
    }, []);
+
+   // Recompute trueScale whenever the canvas container is resized (e.g. drawer open/close).
+   // window.resize does not fire for layout shifts caused by drawers, so a ResizeObserver
+   // on the parent div is the only reliable way to catch those changes.
+   useEffect(() => {
+      const container = parentRef.current;
+      if (!container || !image) return;
+      const observer = new ResizeObserver(() => {
+         const canvas = canvasRef.current;
+         if (canvas) setTrueScale(canvas.getBoundingClientRect().width / naturalWidth);
+      });
+      observer.observe(container);
+      return () => observer.disconnect();
+   }, [image, naturalWidth]);
 
    // Keyboard: Delete/Backspace deletes selection; Escape resets all state; Enter closes polygon
    useEffect(() => {
@@ -356,6 +372,8 @@ const SegmentationCanvas = (props: {
       pipe_id: props.pipeId || "0",
       system_id: props.systemId || "pitzer-tapis",
       segmentation: true,
+      threshold: sam3DetectionConfidence,
+      mask_threshold: sam3MaskPrecision,
       ...(sam3PatchSize > 0 ? { patch_size: sam3PatchSize } : {}),
       ...(x !== undefined && y !== undefined ? { x, y } : {}),
       ...(textPrompts ? { text_prompts: textPrompts } : {}),
@@ -707,7 +725,7 @@ const SegmentationCanvas = (props: {
                         const canvas = canvasRef.current;
                         if (canvas) {
                            const rect = canvas.getBoundingClientRect();
-                           setTrueScale(Math.min(1, Math.min(rect.width / naturalWidth, rect.height / naturalHeight)));
+                           setTrueScale(rect.width / naturalWidth);
                         }
                      }}
                   >
@@ -736,10 +754,12 @@ const SegmentationCanvas = (props: {
                         handleDisplayTypeSwitch={(type: string) => {
                            setGraphEnabled(type.toUpperCase() === "GRAPH");
                         }}
-                        handleSAM3BoxPrediction={(mode, sam3Active, label, textPrompts, isSAHIenabled, patchSize) => {
+                        handleSAM3BoxPrediction={(mode, sam3Active, label, textPrompts, isSAHIenabled, patchSize, detectionConfidence, maskPrecision) => {
                            if (sam3Active) {
                               if (label) setLabelValue(label);
                               setSam3PatchSize(isSAHIenabled ? (patchSize ?? 0) : 0);
+                              setSam3DetectionConfidence(detectionConfidence ?? 0.3);
+                              setSam3MaskPrecision(maskPrecision ?? 0.3);
                               if (mode === SAM3_MODES.TEXT_PROMPTS && textPrompts?.length) {
                                  setActiveMode(SegmentationCanvasMode.SAM3_TEXT);
                                  handleSam3TextPrompt(textPrompts);
@@ -759,8 +779,8 @@ const SegmentationCanvas = (props: {
                         {graphEnabled && props.graph ? props.graph : (
                            <canvas
                               ref={canvasRef}
-                              width={parentRef.current?.clientWidth || 1}
-                              height={parentRef.current?.clientHeight || 1}
+                              width={naturalWidth || 1}
+                              height={naturalHeight || 1}
                               onMouseDown={handleMouseDown}
                               onMouseMove={handleMouseMove}
                               onMouseUp={handleMouseUp}
