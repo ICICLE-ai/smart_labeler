@@ -390,10 +390,10 @@ const OptimizeClassSupports: React.FC = () => {
          });
    };
 
-   const handleFileSelect = (filePath: string, index: number) => {
-      if (filePath) {
-         setSelectedFile(filePath);
-         setSelectedFileIndex(index);
+   const handleFileSelect = (file: any, filePath: string) => {
+      if (file) {
+         setSelectedFile(file);
+         setSelectedFileIndex(files.indexOf(filePath));
       }
    };
 
@@ -485,8 +485,8 @@ const OptimizeClassSupports: React.FC = () => {
             </Box> */}
                   <FileExplorer
                      onFileSelect={handleFileSelect}
-                     filesInDirectory={(files) => {
-                        setFiles(files);
+                     filesInDirectory={(newFiles, _sys) => {
+                        setFiles(newFiles);
                         // Don't clear annotation maps - they're loaded separately from annotationFilePath
                      }}
                      pipeid={pipeid}

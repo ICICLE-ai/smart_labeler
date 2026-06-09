@@ -8,19 +8,17 @@ import {
    Button,
    ListItem,
    Slider,
-   IconButton,
    Drawer,
 } from "@mui/material";
 import ImageIcon from "@mui/icons-material/Image";
 import { replace, useLoaderData } from "@remix-run/react";
-import React, { useEffect, useRef } from "react";
+import React, { useEffect } from "react";
 import {
    Annotation,
    ImageCanvas,
 } from "~/components/ImageAnnotation/ImageCanvas";
 import {
    fetchAndReturnData,
-   fetchFile,
    getImage,
    SubmitData,
    getFile
@@ -32,7 +30,6 @@ import {
    importFromDefaultJsonUtil,
    isImageFile,
    QueryImageConfiguration,
-   steps,
 } from "~/components/ImageAnnotation/utils";
 import QueryImageConfigurationItem from "~/components/ObjectDetection/QueryImageConfigurationItem";
 import { FileExplorer } from "~/components/ImageAnnotation/FileExplorer";
@@ -51,8 +48,8 @@ const OptimizeObjectnessThreshold: React.FC = () => {
       Map<number, FileAnnotations>
    >(new Map());
    React.useState<boolean>(false);
-   const [cookie, setCookie] = useCookies(["tapis-token"]);
-   const [resGenerated, setResGenerated] = React.useState<any>(null);
+   const [cookie] = useCookies(["tapis-token"]);
+   const [resGenerated] = React.useState<any>(null);
    const { pipeid } = useLoaderData<{ pipeid: string }>();
    const { notifyJobSubmitted } = usePipeline();
    const [outputDir, setOutputDir] = React.useState<string>("");
@@ -133,10 +130,10 @@ const OptimizeObjectnessThreshold: React.FC = () => {
       }
    }, [queryFile]);
 
-   const handleFileSelect = (filePath: string, index: number) => {
-      if (filePath) {
-         setSelectedFile(filePath);
-         setSelectedFileIndex(index);
+   const handleFileSelect = (file: any, filePath: string) => {
+      if (file) {
+         setSelectedFile(file);
+         setSelectedFileIndex(imageFiles.indexOf(filePath));
       }
    }
 
@@ -368,8 +365,8 @@ const OptimizeObjectnessThreshold: React.FC = () => {
                   >
                      <FileExplorer
                         onFileSelect={handleFileSelect}
-                        filesInDirectory={(files) => {
-                           setImageFiles(files);
+                        filesInDirectory={(newFiles, _sys) => {
+                           setImageFiles(newFiles);
                            setFileToAnnotationsMap(new Map());
                            setBoundingBoxes([]);
                            setSelectedFile(null);

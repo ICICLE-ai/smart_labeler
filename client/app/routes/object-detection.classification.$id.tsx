@@ -223,10 +223,10 @@ const Classification: React.FC = () => {
       return simThreshold;
    };
 
-   const handleFileSelect = (filePath: string, index: number) => {
-      if (filePath) {
-         setSelectedFile(filePath);
-         setSelectedFileIndex(index);
+   const handleFileSelect = (file: any, filePath: string) => {
+      if (file) {
+         setSelectedFile(file);
+         setSelectedFileIndex(imageFiles.indexOf(filePath));
       }
    };
 
@@ -304,8 +304,8 @@ const Classification: React.FC = () => {
                   >
                      <FileExplorer
                         onFileSelect={handleFileSelect}
-                        filesInDirectory={(files) => {
-                           setImageFiles(files);
+                        filesInDirectory={(newFiles, _sys) => {
+                           setImageFiles(newFiles);
                            setFileToAnnotationsMap(new Map());
                            setBoundingBoxes([]);
                            setSelectedFile(null);
