@@ -5,7 +5,7 @@ import {
    type Annotation,
 } from "../components/ImageAnnotation/ImageCanvas";
 import { AnnotationDetails } from "../components/ImageAnnotation/AnnotationDetails";
-import { CircularProgress, Drawer, IconButton, Grid, Box, Button, LinearProgress, Typography } from "@mui/material";
+import { CircularProgress, Drawer, Grid, Box, Button, LinearProgress, Typography } from "@mui/material";
 import Tools from "../components/ImageAnnotation/Tools";
 import {
    downloadFile,
@@ -14,9 +14,8 @@ import {
    FileAnnotations,
    importFromCocoJsonUtil,
    importFromDefaultJsonUtil,
-   steps,
 } from "../components/ImageAnnotation/utils";
-import { fetchAndReturnData, fetchFile, getC, saveFile, SubmitData, SubmitFile } from "~/utils/utils";
+import { fetchAndReturnData, fetchFile, saveFile, SubmitData } from "~/utils/utils";
 import { useCookies } from "react-cookie";
 import { useLoaderData } from "@remix-run/react";
 
@@ -43,7 +42,7 @@ const ImageAnnotation = () => {
    >(new Map());
 
    const [openFileExplorer, setOpenFileExplorer] = useState<boolean>(false);
-   const [cookie, setCookie] = useCookies(["tapis-token"]);
+   const [cookie] = useCookies(["tapis-token"]);
    const [system, setSystem] = useState<string>("");
    const [score, setScore] = useState<number>(0.1);
    const [activeLabels, setActiveLabels] = useState<string[]>([]);
@@ -53,6 +52,7 @@ const ImageAnnotation = () => {
    const [isAdmin, setIsAdmin] = useState(false);
    const annotationsAutoLoaded = useRef(false);
    const firstImageLoadedRef = useRef(false);
+   const pendingAnnotationDataRef = useRef<{ json: any; isCoco: boolean } | null>(null);
    const [isConfigLoading, setIsConfigLoading] = useState(true);
    const [isAnnotationsLoading, setIsAnnotationsLoading] = useState(false);
    const [isImageLoading, setIsImageLoading] = useState(false);
@@ -99,6 +99,9 @@ const ImageAnnotation = () => {
       )
          .then((res) => res.text())
          .then((text) => {
+            let parsed: any;
+            try { parsed = JSON.parse(text); } catch { return; }
+            pendingAnnotationDataRef.current = { json: parsed, isCoco: annotatorConfig.fileType === "coco" };
             const file = new File([text], "annotations.json", { type: "application/json" });
             importAnnotationsFromJson(file, annotatorConfig.fileType === "coco");
          })
@@ -106,6 +109,23 @@ const ImageAnnotation = () => {
          .finally(() => setIsAnnotationsLoading(false));
    // eslint-disable-next-line react-hooks/exhaustive-deps
    }, [files, annotatorConfig]);
+
+   // Re-apply stored annotations whenever files changes (subfolder navigation).
+   // Only fills index slots not already present — never overwrites live edits.
+   useEffect(() => {
+      const data = pendingAnnotationDataRef.current;
+      if (!data || files.length === 0) return;
+      const importedMap = data.isCoco
+         ? importFromCocoJsonUtil(data.json, files)
+         : importFromDefaultJsonUtil(data.json, files);
+      setFileToAnnotationsMap((prev) => {
+         const newEntries = [...importedMap.entries()].filter(([k]) => !prev.has(k));
+         if (newEntries.length === 0) return prev;
+         const merged = new Map(prev);
+         newEntries.forEach(([k, v]) => merged.set(k, v));
+         return merged;
+      });
+   }, [files]);
 
    const upsertAnnotatorConfig = async (updates: Partial<AnnotatorConfig>) => {
       const token = cookie["tapis-token"]?.["access_token"];
@@ -131,10 +151,11 @@ const ImageAnnotation = () => {
    // eslint-disable-next-line react-hooks/exhaustive-deps
    }, [selectedFile]);  // intentionally excludes fileToAnnotationsMap to avoid overwriting live edits on import
 
-   const handleFileSelect = (file: Blob, index: number) => {
+   const handleFileSelect = (file: Blob, filePath: string) => {
       if (!firstImageLoadedRef.current) {
          setIsImageLoading(true);
       }
+      const index = files.indexOf(filePath);
       const currentFileIndex = selectedFileIndex;
       // Only persist annotations for a previous file. When currentFileIndex is null
       // (first selection), skipping the write prevents a stale-closure snapshot of
@@ -191,9 +212,10 @@ const ImageAnnotation = () => {
       // Ensure the latest annotations are saved for the currently selected file
       const updatedMap = updateAnnotationsForCurrentFile();
       if (!updatedMap) return;
+      const srcImgDir = annotatorConfig?.srcImgDir ?? "";
       const json = coco
-         ? exportToCoco(updatedMap, files)
-         : exportToDefaultJson(updatedMap, files);
+         ? exportToCoco(updatedMap, files, srcImgDir)
+         : exportToDefaultJson(updatedMap, files, srcImgDir);
       if (save && dir) {
          if (isDemo) {
             alert("Demo mode: Saving annotations is disabled for demo pipelines.");
@@ -248,6 +270,8 @@ const ImageAnnotation = () => {
          if (typeof json === "string") {
             try {
                const parsed = JSON.parse(json);
+               // Keep a copy so the re-apply effect can match newly-discovered files later.
+               pendingAnnotationDataRef.current = { json: parsed, isCoco: coco };
                const importedMap = coco
                   ? importFromCocoJsonUtil(parsed, files)
                   : importFromDefaultJsonUtil(parsed, files);
@@ -341,13 +365,34 @@ const ImageAnnotation = () => {
          >
             <FileExplorer
                onFileSelect={handleFileSelect}
-               filesInDirectory={(files, system) => {
-                  setFiles(files);
-                  setFileToAnnotationsMap(new Map());
-                  setBoundingBoxes([]);
-                  setSelectedBoxId(undefined);
-                  setSelectedFile(null);
-                  setSystem(system);
+               filesInDirectory={(newFiles, sys, isRootReset) => {
+                  if (isRootReset) {
+                     // New root directory — full reset.
+                     setFiles(newFiles);
+                     setFileToAnnotationsMap(new Map());
+                     setBoundingBoxes([]);
+                     setSelectedBoxId(undefined);
+                     setSelectedFile(null);
+                     setSelectedFileIndex(null);
+                     annotationsAutoLoaded.current = false;
+                     pendingAnnotationDataRef.current = null;
+                  } else {
+                     // Subfolder navigation — flush live edits then accumulate files.
+                     if (selectedFileIndex !== null) {
+                        setFileToAnnotationsMap((prev) => {
+                           const updated = new Map(prev);
+                           const fa = updated.get(selectedFileIndex) || { name: files[selectedFileIndex] || "", width: 0, height: 0, annotations: [] };
+                           updated.set(selectedFileIndex, { ...fa, annotations: boundingBoxes });
+                           return updated;
+                        });
+                     }
+                     setFiles((prev) => {
+                        const existing = new Set(prev);
+                        const toAdd = newFiles.filter((f) => !existing.has(f));
+                        return toAdd.length > 0 ? [...prev, ...toAdd] : prev;
+                     });
+                  }
+                  setSystem(sys);
                }}
                pipeid={pipeid}
                fileDir={annotatorConfig?.srcImgDir}
@@ -379,6 +424,7 @@ const ImageAnnotation = () => {
             annotationFilePath={annotatorConfig?.annotationFilePath}
             annotationSystem={annotatorConfig?.system}
             annotationIsCoco={annotatorConfig?.fileType === "coco"}
+            annotationSrcImgDir={annotatorConfig?.srcImgDir}
          />
          {/* ── Global loading bar ── */}
          {(isConfigLoading || isAnnotationsLoading || isImageLoading) && (

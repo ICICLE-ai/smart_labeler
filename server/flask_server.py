@@ -556,6 +556,32 @@ def get_imgs_in_dir(digid, system):
     return json.dumps({"imgs": list_of_files})
 
 
+@app.route("/get-dir-contents/<digid>/<system>", methods=["GET"])
+def get_dir_contents(digid, system):
+    token, user = getAuth(request)
+    dir_path = request.args.get("dir", "")
+    supported_extensions = (".JPEG", ".JPG", ".PNG", ".TIF", ".TIFF")
+
+    headers = {"X-Tapis-Token": token}
+    url = f"https://icicleai.tapis.io/v3/files/ops/{system}/{urllib.parse.quote(dir_path, safe='/-_')}"
+
+    response = requests.get(url, headers=headers, params={"offset": 0, "limit": 1000})
+    if response.status_code != 200:
+        return json.dumps({"dirs": [], "imgs": []})
+
+    results = response.json().get("result", [])
+    dirs, imgs = [], []
+    clean_dir = dir_path.strip("/")
+
+    for item in results:
+        if item["type"] == "dir" and item.get("path", "").strip("/") != clean_dir:
+            dirs.append({"name": item["name"], "path": item["path"]})
+        elif item["type"] == "file" and item["name"].upper().endswith(supported_extensions):
+            imgs.append(item["path"])
+
+    return json.dumps({"dirs": dirs, "imgs": imgs})
+
+
 TAPIS_BASE = "https://icicleai.tapis.io"
 
 

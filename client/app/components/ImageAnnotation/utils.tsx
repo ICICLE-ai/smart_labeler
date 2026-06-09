@@ -136,9 +136,20 @@ export const steps: Step[] = [
    },
 ];
 
+// Convert a full Tapis path to a path relative to srcImgDir.
+// Falls back to the bare basename when the prefix doesn't match.
+export function toRelativeFilename(fullPath: string, srcImgDir: string): string {
+   const normDir = srcImgDir.replace(/^\/+/, "").replace(/\/+$/, "");
+   const normPath = fullPath.replace(/^\/+/, "");
+   if (normDir && normPath.startsWith(normDir + "/")) return normPath.slice(normDir.length + 1);
+   const lastSlash = fullPath.lastIndexOf("/");
+   return lastSlash >= 0 ? fullPath.slice(lastSlash + 1) : fullPath;
+}
+
 export function exportToCoco(
    fileToAnnotationsMap: Map<number, FileAnnotations>,
-   files: string[]
+   files: string[],
+   srcImgDir: string = ""
 ) {
    // --- 1. Initialize COCO Structure ---
    type CocoImage = {
@@ -203,7 +214,7 @@ export function exportToCoco(
    fileToAnnotationsMap.forEach((fileAnnotations, imageIndex) => {
       if (imageIndex < 0) return;
       const file = files[imageIndex];
-      const fileName = file.substring(file.lastIndexOf("/") + 1);
+      const fileName = toRelativeFilename(file, srcImgDir);
       if (!file) {
          console.warn(`Skipping image at index ${imageIndex}: No file found.`);
          return;
@@ -235,7 +246,8 @@ export function exportToCoco(
 
 export function exportToDefaultJson(
    fileToAnnotationsMap: Map<number, FileAnnotations>,
-   files: string[]
+   files: string[],
+   srcImgDir: string = ""
 ) {
    const annotations: any[] = [];
 
@@ -245,7 +257,7 @@ export function exportToDefaultJson(
 
       fileAnnotations.annotations.forEach((ann) => {
          annotations.push({
-            image_path: file.substring(file.lastIndexOf("/") + 1),
+            image_path: toRelativeFilename(file, srcImgDir),
             class: ann.label,
             bounding_box: [ann.x, ann.y, ann.x + ann.width, ann.y + ann.height],
             score: ann.score,
@@ -272,11 +284,14 @@ export function importFromCocoJsonUtil(
       });
    }
 
-   // Build image id to file index map
+   // Build image id to file index map.
+   // Try exact match first (handles bare basenames), then fall back to the
+   // basename of img.file_name so relative paths like "subdir/b.jpg" still resolve.
    const imageIdToFileIndex = new Map<number, number>();
    if (Array.isArray(cocoJson.images)) {
       cocoJson.images.forEach((img: any) => {
-         const fileIdx = fileNameToIndex.get(img.file_name);
+         const basename = img.file_name.substring(img.file_name.lastIndexOf("/") + 1);
+         const fileIdx = fileNameToIndex.get(img.file_name) ?? fileNameToIndex.get(basename);
          if (fileIdx !== undefined) {
             imageIdToFileIndex.set(img.id, fileIdx);
          }

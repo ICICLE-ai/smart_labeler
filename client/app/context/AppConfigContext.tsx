@@ -7,6 +7,7 @@ export interface RuntimeEnv {
   allowedSystems: string | null;  // JSON string, e.g. '[{"value":"pitzer-tapis","label":"Pitzer"}]'
   embedders: string | null;       // comma-separated model names
   proposers: string | null;       // comma-separated model names
+  annotatorType: string | null;   // "DETECTION" | "SEGMENTATION" | null (show all)
 }
 
 const AppConfigContext = createContext<RuntimeEnv | null>(null);

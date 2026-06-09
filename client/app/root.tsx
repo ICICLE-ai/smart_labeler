@@ -35,9 +35,10 @@ export async function loader() {
       apiBaseUrl:    process.env.API_BASE_URL    ?? "http://127.0.0.1:11112",
       sam3Endpoint:  process.env.SAM3_ENDPOINT   ?? "https://sam3-sailab.nrp-nautilus.io",
       tapisBaseUrl:  process.env.TAPIS_BASE_URL  ?? "https://icicleai.tapis.io",
-      allowedSystems: process.env.ALLOWED_SYSTEMS ?? null,
-      embedders:     process.env.EMBEDDERS       ?? null,
-      proposers:     process.env.PROPOSERS       ?? null,
+      allowedSystems:  process.env.ALLOWED_SYSTEMS  ?? null,
+      embedders:       process.env.EMBEDDERS        ?? null,
+      proposers:       process.env.PROPOSERS        ?? null,
+      annotatorType:   process.env.ANNOTATOR_TYPE   ?? "DETECTION",
     } satisfies RuntimeEnv,
   };
 }

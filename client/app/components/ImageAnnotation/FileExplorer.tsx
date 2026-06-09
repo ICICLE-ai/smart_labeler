@@ -13,11 +13,15 @@ import {
    CircularProgress,
    LinearProgress,
    alpha,
+   IconButton,
+   Breadcrumbs,
+   Link,
 } from "@mui/material";
 import ImageIcon from "@mui/icons-material/Image";
 import FolderOpenIcon from "@mui/icons-material/FolderOpen";
 import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
 import PhotoLibraryOutlinedIcon from "@mui/icons-material/PhotoLibraryOutlined";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import FormikTapisFileWrapper from "~/components/FileExplorer/FormikTapisFileWrapper";
 import { Formik } from "formik";
 import { Group, Select } from "@mantine/core";
@@ -29,8 +33,8 @@ import { useCookies } from "react-cookie";
 const PAGE_SIZE: number = 15;
 
 interface FileExplorerProps {
-   onFileSelect: (file: any, index: number) => void;
-   filesInDirectory: (files: string[], system: string) => void;
+   onFileSelect: (file: any, filePath: string) => void;
+   filesInDirectory: (files: string[], system: string, isRootReset?: boolean) => void;
    pipeid: string;
    fileDir?: string;
    parentSystem?: string;
@@ -45,23 +49,33 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
    parentSystem,
    onDirectorySubmit,
 }) => {
+   // current directory's image files (display/pagination only)
    const [files, setFiles] = useState<string[]>([]);
-   const fileInputRef = useRef<HTMLInputElement>(null);
+   const [dirs, setDirs] = useState<Array<{ name: string; path: string }>>([]);
+   const [currentPath, setCurrentPath] = useState<string>("");
+   const [pathHistory, setPathHistory] = useState<string[]>([]);
+   // rootPath is the top-most directory the user entered — navigation cannot go above it
+   const [rootPath, setRootPath] = useState<string>("");
    const [page, setPage] = useState<number>(1);
-   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
-   const [loadingIndex, setLoadingIndex] = useState<number | null>(null);
+   // path-based selection — no indices, so navigation never scrambles the highlight
+   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+   const [loadingPath, setLoadingPath] = useState<string | null>(null);
 
    // Tapis form state
    const [system, setSystem] = useState<string | null>(parentSystem ?? null);
    const [srcImgDir, setSrcImgDir] = useState<string | null>(null);
-   const [cookie, setCookie] = useCookies(["tapis-token"]);
+   const [cookie] = useCookies(["tapis-token"]);
 
-   // Page-level image cache: absolute file index → object URL
-   const pageCacheRef = useRef<Map<number, string>>(new Map());
-   // Tracks which page's prefetch is active so stale fetches can self-discard
+   // Image cache keyed by file path → object URL — persists across directory navigation
+   const pageCacheRef = useRef<Map<string, string>>(new Map());
+   // Directory listing cache keyed by path — makes back-navigation instant
+   const dirCacheRef = useRef<Map<string, { dirs: Array<{ name: string; path: string }>; files: string[] }>>(new Map());
+   // Navigation counter — incremented on every fetchDirContents call; stale fetches check against it and discard results
+   const navCounterRef = useRef<number>(0);
+   // AbortController for the current image-prefetch batch — aborted when navigating away
+   const prefetchAbortRef = useRef<AbortController | null>(null);
    const currentPageRef = useRef<number>(0);
    const [pageLoading, setPageLoading] = useState<boolean>(false);
-   // Keep latest cookie in a ref so the prefetch effect doesn't need it as a dep
    const cookieRef = useRef(cookie);
    useEffect(() => { cookieRef.current = cookie; });
 
@@ -75,176 +89,166 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
    }, [files, page]);
 
    const pageCount = Math.max(1, Math.ceil(files.length / PAGE_SIZE));
-   // TODO : update this later
 
-   const isImageFile = (filename: string): boolean => {
-      const imageExtensions = [
-         ".jpg",
-         ".jpeg",
-         ".png",
-         ".tiff",
-         ".tif",
-         ".gif",
-         ".bmp",
-         ".webp",
-      ];
-      return imageExtensions.some((ext) =>
-         filename.toLowerCase().endsWith(ext)
+   const isImageFile = (filename: string): boolean =>
+      [".jpg", ".jpeg", ".png", ".tiff", ".tif", ".gif", ".bmp", ".webp"].some(
+         (ext) => filename.toLowerCase().endsWith(ext)
       );
-   };
 
-   // Clear cache when page or file list changes to free blob URL memory.
-   // Actual fetching is deferred until the user clicks an image.
+   // Prefetch when directory changes — image cache is preserved across directories.
    useEffect(() => {
       currentPageRef.current = 1;
-      pageCacheRef.current.forEach((url) => URL.revokeObjectURL(url));
-      pageCacheRef.current = new Map();
-      triggerPagePrefetch(0); // -1 indicates no clicked index, just prefetch the first page
+      triggerPagePrefetch(null);
    }, [files]);
 
-   // Automatically select and load the first file (index 0) when files are loaded
+   // Auto-select the first image when navigating into a new directory.
    useEffect(() => {
-      if (files.length > 0 && selectedIndex === null) {
-         onSelectFile(0);
+      if (files.length > 0 && selectedPath === null) {
+         onSelectFile(files[0]);
       }
    }, [files]);
 
-   // Background-fetch all uncached images on the current page except the one
-   // that was just clicked (already being handled by onSelectFile).
-   const triggerPagePrefetch = (clickedIndex: number) => {
+   // Background-prefetch uncached images on the current page.
+   // excludePath = the file currently being fetched by onSelectFile (skip it).
+   const triggerPagePrefetch = (excludePath: string | null) => {
       if (!system || files.length === 0) return;
 
       currentPageRef.current = page;
-      pageCacheRef.current.forEach((url) => URL.revokeObjectURL(url));
-      pageCacheRef.current = new Map();
+
+      // Give this prefetch batch its own abort controller so navigating away can cancel it.
+      const controller = new AbortController();
+      prefetchAbortRef.current = controller;
 
       const thisPage = page;
       const start = (thisPage - 1) * PAGE_SIZE;
       const pageFiles = files.slice(start, start + PAGE_SIZE);
 
-      const imageEntries: Array<{ abs: number; path: string }> = [];
-      pageFiles.forEach((file, i) => {
-         const abs = start + i;
-         if (abs !== clickedIndex && isImageFile(file) && !pageCacheRef.current.has(abs)) {
-            imageEntries.push({ abs, path: file });
-         }
-      });
-
-      if (imageEntries.length === 0) return;
+      const toFetch = pageFiles.filter(
+         (f) => f !== excludePath && isImageFile(f) && !pageCacheRef.current.has(f)
+      );
+      if (toFetch.length === 0) return;
 
       setPageLoading(true);
-
-      getImages(
-         imageEntries.map((e) => e.path),
-         pipeid,
-         system,
-         cookieRef.current
-      )
+      getImages(toFetch, pipeid, system, cookieRef.current, controller.signal)
          .then((urlMap) => {
             if (currentPageRef.current !== thisPage) {
                urlMap.forEach((url) => URL.revokeObjectURL(url));
                return;
             }
-            imageEntries.forEach(({ abs, path }) => {
-               const url = urlMap.get(path);
-               if (url) pageCacheRef.current.set(abs, url);
-            });
+            urlMap.forEach((url, path) => pageCacheRef.current.set(path, url));
          })
-         .catch((e) => console.error("Background page prefetch failed:", e))
-         .finally(() => {
-            if (currentPageRef.current === thisPage) setPageLoading(false);
-         });
+         .catch((e) => { if (e?.name !== "AbortError") console.error("Background page prefetch failed:", e); })
+         .finally(() => { if (currentPageRef.current === thisPage) setPageLoading(false); });
    };
 
    useEffect(() => {
       if (fileDir && system) {
-         fetchImages({ srcImgDir: fileDir ?? "", system: system ?? "" });
+         setRootPath(fileDir);
+         fetchDirContents(fileDir, system, false);
       }
    }, [fileDir, system]);
 
-   const onSelectFile = (index: number) => {
-      const file = files[index];
-      if (!file || !isImageFile(file)) return;
+   const fetchDirContents = async (dirPath: string, sys: string, isRootReset = false, onDone?: () => void) => {
+      if (!dirPath || !sys) return;
 
-      setSelectedIndex(index);
+      // Stamp this navigation so any older in-flight fetch can detect it's been superseded.
+      const navId = ++navCounterRef.current;
 
-      // Kick off background prefetch for the rest of the page in parallel
+      // Cancel image downloads that belong to the previous directory.
+      prefetchAbortRef.current?.abort();
+      prefetchAbortRef.current = null;
 
-      const cached = pageCacheRef.current.get(index);
+      // On a new root directory, evict the entire dir cache (stale listings).
+      if (isRootReset) dirCacheRef.current.clear();
+
+      // Serve from cache — makes back-navigation and breadcrumb clicks instant.
+      const cached = dirCacheRef.current.get(dirPath);
       if (cached) {
-         // Instant cache hit — no loading indicator needed
-         onFileSelect(cached, index);
+         if (navId !== navCounterRef.current) return; // superseded while we checked the cache
+         setFiles(cached.files);
+         setDirs(cached.dirs);
+         filesInDirectory(cached.files, sys, isRootReset);
+         setPage(1);
+         setSelectedPath(null);
+         setCurrentPath(dirPath);
+         onDone?.();
          return;
       }
 
-      const newPage = Math.floor(index / PAGE_SIZE) + 1;
-      if (newPage !== page || newPage !== currentPageRef.current) {
-         triggerPagePrefetch(index);
+      setPageLoading(true);
+      const encodedPath = encodeURIComponent(sanitizePath(dirPath));
+      try {
+         const res = await fetchAndReturnData(
+            `/get-dir-contents/${pipeid}/${sys}?dir=${encodedPath}`,
+            cookie["tapis-token"]["access_token"]
+         );
+         // Another navigation started while we were waiting — discard these results.
+         if (navId !== navCounterRef.current) return;
+         if (!res) return;
+         const newFiles: string[] = (res["imgs"] ?? []).map((f: string) => "/" + f.replace("tapis:/", ""));
+         const newDirs: Array<{ name: string; path: string }> = res["dirs"] ?? [];
+         dirCacheRef.current.set(dirPath, { dirs: newDirs, files: newFiles });
+         setFiles(newFiles);
+         setDirs(newDirs);
+         filesInDirectory(newFiles, sys, isRootReset);
+         setPage(1);
+         setSelectedPath(null);
+         setCurrentPath(dirPath);
+         onDone?.();
+      } catch (err) {
+         if (navId === navCounterRef.current) console.error("Error fetching directory contents:", err);
+      } finally {
+         if (navId === navCounterRef.current) setPageLoading(false);
+      }
+   };
+
+   const navigateInto = (dir: { name: string; path: string }) => {
+      const cleanPath = "/" + dir.path.replace("tapis:/", "");
+      setPathHistory((h) => [...h, currentPath]);
+      fetchDirContents(cleanPath, system ?? "", false);
+   };
+
+   const navigateBack = () => {
+      const prev = pathHistory[pathHistory.length - 1];
+      if (prev === undefined) return;
+      // Never navigate above the root directory the user entered
+      if (rootPath && !prev.startsWith(rootPath)) return;
+      setPathHistory((h) => h.slice(0, -1));
+      fetchDirContents(prev, system ?? "", false);
+   };
+
+   // filePath is the file's path string — the parent uses this as the annotation key.
+   const onSelectFile = (filePath: string) => {
+      if (!filePath || !isImageFile(filePath)) return;
+
+      setSelectedPath(filePath);
+
+      const cached = pageCacheRef.current.get(filePath);
+      if (cached) {
+         onFileSelect(cached, filePath);
+         return;
       }
 
-      // Cache miss — fetch this image immediately
-      setLoadingIndex(index);
-      getImage(file, pipeid, system ?? "", cookie)
+      triggerPagePrefetch(filePath);
+
+      setLoadingPath(filePath);
+      getImage(filePath, pipeid, system ?? "", cookie)
          .then((url) => {
-            pageCacheRef.current.set(index, url);
-            onFileSelect(url, index);
+            pageCacheRef.current.set(filePath, url);
+            onFileSelect(url, filePath);
          })
          .catch((error) => console.error("Error fetching image:", error))
-         .finally(() => setLoadingIndex(null));
+         .finally(() => setLoadingPath(null));
    };
 
    const handleSubmit = (values: { srcImgDir: string; system: string }) => {
-      setSrcImgDir(values.srcImgDir);
-      fetchImages(values, true);
+      const dir = sanitizePath(values.srcImgDir);
+      if (!dir) { alert("Please select a source image directory."); return; }
+      setSrcImgDir(dir);
+      setRootPath(dir);
+      setPathHistory([]);
+      fetchDirContents(dir, system ?? "", true, () => onDirectorySubmit?.(dir, system ?? ""));
    };
-
-   const fetchImages = async (values: {
-      srcImgDir: string;
-      system: string;
-   }, userSubmit = false) => {
-      const srcImgDir = sanitizePath(values.srcImgDir);
-      try {
-         if (!srcImgDir) {
-            alert("Please select a source image directory.");
-            return;
-         }
-         setPageLoading(true);
-         const ecodedPath = encodeURIComponent(srcImgDir);
-         await fetchAndReturnData(
-            `/get-imgs-in-dir/${pipeid}/${system}?dir=${ecodedPath}`,
-            cookie["tapis-token"]["access_token"]
-         )
-            .then(async (res) => {
-               if (!res) {
-                  alert(
-                     "Failed to fetch images. Please check the source directory."
-                  );
-                  return;
-               }
-
-               if (!res["imgs"] || res["imgs"].length === 0) {
-                  alert(
-                     "Failed to fetch images. Please check the source directory."
-                  );
-                  return;
-               }
-               setFiles(res["imgs"].map((f: string) => "/" + f.replace("tapis:/", "")));
-               filesInDirectory(res["imgs"].map((f: string) => "/" + f.replace("tapis:/", "")), system ?? "");
-               if (userSubmit) onDirectorySubmit?.(srcImgDir, system ?? "");
-               setPage(1);
-               setSelectedIndex(null);
-            })
-            .catch((error) => {
-               console.error("Error fetching images:", error);
-            })
-            .finally(() => setPageLoading(false));
-      } catch (error) {
-         console.error("Error fetching images:", error);
-      }
-   };
-
-   const absoluteIndexFor = (localIndex: number): number =>
-      (page - 1) * PAGE_SIZE + localIndex;
 
    return (
       <Paper
@@ -276,9 +280,9 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
             <Typography variant="subtitle2" fontWeight={600} sx={{ flex: 1 }}>
                File Explorer
             </Typography>
-            {files.length > 0 && (
+            {(files.length > 0 || dirs.length > 0) && (
                <Chip
-                  label={`${files.length} file${files.length !== 1 ? "s" : ""}`}
+                  label={`${dirs.length > 0 ? `${dirs.length} dir${dirs.length !== 1 ? "s" : ""}, ` : ""}${files.length} img${files.length !== 1 ? "s" : ""}`}
                   size="small"
                   color="primary"
                   variant="outlined"
@@ -355,9 +359,67 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
             />
          )}
 
+         {/* Breadcrumb / back navigation */}
+         {currentPath && (
+            <Box
+               sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 0.5,
+                  px: 1,
+                  py: 0.5,
+                  borderBottom: "1px solid",
+                  borderColor: "divider",
+                  bgcolor: "grey.50",
+                  minHeight: 36,
+               }}
+            >
+               {pathHistory.length > 0 && (
+                  <Tooltip title="Go back">
+                     <IconButton size="small" onClick={navigateBack} sx={{ p: 0.25 }}>
+                        <ArrowBackIcon fontSize="small" />
+                     </IconButton>
+                  </Tooltip>
+               )}
+               <Breadcrumbs maxItems={3} sx={{ fontSize: "0.72rem", flex: 1, overflow: "hidden" }}>
+                  {(() => {
+                     const rootSegmentCount = rootPath.split("/").filter(Boolean).length;
+                     return currentPath.split("/").filter(Boolean).map((segment, idx, arr) => {
+                        // Hide segments that belong to directories above the root
+                        if (idx < rootSegmentCount - 1) return null;
+                        const isLast = idx === arr.length - 1;
+                        return isLast ? (
+                           <Typography key={idx} variant="caption" fontWeight={600} noWrap sx={{ maxWidth: 120 }}>
+                              {segment}
+                           </Typography>
+                        ) : (
+                           <Link
+                              key={idx}
+                              component="button"
+                              variant="caption"
+                              underline="hover"
+                              color="inherit"
+                              sx={{ maxWidth: 80, overflow: "hidden", textOverflow: "ellipsis", display: "block", whiteSpace: "nowrap" }}
+                              onClick={() => {
+                                 const targetPath = "/" + arr.slice(0, idx + 1).join("/");
+                                 const stepsBack = arr.length - 1 - idx;
+                                 const newHistory = pathHistory.slice(0, pathHistory.length - stepsBack + 1);
+                                 setPathHistory(newHistory.slice(0, -1));
+                                 fetchDirContents(targetPath, system ?? "");
+                              }}
+                           >
+                              {segment}
+                           </Link>
+                        );
+                     });
+                  })()}
+               </Breadcrumbs>
+            </Box>
+         )}
+
          {/* File list */}
          <Box sx={{ flex: 1, overflow: "auto", px: 1, py: 0.5 }}>
-            {files.length === 0 ? (
+            {dirs.length === 0 && files.length === 0 ? (
                <Stack
                   alignItems="center"
                   justifyContent="center"
@@ -377,23 +439,44 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                </Stack>
             ) : (
                <List dense disablePadding>
-                  {pagedFiles.map((file, i) => {
-                     const abs = absoluteIndexFor(i);
-                     const isSelected = selectedIndex === abs;
+                  {/* Directories */}
+                  {dirs.map((dir) => (
+                     <Tooltip key={dir.path} title={dir.path} placement="right" arrow>
+                        <ListItemButton
+                           onClick={() => navigateInto(dir)}
+                           sx={{ borderRadius: 1, mb: 0.25, px: 1, py: 0.75 }}
+                        >
+                           <Box sx={{ mr: 1.5, color: "warning.main", display: "flex", alignItems: "center" }}>
+                              <FolderOpenIcon fontSize="small" />
+                           </Box>
+                           <ListItemText
+                              primary={
+                                 <Typography variant="body2" noWrap title={dir.name}>
+                                    {dir.name}
+                                 </Typography>
+                              }
+                           />
+                        </ListItemButton>
+                     </Tooltip>
+                  ))}
+
+                  {/* Images */}
+                  {pagedFiles.map((file) => {
+                     const isSelected = selectedPath === file;
                      const isImg = isImageFile(file);
-                     const isLoading = loadingIndex === abs;
+                     const isLoading = loadingPath === file;
                      const filename = file.split("/").at(-1) ?? file;
 
                      return (
                         <Tooltip
-                           key={`${filename}-${abs}`}
+                           key={file}
                            title={isImg ? file : "Not a supported image format"}
                            placement="right"
                            arrow
                         >
                            <ListItemButton
                               selected={isSelected}
-                              onClick={() => onSelectFile(abs)}
+                              onClick={() => onSelectFile(file)}
                               disabled={!isImg}
                               sx={{
                                  borderRadius: 1,
