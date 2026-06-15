@@ -7,7 +7,6 @@ import {
   Card,
   Center,
   Container,
-  Divider,
   Group,
   Loader,
   Modal,
@@ -15,13 +14,14 @@ import {
   Select,
   SimpleGrid,
   Stack,
+  Tabs,
   Text,
   Textarea,
   TextInput,
   Title,
   Tooltip,
 } from "@mantine/core";
-import { IconAlertCircle, IconEdit, IconInfoCircle, IconPlus, IconRocket, IconTrash, IconUpload, IconX, IconCheck, IconFile } from "@tabler/icons-react";
+import { IconSearch, IconAlertCircle, IconEdit, IconInfoCircle, IconPlus, IconRocket, IconTrash, IconUpload, IconX, IconCheck, IconFile } from "@tabler/icons-react";
 import { useLoaderData, useNavigate } from "@remix-run/react";
 import { Formik } from "formik";
 import { useEffect, useRef, useState } from "react";
@@ -37,6 +37,7 @@ type Pipeline = {
   description?: string;
   slurm_account?: string;
   is_demo?: boolean;
+  type?: string;
 };
 
 type FileUploadState = { progress: number; status: "idle" | "uploading" | "done" | "error" };
@@ -48,9 +49,14 @@ export default function DashBoardPage() {
   const [pipelinesError, setPipelinesError] = useState(false);
   const [cookie] = useCookies(["tapis-token"]);
   const navigate = useNavigate();
-  const { tapisBaseUrl } = useAppConfig();
+  const { tapisBaseUrl, annotatorType } = useAppConfig();
 
   const token = cookie["tapis-token"]?.["access_token"] ?? "";
+  const activeType = (annotatorType?.toUpperCase() ?? null) as TYPE | null;
+  const typeLabel =
+    activeType === TYPE.DETECTION ? "Detection" :
+    activeType === TYPE.SEGMENTATION ? "Segmentation" :
+    "Annotation";
 
   const fetchPipelines = (silent = false) => {
     if (!token) {
@@ -79,6 +85,7 @@ export default function DashBoardPage() {
   const [createName, setCreateName] = useState("");
   const [createDesc, setCreateDesc] = useState("");
   const [createSlurm, setCreateSlurm] = useState("");
+  const [createType, setCreateType] = useState<TYPE>(TYPE.DETECTION);
   const [creating, setCreating] = useState(false);
 
   const [renameId, setRenameId] = useState<string | null>(null);
@@ -104,7 +111,11 @@ export default function DashBoardPage() {
 
   useEffect(() => {
     if (createdPipeId) {
-      navigate(`/object-detection/image-annotator/${createdPipeId}`);
+      if (createType === TYPE.SEGMENTATION) {
+        navigate(`/annotation/image-annotator/${createdPipeId}`);
+      } else {
+        navigate(`/object-detection/image-annotator/${createdPipeId}`);
+      }
     }
   }, [createdPipeId]);
 
@@ -187,6 +198,7 @@ export default function DashBoardPage() {
     setCreateName("");
     setCreateDesc("");
     setCreateSlurm("");
+    setCreateType(activeType ?? TYPE.DETECTION);
     setCreateOpen(true);
   };
 
@@ -199,7 +211,7 @@ export default function DashBoardPage() {
         name: createName.trim(),
         slurm: createSlurm.trim(),
         description: createDesc.trim(),
-        type: TYPE.DETECTION,
+        type: createType,
       }, token);
       pipeId = res != null ? String(res) : null;
     } finally {
@@ -246,8 +258,26 @@ export default function DashBoardPage() {
     }
   };
 
+  const [search, setSearch] = useState("");
+  const q = search.trim().toLowerCase();
+
   const userPipelines = pipelines.filter((p) => !p.is_demo);
-  const demoPipelines = pipelines.filter((p) => p.is_demo);
+  const detectionPipelines = userPipelines.filter((p) => !p.type || p.type === TYPE.DETECTION);
+  const segmentationPipelines = userPipelines.filter((p) => p.type === TYPE.SEGMENTATION);
+  const allDemoPipelines = pipelines.filter((p) => p.is_demo);
+  const demoPipelines = activeType
+    ? allDemoPipelines.filter((p) => !p.type || p.type === activeType)
+    : allDemoPipelines;
+
+  const filterBySearch = (list: Pipeline[]) =>
+    q ? list.filter((p) => (p.name ?? "").toLowerCase().includes(q) || String(p.pid).includes(q)) : list;
+
+  const goRoute = (p: Pipeline) =>
+    (p.type ?? activeType) === TYPE.SEGMENTATION
+      ? `/annotation/image-annotator/${p.pid}`
+      : `/object-detection/image-annotator/${p.pid}`;
+  const activePipelines = activeType === TYPE.SEGMENTATION ? segmentationPipelines : detectionPipelines;
+  const emptyLabel = activeType === TYPE.SEGMENTATION ? "No segmentation pipelines yet." : "No detection pipelines yet.";
 
   if (loadingPipelines) {
     return (
@@ -267,7 +297,7 @@ export default function DashBoardPage() {
           <div>
             <Title order={1}>Pipelines</Title>
             <Text c="dimmed" mt={4}>
-              Manage your Annotation pipelines
+              Manage your {typeLabel} Pipelines
             </Text>
           </div>
           <Group gap="sm">
@@ -303,7 +333,6 @@ export default function DashBoardPage() {
           </Text>
         </Alert>
 
-        {/* User pipelines */}
         {pipelinesError ? (
           <Alert color="red" variant="light" mb="md" title="Failed to load pipelines">
             <Text size="sm" mb="sm">
@@ -313,65 +342,153 @@ export default function DashBoardPage() {
               Retry
             </Button>
           </Alert>
-        ) : userPipelines.length === 0 ? (
-          <Card withBorder radius="md" p="xl" ta="center">
-            <Text c="dimmed" size="lg">
-              No pipelines yet.
-            </Text>
-            <Text c="dimmed" size="sm" mt={4}>
-              Create your first pipeline to start annotating images.
-            </Text>
-            <Button
-              leftSection={<IconPlus size={16} />}
-              mt="md"
-              onClick={openCreate}
-            >
-              New Pipeline
-            </Button>
-          </Card>
-        ) : (
-          <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
-            {userPipelines.map((p) => (
-              <PipelineCard
-                key={p.pid}
-                pipeline={p}
-                onGo={() =>
-                  navigate(`/object-detection/image-annotator/${p.pid}`)
-                }
-                onRename={() => openRename(p)}
-                onDelete={() => handleDelete(p.pid)}
-                deleting={deletingId === p.pid}
-              />
-            ))}
-          </SimpleGrid>
-        )}
-
-        {/* Demo pipelines */}
-        {demoPipelines.length > 0 && (
+        ) : activeType ? (
+          // Single-type mode: flat list filtered to the configured annotator type
           <>
-            <Divider
-              label="Demo Pipelines"
-              labelPosition="left"
-              mt="xl"
+            <TextInput
+              leftSection={<IconSearch size={14} />}
+              placeholder="Search pipelines by name or ID…"
+              value={search}
+              onChange={(e) => setSearch(e.currentTarget.value)}
               mb="md"
+              style={{ maxWidth: 340 }}
             />
-            <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
-              {demoPipelines.map((p) => (
-                <PipelineCard
-                  key={p.pid}
-                  pipeline={p}
-                  onGo={() => {
-                    console.log("Navigating to demo pipeline with ID:", p.pid);
-                    navigate(`/object-detection/image-annotator/${p.pid}`);}
-                  }
-                  onRename={() => openRename(p)}
-                  onDelete={() => handleDelete(p.pid)}
-                  deleting={deletingId === p.pid}
-                  readOnly
-                />
-              ))}
-            </SimpleGrid>
+            {filterBySearch(activePipelines).length === 0 ? (
+              <Card withBorder radius="md" p="xl" ta="center">
+                <Text c="dimmed" size="lg">{q ? "No matching pipelines." : emptyLabel}</Text>
+                {!q && (
+                  <Button leftSection={<IconPlus size={16} />} mt="md" onClick={openCreate}>New Pipeline</Button>
+                )}
+              </Card>
+            ) : (
+              <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
+                {filterBySearch(activePipelines).map((p) => (
+                  <PipelineCard
+                    key={p.pid}
+                    pipeline={p}
+                    onGo={() => navigate(goRoute(p))}
+                    onRename={() => openRename(p)}
+                    onDelete={() => handleDelete(p.pid)}
+                    deleting={deletingId === p.pid}
+                  />
+                ))}
+              </SimpleGrid>
+            )}
+            {demoPipelines.length > 0 && (
+              <>
+                <Text fw={500} size="sm" c="dimmed" mt="xl" mb="sm">Demo Pipelines</Text>
+                <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
+                  {filterBySearch(demoPipelines).map((p) => (
+                    <PipelineCard
+                      key={p.pid}
+                      pipeline={p}
+                      onGo={() => navigate(goRoute(p))}
+                      onRename={() => openRename(p)}
+                      onDelete={() => handleDelete(p.pid)}
+                      deleting={deletingId === p.pid}
+                      readOnly
+                    />
+                  ))}
+                </SimpleGrid>
+              </>
+            )}
           </>
+        ) : (
+          // Multi-type mode: tabbed view
+          <Tabs defaultValue="detection" keepMounted={false}>
+            <Tabs.List mb="md">
+              <Tabs.Tab value="detection" rightSection={<Badge size="xs" variant="light">{detectionPipelines.length}</Badge>}>
+                Detection
+              </Tabs.Tab>
+              <Tabs.Tab value="segmentation" rightSection={<Badge size="xs" variant="light">{segmentationPipelines.length}</Badge>}>
+                Segmentation
+              </Tabs.Tab>
+              {demoPipelines.length > 0 && (
+                <Tabs.Tab value="demo" rightSection={<Badge size="xs" variant="light" color="gray">{demoPipelines.length}</Badge>}>
+                  Demo
+                </Tabs.Tab>
+              )}
+            </Tabs.List>
+
+            <TextInput
+              leftSection={<IconSearch size={14} />}
+              placeholder="Search pipelines by name or ID…"
+              value={search}
+              onChange={(e) => setSearch(e.currentTarget.value)}
+              mb="md"
+              style={{ maxWidth: 340 }}
+            />
+
+            <Tabs.Panel value="detection">
+              {filterBySearch(detectionPipelines).length === 0 ? (
+                <Card withBorder radius="md" p="xl" ta="center">
+                  <Text c="dimmed" size="lg">{q ? "No matching pipelines." : "No detection pipelines yet."}</Text>
+                  {!q && (
+                    <Button leftSection={<IconPlus size={16} />} mt="md" onClick={openCreate}>New Pipeline</Button>
+                  )}
+                </Card>
+              ) : (
+                <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
+                  {filterBySearch(detectionPipelines).map((p) => (
+                    <PipelineCard
+                      key={p.pid}
+                      pipeline={p}
+                      onGo={() => navigate(`/object-detection/image-annotator/${p.pid}`)}
+                      onRename={() => openRename(p)}
+                      onDelete={() => handleDelete(p.pid)}
+                      deleting={deletingId === p.pid}
+                    />
+                  ))}
+                </SimpleGrid>
+              )}
+            </Tabs.Panel>
+
+            <Tabs.Panel value="segmentation">
+              {filterBySearch(segmentationPipelines).length === 0 ? (
+                <Card withBorder radius="md" p="xl" ta="center">
+                  <Text c="dimmed" size="lg">{q ? "No matching pipelines." : "No segmentation pipelines yet."}</Text>
+                  {!q && (
+                    <Button leftSection={<IconPlus size={16} />} mt="md" onClick={openCreate}>New Pipeline</Button>
+                  )}
+                </Card>
+              ) : (
+                <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
+                  {filterBySearch(segmentationPipelines).map((p) => (
+                    <PipelineCard
+                      key={p.pid}
+                      pipeline={p}
+                      onGo={() => navigate(`/annotation/image-annotator/${p.pid}`)}
+                      onRename={() => openRename(p)}
+                      onDelete={() => handleDelete(p.pid)}
+                      deleting={deletingId === p.pid}
+                    />
+                  ))}
+                </SimpleGrid>
+              )}
+            </Tabs.Panel>
+
+            <Tabs.Panel value="demo">
+              {filterBySearch(demoPipelines).length === 0 ? (
+                <Card withBorder radius="md" p="xl" ta="center">
+                  <Text c="dimmed" size="lg">No matching demo pipelines.</Text>
+                </Card>
+              ) : (
+                <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
+                  {filterBySearch(demoPipelines).map((p) => (
+                    <PipelineCard
+                      key={p.pid}
+                      pipeline={p}
+                      onGo={() => navigate(`/object-detection/image-annotator/${p.pid}`)}
+                      onRename={() => openRename(p)}
+                      onDelete={() => handleDelete(p.pid)}
+                      deleting={deletingId === p.pid}
+                      readOnly
+                    />
+                  ))}
+                </SimpleGrid>
+              )}
+            </Tabs.Panel>
+          </Tabs>
         )}
 
         {/* Create Modal */}
@@ -397,9 +514,21 @@ export default function DashBoardPage() {
               onChange={(e) => setCreateSlurm(e.currentTarget.value)}
               required
             />
+            {!activeType && (
+              <Select
+                label="Pipeline Type"
+                data={[
+                  { value: TYPE.DETECTION, label: "Detection" },
+                  { value: TYPE.SEGMENTATION, label: "Segmentation" },
+                ]}
+                value={createType}
+                onChange={(v) => setCreateType((v as TYPE) ?? TYPE.DETECTION)}
+                required
+              />
+            )}
             <Textarea
               label="Description"
-              placeholder="What will this pipeline detect?"
+              placeholder={`What will this pipeline ${activeType === TYPE.SEGMENTATION ? "segment" : "detect"}?`}
               value={createDesc}
               onChange={(e) => setCreateDesc(e.currentTarget.value)}
               autosize

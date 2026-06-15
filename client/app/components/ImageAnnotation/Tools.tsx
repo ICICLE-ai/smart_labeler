@@ -34,6 +34,29 @@ import { useCookies } from "react-cookie";
 import AnnotationFileFormatSwitch from "./AnnotationFileFormatSwitch";
 import { systems } from "./utils";
 
+// Strip srcImgDir prefix from a stored full path to get the relative filename.
+// Normalises leading/trailing slashes before comparing so format differences don't break the match.
+// Falls back to just the filename if the prefix doesn't match.
+const toRelative = (fullPath: string, dir: string): string => {
+   if (!fullPath) return "";
+   // Normalise: strip leading and trailing slashes for comparison
+   const normDir = dir.replace(/^\/+/, "").replace(/\/+$/, "");
+   const normPath = fullPath.replace(/^\/+/, "");
+   if (normDir && normPath.startsWith(normDir + "/")) {
+      return normPath.slice(normDir.length + 1);
+   }
+   // Prefix doesn't match (e.g. annotation saved to a different dir) — show just the filename
+   const lastSlash = fullPath.lastIndexOf("/");
+   return lastSlash >= 0 ? fullPath.slice(lastSlash + 1) : fullPath;
+};
+
+// Join srcImgDir + relative filename into a full path.
+// If relative already looks absolute (starts with "/"), use it as-is.
+const toFullPath = (relative: string, dir: string): string => {
+   if (!dir || relative.startsWith("/")) return relative;
+   return `${dir.replace(/\/+$/, "")}/${relative.replace(/^\/+/, "")}`;
+};
+
 interface SaveModalProps {
    open: boolean;
    onClose: () => void;
@@ -41,28 +64,32 @@ interface SaveModalProps {
    initialFilePath?: string;
    initialSystem?: string;
    initialIsCoco?: boolean;
+   srcImgDir?: string;
 }
 
 const SaveModal: React.FC<SaveModalProps> = ({
    open, onClose, onSave,
    initialFilePath = "", initialSystem = "pitzer-tapis", initialIsCoco = false,
+   srcImgDir = "",
 }) => {
-   const [filePath, setFilePath] = useState(initialFilePath);
+   const [relativeFilePath, setRelativeFilePath] = useState(() => toRelative(initialFilePath, srcImgDir));
    const [isCocoJson, setIsCocoJson] = useState(initialIsCoco);
    const [system, setSystem] = useState<string>(initialSystem);
 
    // Sync with parent values whenever the modal is (re)opened
    useEffect(() => {
       if (open) {
-         setFilePath(initialFilePath);
+         setRelativeFilePath(toRelative(initialFilePath, srcImgDir));
          setIsCocoJson(initialIsCoco);
          setSystem(initialSystem || "pitzer-tapis");
       }
-   }, [open, initialFilePath, initialIsCoco, initialSystem]);
+   }, [open, initialFilePath, initialIsCoco, initialSystem, srcImgDir]);
+
+   const fullPath = srcImgDir ? toFullPath(relativeFilePath, srcImgDir) : relativeFilePath;
 
    const handleSave = () => {
-      if (!filePath.trim()) return;
-      onSave(filePath, isCocoJson, system);
+      if (!relativeFilePath.trim()) return;
+      onSave(fullPath, isCocoJson, system);
       onClose();
    };
 
@@ -82,15 +109,24 @@ const SaveModal: React.FC<SaveModalProps> = ({
                   </MenuItem>
                ))}
             </Select>
+            {srcImgDir && (
+               <Box sx={{ mb: 0.5, display: "flex", alignItems: "center", gap: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary">Save in:</Typography>
+                  <Typography variant="caption" sx={{ fontFamily: "monospace", color: "text.primary", wordBreak: "break-all" }}>
+                     {srcImgDir}/
+                  </Typography>
+               </Box>
+            )}
             <TextField
                autoFocus
                margin="dense"
-               label="File Path"
+               label={srcImgDir ? "Filename" : "File Path"}
                type="text"
                fullWidth
-               value={filePath}
-               onChange={(e) => setFilePath(e.target.value)}
-               placeholder="/path/to/save/annotations.json"
+               value={relativeFilePath}
+               onChange={(e) => setRelativeFilePath(e.target.value)}
+               placeholder="annotations.json"
+               helperText={srcImgDir && relativeFilePath.trim() ? `Full path: ${fullPath}` : undefined}
                sx={{ mb: 2 }}
             />
             <FormControl component="fieldset" sx={{ width: "100%" }}>
@@ -107,7 +143,7 @@ const SaveModal: React.FC<SaveModalProps> = ({
             <Button
                onClick={handleSave}
                color="primary"
-               disabled={!filePath.trim()}
+               disabled={!relativeFilePath.trim()}
             >
                Save
             </Button>
@@ -128,6 +164,8 @@ const Tools = (props: {
    annotationFilePath?: string;
    annotationSystem?: string;
    annotationIsCoco?: boolean;
+   annotationSrcImgDir?: string;
+   hideNextStep?: boolean;
 }) => {
    const navigate = useNavigate();
    const [downloadAnchor, setDownloadAnchor] = useState<HTMLElement | null>(null);
@@ -187,9 +225,10 @@ const Tools = (props: {
    }
 
    async function handleUploadAnnotationFile() {
+      const resolvedPath = filePath;
       let file: File | null = null;
       try {
-         const res = await getFile(filePath);
+         const res = await getFile(resolvedPath);
          const text = await res.text();
          file = new File([text], "annotations.json", {
             type: "application/json",
@@ -306,7 +345,7 @@ const Tools = (props: {
                <Tooltip
                   title={
                      props.annotationFilePath
-                        ? `Save to: ${props.annotationFilePath}`
+                        ? `Save to: ${toRelative(props.annotationFilePath, props.annotationSrcImgDir ?? "")}`
                         : "Save annotations (choose path)"
                   }
                >
@@ -341,26 +380,28 @@ const Tools = (props: {
                {/* Spacer */}
                <Box sx={{ flex: 1 }} />
 
-               {/* Next Step */}
-               <Button
-                  variant="contained"
-                  color="success"
-                  size="small"
-                  endIcon={<ArrowForwardIcon />}
-                  onClick={() =>
-                     navigate(`/object-detection/build-class-supports/${pipeId}`)
-                  }
-                  sx={{
-                     fontWeight: 700,
-                     borderRadius: "999px",
-                     px: 2,
-                     textTransform: "none",
-                     boxShadow: "none",
-                     "&:hover": { boxShadow: "none" },
-                  }}
-               >
-                  Next Step
-               </Button>
+               {/* Next Step — hidden for pipeline types where annotation is the final step */}
+               {!props.hideNextStep && (
+                  <Button
+                     variant="contained"
+                     color="success"
+                     size="small"
+                     endIcon={<ArrowForwardIcon />}
+                     onClick={() =>
+                        navigate(`/object-detection/build-class-supports/${pipeId}`)
+                     }
+                     sx={{
+                        fontWeight: 700,
+                        borderRadius: "999px",
+                        px: 2,
+                        textTransform: "none",
+                        boxShadow: "none",
+                        "&:hover": { boxShadow: "none" },
+                     }}
+                  >
+                     Next Step
+                  </Button>
+               )}
             </Toolbar>
          </AppBar>
 
@@ -424,6 +465,7 @@ const Tools = (props: {
                      fullWidth
                      variant="outlined"
                      size="small"
+                     value={filePath}
                      onChange={(e) => setFilePath(e.target.value)}
                   />
                </FormControl>
@@ -452,6 +494,7 @@ const Tools = (props: {
             initialFilePath={props.annotationFilePath ?? ""}
             initialSystem={props.annotationSystem ?? "pitzer-tapis"}
             initialIsCoco={props.annotationIsCoco ?? false}
+            srcImgDir={props.annotationSrcImgDir ?? ""}
          />
       </>
    );

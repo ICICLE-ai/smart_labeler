@@ -19,7 +19,7 @@ const Controls = (props: {
    handleEnableBoxEditChange: (isEnableBoxEdit: boolean) => void;
    isGraphEnabled?: boolean;
    handleDisplayTypeSwitch?: (type: string) => void;
-   handleSAM3BoxPrediction?: (mode: string, sam3Prediction: boolean, labelValue?: string, textPrompts?: string[], isSAHIenabled?: boolean, patchSize?: number) => void;
+   handleSAM3BoxPrediction?: (mode: string, sam3Prediction: boolean, labelValue?: string, textPrompts?: string[], isSAHIenabled?: boolean, patchSize?: number, detectionConfidence?: number, maskPrecision?: number) => void;
    sam3loading?: boolean;
    onResetAllControls?: () => void;
    lineWidth?: number;
@@ -47,6 +47,8 @@ const Controls = (props: {
    const [textPrompts, setTextPrompts] = useState<string[]>([]);
    const [patchSize, setPatchSize] = useState<number>(640);
    const [isSAHIenabled, setIsSAHIenabled] = useState(false);
+   const [detectionConfidence, setDetectionConfidence] = useState<number>(0.3);
+   const [maskPrecision, setMaskPrecision] = useState<number>(0.3);
 
    useEffect(() => {
       props.handleDrawingStateChange(isDrawing);
@@ -71,6 +73,8 @@ const Controls = (props: {
       setLabelValue("");
       setTextPrompts([]);
       setPatchSize(640);
+      setDetectionConfidence(0.3);
+      setMaskPrecision(0.3);
       props.handleDrawingStateChange(false);
       props.handleEnableBoxEditChange(false);
       props.handleSAM3BoxPrediction?.("", false);
@@ -300,8 +304,11 @@ const Controls = (props: {
                         placeholder="Enter prompts separated by commas"
                       />
                     )}
-                  <Box sx={{ mt: 2, mb: 2 }}>
-                     <Typography variant="body2" sx={{ mb: 1 }}>Enable SAHI</Typography>
+                  <Box sx={{ mt: 2, mb: 1 }}>
+                     <Typography variant="body2" sx={{ mb: 0.5 }}>Enable SAHI</Typography>
+                     <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+                        SAHI (Slicing Aided Hyper Inference) divides the image into overlapping tiles before running inference. This significantly improves detection of small or densely packed objects in large images.
+                     </Typography>
                      <Button
                         variant={isSAHIenabled ? "contained" : "outlined"}
                         onClick={() => setIsSAHIenabled(!isSAHIenabled)}
@@ -319,16 +326,39 @@ const Controls = (props: {
                         value={patchSize}
                         onChange={(e) => setPatchSize(Math.max(0, Number(e.target.value)))}
                         placeholder="Enter crop size for SAHI (e.g., 640)"
-                        sx={{ mt: 2 }}
+                        helperText="Tile size in pixels used to slice the image. Smaller values catch finer details; larger values are faster."
+                        sx={{ mt: 1 }}
                      />
                   )}
+                  <TextField
+                     variant="filled"
+                     fullWidth
+                     label="Detection Confidence"
+                     type="number"
+                     value={detectionConfidence}
+                     onChange={(e) => setDetectionConfidence(Math.min(1, Math.max(0, Number(e.target.value))))}
+                     inputProps={{ min: 0, max: 1, step: 0.05 }}
+                     helperText="Minimum confidence score (0–1) a detection must reach to be kept. Raise this to reduce false positives; lower it to catch more candidates."
+                     sx={{ mt: 2 }}
+                  />
+                  <TextField
+                     variant="filled"
+                     fullWidth
+                     label="Mask Precision"
+                     type="number"
+                     value={maskPrecision}
+                     onChange={(e) => setMaskPrecision(Math.min(1, Math.max(0, Number(e.target.value))))}
+                     inputProps={{ min: 0, max: 1, step: 0.05 }}
+                     helperText="Controls how closely the mask contour follows object boundaries (0–1). Higher values produce finer, more detailed outlines; lower values give smoother, simplified shapes."
+                     sx={{ mt: 2 }}
+                  />
             </DialogContent>
             <DialogActions>
                <Button
                   onClick={() => {
                      setOpenDialog(false);
                      setIsSAM3(false);
-                     props.handleSAM3BoxPrediction && props.handleSAM3BoxPrediction(mode, false, "");
+                     props.handleSAM3BoxPrediction && props.handleSAM3BoxPrediction(mode, false, "", [], false, 640, 0.3, 0.3);
                      setLabelValue("");
                      setTextPrompts([]);
                   }}
@@ -339,7 +369,7 @@ const Controls = (props: {
                   setIsSAM3(true);
                   setIsDrawing(false);
                   setIsEnableBoxEdit(false);
-                  props.handleSAM3BoxPrediction && props.handleSAM3BoxPrediction(mode, true, labelValue, textPrompts, isSAHIenabled,patchSize);
+                  props.handleSAM3BoxPrediction && props.handleSAM3BoxPrediction(mode, true, labelValue, textPrompts, isSAHIenabled, patchSize, detectionConfidence, maskPrecision);
                   setOpenDialog(false);
                }}>
                   Enter

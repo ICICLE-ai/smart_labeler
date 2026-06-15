@@ -5,6 +5,7 @@ import type { RuntimeEnv } from "~/context/AppConfigContext";
 // start without a Docker rebuild.
 let _baseUrl = "http://127.0.0.1:11112";
 let _sam3Endpoint = "https://sam3-sailab.nrp-nautilus.io";
+let _annotatorType: string | null = null;
 
 export let allowed_systems: { value: string; label: string }[] = [
    { value: "pitzer-tapis", label: "Pitzer (OSC)" },
@@ -31,9 +32,11 @@ export const initConfig = (env: RuntimeEnv) => {
    if (env.allowedSystems) allowed_systems = JSON.parse(env.allowedSystems);
    if (env.embedders) EMBEDDERS = env.embedders.split(",");
    if (env.proposers) PROPOSERS = env.proposers.split(",");
+   _annotatorType = env.annotatorType ? env.annotatorType.toUpperCase() : null;
 };
 
 export const getBaseURL = () => _baseUrl;
+export const getAnnotatorType = () => _annotatorType;
 
 // Strips PowerPoint/rich-text artefacts that silently break URL encoding.
 export const sanitizePath = (path: string): string =>
@@ -154,6 +157,7 @@ export const getImage = async (
    pipeId: string,
    system: string,
    cookie: any,
+   signal?: AbortSignal,
 ): Promise<string> => {
    const token = cookie["tapis-token"]?.["access_token"] ?? "";
    const encodedPath = encodeURIComponent(path);
@@ -161,6 +165,7 @@ export const getImage = async (
       `${_baseUrl}/get-img/${pipeId}/${system}?filePath=${encodedPath}`,
       {
          headers: { "Tapis-Token": token },
+         signal,
       },
    );
    const blob = await response.blob();
@@ -172,14 +177,16 @@ export const getImages = async (
    pipeId: string,
    system: string,
    cookie: any,
+   signal?: AbortSignal,
 ): Promise<Map<string, string>> => {
    const urlMap = new Map<string, string>();
    await Promise.all(
       paths.map(async (path) => {
          try {
-            const url = await getImage(path, pipeId, system, cookie);
+            const url = await getImage(path, pipeId, system, cookie, signal);
             urlMap.set(path, url);
          } catch (e) {
+            if (e instanceof Error && e.name === "AbortError") return;
             console.error(`Failed to fetch image ${path}:`, e);
          }
       }),
