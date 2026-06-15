@@ -1,25 +1,23 @@
 FROM node:18
 
-WORKDIR /smart_labeler/client
+WORKDIR /client
 
 EXPOSE 3000
 
 # Copy package manifests first so npm install is cached as its own layer
-COPY client/package.json client/package-lock.json ./
+COPY . /client
+COPY downloadStream.js downloadStream.js
 
-RUN npm install
+RUN cd /client && npm install 
 
 # Patch the vendored downloadStream module before building
-COPY downloadStream.js ./node_modules/@tapis/tapisui-api/dist/files/downloadStream.js
+RUN mv ./downloadStream.js /client/node_modules/@tapis/tapisui-api/dist/files/downloadStream.js
 
-# Copy application source (node_modules is already installed above)
-COPY client/app ./app
-COPY client/vite.config.ts client/tsconfig.json client/postcss.config.cjs ./
 
 # Replace cookie-based tapis token access with the X-Tapis-Token header pattern
-RUN find /smart_labeler/client -path /smart_labeler/client/node_modules -prune -o -type f -print0 | \
+RUN find /client -path /client/node_modules -prune -o -type f -print0 | \
     xargs -0 -r sed -i 's/\["tapis-token"\]\["access_token"\]/\["X-Tapis-Token"\]/g' && \
-    find /smart_labeler/client -path /smart_labeler/client/node_modules -prune -o -type f -print0 | \
+    find /client -path /client/node_modules -prune -o -type f -print0 | \
     xargs -0 -r sed -i 's/\["tapis-token"\]?\.\["access_token"\]/\["X-Tapis-Token"\]/g'
 
 RUN npm run build

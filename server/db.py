@@ -2,6 +2,7 @@ import os
 import re
 import requests
 import json
+import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 import time
@@ -52,17 +53,32 @@ def execute_query(querystring, values):
         else:
             rows = [dict(r) for r in cursor.fetchall()]
         return rows
+    except psycopg2.InterfaceError:
+        # Stale connection (closed by server) — discard it and retry with a fresh one
+        if connection:
+            try:
+                connection_pool.putconn(connection, close=True)
+            except Exception:
+                pass
+            connection = None
+        return execute_query(querystring, values)
     except Exception as e:
         if "connection pool exhausted" in str(e):
             print("ran out of connections retrying in .5 secs")
             time.sleep(0.5)
             return execute_query(querystring, values)
         if connection:
-            connection.rollback()
+            try:
+                connection.rollback()
+            except Exception:
+                pass
         raise
     finally:
         if cursor:
-            cursor.close()
+            try:
+                cursor.close()
+            except Exception:
+                pass
         if connection:
             connection_pool.putconn(connection)
 

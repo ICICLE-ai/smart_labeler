@@ -28,7 +28,7 @@ RUN conda tos accept && \
     conda init
 
 # Copy server source
-COPY server /smart_labeler/server
+COPY . /smart_labeler/server
 
 WORKDIR /smart_labeler/server
 

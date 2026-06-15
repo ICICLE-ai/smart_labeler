@@ -8,6 +8,12 @@ import { IconDotsVertical, IconKey, IconCheck, IconAlertCircle } from "@tabler/i
 import { useState } from "react";
 import { useCookies } from "react-cookie";
 import { getBaseURL } from "~/utils/utils";
+import { useAppConfig } from "~/context/AppConfigContext";
+
+const TYPE_SUBTITLES: Record<string, string> = {
+  DETECTION: "Object Detection",
+  SEGMENTATION: "Semantic Segmentation",
+};
 
 const links = [
   { link: "/", label: "Home" },
@@ -151,6 +157,8 @@ export function HeaderSimple({
   toggle: () => void;
 }) {
   const [keyModalOpened, { open: openKeyModal, close: closeKeyModal }] = useDisclosure(false);
+  const { annotatorType } = useAppConfig();
+  const subtitle = annotatorType ? (TYPE_SUBTITLES[annotatorType.toUpperCase()] ?? null) : null;
 
   const items = links.map((link) => (
     <NavLink
@@ -177,7 +185,7 @@ export function HeaderSimple({
         <Container size="md" className={classes.inner}>
           <Group gap={5}>
             <img src={icicleIcon} alt="icicle" style={{ height: "50px" }} />
-            <h1 className={classes.link}>Smart Labeler</h1>
+            <h1 className={classes.link}>Smart Labeler{subtitle && ` : ${subtitle}`}</h1>
           </Group>
 
           <Group gap={5} visibleFrom="xs">
