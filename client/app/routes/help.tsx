@@ -1,9 +1,17 @@
 import { IndexAppShell } from "~/components/IndexAppShell";
+import { useAppConfig } from "~/context/AppConfigContext";
 
-const DOC_URL =
-  "https://buckeyemailosu-my.sharepoint.com/:w:/g/personal/jajodia_6_buckeyemail_osu_edu/IQDKR27YD4HXTo2eFkEU5umiAToGmQAUjXW03u7YsBRhjKE?e=NAXqEx";
+
 
 export default function HelpPage() {
+  const config = useAppConfig();
+  
+  // Select doc URL based on annotator type
+  const DOC_URL = config.annotatorType === "SEGMENTATION" 
+    ? config.docUrlSegmentation 
+    : config.docUrlDetection;
+
+    
   return (
     <IndexAppShell>
       <div
