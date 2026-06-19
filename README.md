@@ -36,7 +36,7 @@ A complete walkthrough from raw images to labeled detections in 7 steps.
 #### Prerequisites
 
 - Access to a Tapis-connected HPC system (Pitzer, Expanse, Ascend, or Cardinal)
-- A Tapis account with a valid Slurm account to charge
+- A Tapis account with a valid Slurm account to charge.
 - A directory of images on a Tapis filesystem
 - (Optional) A Hugging Face token for gated models such as SAM3 or BioClip
 
