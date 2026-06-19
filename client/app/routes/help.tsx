@@ -7,10 +7,7 @@ export default function HelpPage() {
   const config = useAppConfig();
   
   // Select doc URL based on annotator type
-  const DOC_URL = config.annotatorType === "SEGMENTATION" 
-    ? config.docUrlSegmentation 
-    : config.docUrlDetection;
-
+  const DOC_URL = config.docUrl
     
   return (
     <IndexAppShell>

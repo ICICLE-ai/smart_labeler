@@ -39,8 +39,7 @@ export async function loader() {
       embedders:       process.env.EMBEDDERS        ?? null,
       proposers:       process.env.PROPOSERS        ?? null,
       annotatorType:   process.env.ANNOTATOR_TYPE   ?? "DETECTION",
-      docUrlDetection: process.env.DOC_URL_DETECTION ?? "https://buckeyemailosu-my.sharepoint.com/:w:/g/personal/jajodia_6_buckeyemail_osu_edu/IQDKR27YD4HXTo2eFkEU5umiAToGmQAUjXW03u7YsBRhjKE?e=NAXqEx",
-      docUrlSegmentation: process.env.DOC_URL_SEGMENTATION ?? "https://buckeyemailosu-my.sharepoint.com/:w:/g/personal/jajodia_6_buckeyemail_osu_edu/IQBxXEZus4OFQbzZH5qi7anfAVC_CUvmJCTUN97Rqi3_CiI?e=EnDykj", 
+      docUrl: process.env.DOC_URL ?? "https://buckeyemailosu-my.sharepoint.com/:w:/g/personal/jajodia_6_buckeyemail_osu_edu/IQDKR27YD4HXTo2eFkEU5umiAToGmQAUjXW03u7YsBRhjKE?e=NAXqEx",
     } satisfies RuntimeEnv,
   };
 }
