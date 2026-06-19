@@ -39,6 +39,7 @@ export async function loader() {
       embedders:       process.env.EMBEDDERS        ?? null,
       proposers:       process.env.PROPOSERS        ?? null,
       annotatorType:   process.env.ANNOTATOR_TYPE   ?? "DETECTION",
+      docUrl: process.env.DOC_URL ?? "https://buckeyemailosu-my.sharepoint.com/:w:/g/personal/jajodia_6_buckeyemail_osu_edu/IQDKR27YD4HXTo2eFkEU5umiAToGmQAUjXW03u7YsBRhjKE?e=NAXqEx",
     } satisfies RuntimeEnv,
   };
 }
