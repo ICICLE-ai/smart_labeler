@@ -7,7 +7,9 @@ export default function HelpPage() {
   const config = useAppConfig();
   
   // Select doc URL based on annotator type
-  const DOC_URL = config.docUrl
+  const annotator_type = config.annotatorType ?? "DETECTION"
+  const DETECTION_DOC_URL = "https://buckeyemailosu-my.sharepoint.com/:w:/g/personal/jajodia_6_buckeyemail_osu_edu/IQDKR27YD4HXTo2eFkEU5umiAToGmQAUjXW03u7YsBRhjKE?e=uoVbXP"
+  const SEGMENTATION_DOC_URL = "https://buckeyemailosu-my.sharepoint.com/:w:/g/personal/jajodia_6_buckeyemail_osu_edu/IQBxXEZus4OFQbzZH5qi7anfAVC_CUvmJCTUN97Rqi3_CiI?e=ygWKaO"
     
   return (
     <IndexAppShell>
@@ -32,7 +34,7 @@ export default function HelpPage() {
             Documentation
           </h2>
           <a
-            href={DOC_URL}
+            href={annotator_type === "DETECTION" ? DETECTION_DOC_URL : SEGMENTATION_DOC_URL }
             target="_blank"
             rel="noopener noreferrer"
             style={{ fontSize: "0.85rem", color: "#1976d2" }}
@@ -41,7 +43,7 @@ export default function HelpPage() {
           </a>
         </div>
         <iframe
-          src={DOC_URL + "&action=embedview"}
+          src={(annotator_type === "DETECTION" ? DETECTION_DOC_URL : SEGMENTATION_DOC_URL) + "&action=embedview"}
           title="Smart Labeler Documentation"
           style={{
             flex: 1,
