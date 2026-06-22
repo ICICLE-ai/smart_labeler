@@ -217,7 +217,7 @@ const SegmentationCanvas = (props: {
    const [dragState, setDragState] = useState<{ targetId: string; pointIndex: number } | null>(null);
 
    // ── Visual ──
-   const [lineWidth, setLineWidth] = useState(LINE_WIDTH);
+   const [lineWidth, setLineWidth] = useState(8);
    const [graphEnabled, setGraphEnabled] = useState(props.isGraphMode ?? false);
 
    // ── SAM3 ──
@@ -504,7 +504,7 @@ const SegmentationCanvas = (props: {
          if (cursorPos) ctx.lineTo(cursorPos.x, cursorPos.y);
          ctx.setLineDash([6, 4]);
          ctx.strokeStyle = "rgba(255,50,50,0.85)";
-         ctx.lineWidth = 2;
+         ctx.lineWidth = lineWidth;
          ctx.stroke();
          ctx.setLineDash([]);
 
@@ -701,13 +701,19 @@ const SegmentationCanvas = (props: {
          >
             <Box
                ref={parentRef}
-               style={{
+               sx={{
                   flex: 1,
                   border: "1px solid black",
                   position: "relative",
-                  overflow: "auto",
+                  overflow: "scroll",
                   width: "100%",
                   height: "100%",
+                  "&::-webkit-scrollbar": { width: "10px", height: "10px" },
+                  "&::-webkit-scrollbar-track": { background: "rgba(0,0,0,0.06)", borderRadius: "4px" },
+                  "&::-webkit-scrollbar-thumb": { background: "rgba(0,0,0,0.35)", borderRadius: "4px" },
+                  "&::-webkit-scrollbar-corner": { background: "transparent" },
+                  scrollbarWidth: "thin",
+                  scrollbarColor: "rgba(0,0,0,0.35) rgba(0,0,0,0.06)",
                }}
             >
                {displayImage ? (

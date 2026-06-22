@@ -28,7 +28,7 @@ const Controls = (props: {
    const { zoomIn, zoomOut, resetTransform } = useControls();
 
    const LINE_WIDTHS = [2, 4, 8] as const;
-   const currentLineWidth = props.lineWidth ?? 4;
+   const currentLineWidth = props.lineWidth ?? 8;
    const handleLineWidthCycle = () => {
       const idx = LINE_WIDTHS.indexOf(currentLineWidth as 2 | 4 | 8);
       const next = LINE_WIDTHS[(idx + 1) % LINE_WIDTHS.length];

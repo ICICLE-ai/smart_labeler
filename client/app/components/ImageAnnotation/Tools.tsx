@@ -29,10 +29,9 @@ import {
 } from "@mui/material";
 import { useNavigate } from "@remix-run/react";
 import React, { useEffect, useState } from "react";
-import { fetchFile } from "~/utils/utils";
+import { allowed_systems, fetchFile } from "~/utils/utils";
 import { useCookies } from "react-cookie";
 import AnnotationFileFormatSwitch from "./AnnotationFileFormatSwitch";
-import { systems } from "./utils";
 
 // Strip srcImgDir prefix from a stored full path to get the relative filename.
 // Normalises leading/trailing slashes before comparing so format differences don't break the match.
@@ -103,7 +102,7 @@ const SaveModal: React.FC<SaveModalProps> = ({
                fullWidth
                sx={{ mb: 2 }}
             >
-               {systems.map((sys) => (
+               {allowed_systems.map((sys) => (
                   <MenuItem key={sys.value} value={sys.value}>
                      {sys.label}
                   </MenuItem>
@@ -421,7 +420,7 @@ const Tools = (props: {
                   size="small"
                   sx={{ mb: 2, mt: 0.5 }}
                >
-                  {systems.map((sys) => (
+                  {allowed_systems.map((sys) => (
                      <MenuItem key={sys.value} value={sys.value}>
                         {sys.label}
                      </MenuItem>
