@@ -374,7 +374,7 @@ const ImageCanvas = (props: {
    const [graphEnabled, setGraphEnabled] = useState<boolean>(props.isGraphMode || false);
    const [sam3PatchSize, setSam3PatchSize] = useState<number>(0);
    const [isSam3Loading, setIsSam3Loading] = useState<boolean>(false);
-   const [lineWidth, setLineWidth] = useState<number>(LINE_WIDTH_BIG);
+   const [lineWidth, setLineWidth] = useState<number>(8);
    const [cookie] = useCookies(["tapis-token"]);
 
    // Derived helpers – keeps handlers decoupled from component internals
@@ -635,7 +635,7 @@ const ImageCanvas = (props: {
 
       if (interaction.type === "drawing") {
          ctx.strokeStyle = "rgba(255, 0, 0, 0.7)";
-         ctx.lineWidth = 4;
+         ctx.lineWidth = lineWidth;
          ctx.setLineDash([5, 5]);
          const { startX, startY, currentX, currentY } = interaction;
          ctx.strokeRect(startX!, startY!, currentX! - startX!, currentY! - startY!);
@@ -763,13 +763,19 @@ const ImageCanvas = (props: {
          >
             <Box
                ref={parentRef}
-               style={{
+               sx={{
                   flex: 1,
                   border: "1px solid black",
                   position: "relative",
-                  overflow: "auto",
+                  overflow: "scroll",
                   width: "100%",
                   height: "100%",
+                  "&::-webkit-scrollbar": { width: "10px", height: "10px" },
+                  "&::-webkit-scrollbar-track": { background: "rgba(0,0,0,0.06)", borderRadius: "4px" },
+                  "&::-webkit-scrollbar-thumb": { background: "rgba(0,0,0,0.35)", borderRadius: "4px" },
+                  "&::-webkit-scrollbar-corner": { background: "transparent" },
+                  scrollbarWidth: "thin",
+                  scrollbarColor: "rgba(0,0,0,0.35) rgba(0,0,0,0.06)",
                }}
             >
                {displayImage ? (
