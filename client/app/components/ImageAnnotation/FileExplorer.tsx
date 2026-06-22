@@ -241,6 +241,54 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
          .finally(() => setLoadingPath(null));
    };
 
+   //Image Navigation via left and right arrow keys
+   useEffect(() => {
+      const handleKey = (event: KeyboardEvent) => {
+         
+         //Exits early to protect against unwanted behavior
+         if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return; 
+         
+         if (event.ctrlKey || event.metaKey || event.altKey) return;
+
+         const target = event.target as HTMLElement | null;
+         if(
+            target &&
+            (target.tagName === "INPUT" ||
+             target.tagName === "TEXTAREA" ||
+             target.isContentEditable)
+            ) {
+               return;
+            }
+
+         if (files.length === 0) return;
+
+         //Find current index and compute next image index
+         let currentIdx = files.indexOf(selectedPath ?? "");
+         if (currentIdx == -1)
+            currentIdx = 0 //subject to change
+
+         let targetIdx = currentIdx;
+         if (event.key == "ArrowRight")
+            targetIdx = Math.min(currentIdx + 1, files.length - 1);
+         else
+            targetIdx = Math.max(currentIdx - 1, 0);
+         
+         if (targetIdx == currentIdx) return;
+
+         event.preventDefault()
+         onSelectFile(files[targetIdx])
+         setPage(Math.floor(targetIdx/PAGE_SIZE) + 1)
+
+      };
+      
+      window.addEventListener("keydown", handleKey);
+      return () => {
+         window.removeEventListener("keydown", handleKey);
+      };
+         
+   },[files, selectedPath]);
+   
+
    const handleSubmit = (values: { srcImgDir: string; system: string }) => {
       const dir = sanitizePath(values.srcImgDir);
       if (!dir) { alert("Please select a source image directory."); return; }
