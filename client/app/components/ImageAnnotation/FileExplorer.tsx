@@ -262,6 +262,8 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
 
          if (files.length === 0) return;
 
+         if (loadingPath) return;
+
          //Find current index and compute next image index
          let currentIdx = files.indexOf(selectedPath ?? "");
          if (currentIdx == -1)
@@ -286,7 +288,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
          window.removeEventListener("keydown", handleKey);
       };
          
-   },[files, selectedPath]);
+   },[files, selectedPath, loadingPath]);
    
 
    const handleSubmit = (values: { srcImgDir: string; system: string }) => {
