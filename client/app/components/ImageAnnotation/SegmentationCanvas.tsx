@@ -316,6 +316,9 @@ const SegmentationCanvas = (props: {
    // Keyboard: Delete/Backspace deletes selection; Escape resets all state; Enter closes polygon
    useEffect(() => {
       const onKey = (e: KeyboardEvent) => {
+         const active = document.activeElement;
+         if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || (active as HTMLElement)?.isContentEditable) return;
+
          if (e.key === "Delete" || e.key === "Backspace") {
             const toDelete = selectedIds.length > 0 ? selectedIds : selectedId ? [selectedId] : [];
             if (!toDelete.length) return;

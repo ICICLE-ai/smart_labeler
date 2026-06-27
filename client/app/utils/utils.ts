@@ -13,7 +13,10 @@ export let allowed_systems: { value: string; label: string }[] = [
    { value: "ascend-tapis", label: "Ascend (OSC)" },
    { value: "cardinal-tapis", label: "Cardinal (OSC)" },
    { value: "ascend-static", label: "Ascend Authenticated (OSC)" },
+   { value: "expanse-tapis-static", label: "Expanse - Authenticated (SDSC)"}
 ];
+
+export const DEFAULT_SYSTEM = "expanse-tapis-static";
 
 export let EMBEDDERS: string[] = [
    "OWLv2 Large Patch14 Ensemble",

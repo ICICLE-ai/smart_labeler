@@ -27,7 +27,7 @@ import { useCookies } from "react-cookie";
 import { SubmitButton } from "~/components/formik-mantine";
 import { HeroTitle } from "~/components/HeroTitle/HeroTitle";
 import { isImageFile, steps } from "~/components/ImageAnnotation/utils";
-import { allowed_systems, fetchAndReturnData, SubmitData } from "~/utils/utils";
+import { allowed_systems, DEFAULT_SYSTEM, fetchAndReturnData, SubmitData } from "~/utils/utils";
 import { ModelSelector } from "~/components/ModelSelector/ModelSelector";
 import { usePipeline } from "~/context/PipelineContext";
 
@@ -48,7 +48,7 @@ interface ProposalClassMapping {
 
 const ConfigureClassification: React.FC = () => {
     const [name, setName] = useState<string>("Classification Job");
-    const [system, setSystem] = useState<string>("");
+    const [system, setSystem] = useState<string>(DEFAULT_SYSTEM);
     const [embedderModelId, setEmbedderModelId] = useState<string>("");
     const [similarityThreshold, setSimilarityThreshold] = useState<number>(0.5);
     const [proposalMappings, setProposalMappings] = useState<ProposalClassMapping[]>([]);
@@ -123,7 +123,7 @@ const ConfigureClassification: React.FC = () => {
         ).then((res) => {
             if (res) {
                 setPipelineData(res);
-                setSystem(res["system"] || "");
+                setSystem(res["system"] || DEFAULT_SYSTEM);
                 setClassSupportOutputDir(res["outputDir"] || "");
                 setOdId(res["id"] || "");
                 setOutputDir(res["outputDir"] || "");
@@ -133,7 +133,7 @@ const ConfigureClassification: React.FC = () => {
                     setCurrentConfigurationId(queryConfig["id"] || "");
                     setProposalOutputDir(queryConfig["outputDir"] || "");
                     setQueryDir(queryConfig["queryImagePath"] || "");
-                    setSystem(queryConfig["system"] || "");
+                    setSystem(queryConfig["system"] || DEFAULT_SYSTEM);
                     setModelIds(queryConfig["embedder_ids"] || "");
                     setModelNames(queryConfig["embedder_models"] || "");
                     setSimilarityThreshold(queryConfig["similarityThreshold"] ? queryConfig["similarityThreshold"] : 0.5);
@@ -204,7 +204,7 @@ const ConfigureClassification: React.FC = () => {
 
     const resetForm = () => {
         setName("Classification Job");
-        setSystem("");
+        setSystem(DEFAULT_SYSTEM);
         setEmbedderModelId("");
         setSimilarityThreshold(0.5);
         setProposalMappings([]);

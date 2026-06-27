@@ -200,6 +200,12 @@ execute_query("ALTER TABLE object_detection DROP COLUMN IF EXISTS percentcomplet
 execute_query("ALTER TABLE annotator_configuration ADD COLUMN IF NOT EXISTS fileType TEXT DEFAULT 'default'", None)
 execute_query('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE', None)
 
+_default_system = os.getenv("DEFAULT_SYSTEM", "expanse-tapis-static")
+execute_query(
+    f"ALTER TABLE object_detection ALTER COLUMN system SET DEFAULT '{_default_system}'",
+    None,
+)
+
 
 def get_username(userid):
     rows = execute_query('SELECT username FROM "user" WHERE userid = %s', (userid,))
@@ -272,7 +278,7 @@ def create_pipeline(user, data):
     userid = username_to_uid(user)
     rows = execute_query(
         "INSERT INTO pipeline (name, pipelineuser, slurmaccount, type, description) VALUES (%s, %s, %s, %s, %s)",
-        (data["name"], userid, data.get("slurm", ""), data["type"], data.get("description", "")),
+        (data["name"], userid, data.get("slurmaccount", ""), data["type"], data.get("description", "")),
     )
     pipeid = rows
     print(f"created pipeline with id: {pipeid}")

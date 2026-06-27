@@ -439,7 +439,10 @@ const ImageCanvas = (props: {
    // Keyboard: Delete/Backspace removes all selected boxes; Escape clears selection and resets mode
    useEffect(() => {
       const onKey = (e: KeyboardEvent) => {
-         if (e.key === "Delete" || e.key === "Backspace") {
+         const active = document.activeElement;
+         if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || (active as HTMLElement)?.isContentEditable) return;
+
+         if (e.key === "Delete") {
             const toDelete = selectedBoxIds.length > 0
                ? selectedBoxIds
                : selectedBoxId ? [selectedBoxId] : [];

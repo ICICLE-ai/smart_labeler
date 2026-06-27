@@ -36,7 +36,7 @@ def get_app_config(app_name, system):
 
 
 def get_gpu_queue(system, default="gpu"):
-    if system == "expanse-tapis":
+    if system in ["expanse-tapis", "expanse-tapis-static"]:
         return "tapisGPUshared"
     if system == "ascend-static" or system == "ascend-tapis":
         return "nextgen"
@@ -46,7 +46,7 @@ def get_gpu_queue(system, default="gpu"):
 
 
 def get_cpu_queue(system):
-    return "tapisShared" if system == "expanse-tapis" else "cpu" if system in ["pitzer-tapis", "cardinal-tapis"] else "nextgen"
+    return "tapisShared" if system in ["expanse-tapis", "expanse-tapis-static"] else "cpu" if system in ["pitzer-tapis", "cardinal-tapis"] else "nextgen"
 
 
 def apply_osc_paths(data, system):

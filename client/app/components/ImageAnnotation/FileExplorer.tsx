@@ -26,7 +26,7 @@ import FormikTapisFileWrapper from "~/components/FileExplorer/FormikTapisFileWra
 import { Formik } from "formik";
 import { Group, Select } from "@mantine/core";
 import { SubmitButton } from "../formik-mantine";
-import { allowed_systems, fetchAndReturnData, getImage, getImages, sanitizePath } from "~/utils/utils";
+import { allowed_systems, DEFAULT_SYSTEM, fetchAndReturnData, getImage, getImages, sanitizePath } from "~/utils/utils";
 import { useCookies } from "react-cookie";
 // import { systems } from "./utils";
 
@@ -62,7 +62,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
    const [loadingPath, setLoadingPath] = useState<string | null>(null);
 
    // Tapis form state
-   const [system, setSystem] = useState<string | null>(parentSystem ?? null);
+   const [system, setSystem] = useState<string | null>(parentSystem ?? DEFAULT_SYSTEM);
    const [srcImgDir, setSrcImgDir] = useState<string | null>(null);
    const [cookie] = useCookies(["tapis-token"]);
 
@@ -316,7 +316,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                               data={allowed_systems}
                               label="System"
                               placeholder="Pick one System"
-                              defaultValue="ascend-tapis"
+                              defaultValue={DEFAULT_SYSTEM}
                               value={system}
                               name="system"
                               onChange={(value, option) => setSystem(value ?? "")}
