@@ -391,10 +391,8 @@ const OptimizeClassSupports: React.FC = () => {
    };
 
    const handleFileSelect = (file: any, filePath: string) => {
-      if (file) {
-         setSelectedFile(file);
-         setSelectedFileIndex(files.indexOf(filePath));
-      }
+      setSelectedFileIndex(files.indexOf(filePath));
+      if (file) setSelectedFile(file);
    };
 
    return (

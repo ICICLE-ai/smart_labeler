@@ -143,25 +143,20 @@ const ImageAnnotation = () => {
    };
 
    useEffect(() => {
-      if (selectedFile) {
-         const fa =
-            fileToAnnotationsMap.get(selectedFileIndex || 0) || null;
-         setBoundingBoxes([...(fa?.annotations || [])]);
-      }
+      if (selectedFileIndex === null) return;
+      const fa = fileToAnnotationsMap.get(selectedFileIndex) || null;
+      setBoundingBoxes([...(fa?.annotations || [])]);
    // eslint-disable-next-line react-hooks/exhaustive-deps
-   }, [selectedFile]);  // intentionally excludes fileToAnnotationsMap to avoid overwriting live edits on import
+   }, [selectedFileIndex]);  // fires immediately on navigation; excludes fileToAnnotationsMap to avoid overwriting live edits on import
 
-   const handleFileSelect = (file: Blob, filePath: string) => {
-      if (!firstImageLoadedRef.current) {
-         setIsImageLoading(true);
-      }
+   const handleFileSelect = (file: Blob | null, filePath: string) => {
       const index = files.indexOf(filePath);
       const currentFileIndex = selectedFileIndex;
-      // Only persist annotations for a previous file. When currentFileIndex is null
-      // (first selection), skipping the write prevents a stale-closure snapshot of
-      // fileToAnnotationsMap from overwriting annotations that were loaded async
-      // (e.g. auto-loaded annotation file arriving after the image).
-      if (currentFileIndex !== null) {
+
+      // Persist annotations for the departing file immediately, regardless of
+      // whether the new image has loaded yet. This prevents annotation mismatch
+      // when navigating rapidly with arrow keys.
+      if (currentFileIndex !== null && currentFileIndex !== index) {
          setFileToAnnotationsMap((prev) => {
             const updated = new Map(prev);
             const fa = updated.get(currentFileIndex) || { name: "", width: 0, height: 0, annotations: [] };
@@ -170,8 +165,12 @@ const ImageAnnotation = () => {
          });
       }
       setSelectedFileIndex(index);
-      setSelectedFile(file);
       setSelectedBoxId(undefined);
+
+      if (file) {
+         if (!firstImageLoadedRef.current) setIsImageLoading(true);
+         setSelectedFile(file);
+      }
    };
 
    const handleBoundingBoxUpdate = (

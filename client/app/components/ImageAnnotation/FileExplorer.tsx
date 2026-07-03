@@ -26,7 +26,7 @@ import FormikTapisFileWrapper from "~/components/FileExplorer/FormikTapisFileWra
 import { Formik } from "formik";
 import { Group, Select } from "@mantine/core";
 import { SubmitButton } from "../formik-mantine";
-import { allowed_systems, DEFAULT_SYSTEM, fetchAndReturnData, getImage, getImages, sanitizePath } from "~/utils/utils";
+import { allowed_systems, DEFAULT_SYSTEM, getDirContentsFromTapis, getImage, sanitizePath } from "~/utils/utils";
 import { useCookies } from "react-cookie";
 // import { systems } from "./utils";
 
@@ -74,14 +74,73 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
    const navCounterRef = useRef<number>(0);
    // AbortController for the current image-prefetch batch — aborted when navigating away
    const prefetchAbortRef = useRef<AbortController | null>(null);
+   // AbortController for the currently-loading selected image — aborted when the user navigates before it finishes
+   const selectAbortRef = useRef<AbortController | null>(null);
+   // Paths currently being fetched by an active prefetch batch — used to skip duplicates
+   const inflightPrefetchRef = useRef<Set<string>>(new Set());
    const currentPageRef = useRef<number>(0);
    const [pageLoading, setPageLoading] = useState<boolean>(false);
    const cookieRef = useRef(cookie);
    useEffect(() => { cookieRef.current = cookie; });
 
+   // Refs that the keydown handler reads so it always sees the latest values
+   // without needing to be re-attached on every selection change.
+   const selectedPathRef = useRef<string | null>(selectedPath);
+   const loadingPathRef = useRef<string | null>(loadingPath);
+   const filesRef = useRef<string[]>(files);
+   const onSelectFileRef = useRef<((filePath: string) => void) | null>(null);
+   // Sync on every render (plain assignment, not a hook)
+   selectedPathRef.current = selectedPath;
+   loadingPathRef.current = loadingPath;
+   filesRef.current = files;
+
    useEffect(() => {
       if (parentSystem) setSystem(parentSystem);
    }, [parentSystem]);
+
+   // Attached once; reads live state via refs — no stale-closure skipped steps
+   // on rapid keypresses.
+   useEffect(() => {
+      const handleKey = (event: KeyboardEvent) => {
+         if (loadingPathRef.current) return;
+
+         if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+
+         if (event.ctrlKey || event.metaKey || event.altKey) return;
+
+         const target = event.target as HTMLElement | null;
+         if (
+            target &&
+            (target.tagName === "INPUT" ||
+               target.tagName === "TEXTAREA" ||
+               target.isContentEditable)
+         ) {
+            return;
+         }
+
+         const currentFiles = filesRef.current;
+         if (currentFiles.length === 0) return;
+
+         let currentIdx = currentFiles.indexOf(selectedPathRef.current ?? "");
+         if (currentIdx === -1) currentIdx = 0;
+
+         let targetIdx = currentIdx;
+         if (event.key === "ArrowRight")
+            targetIdx = Math.min(currentIdx + 1, currentFiles.length - 1);
+         else
+            targetIdx = Math.max(currentIdx - 1, 0);
+
+         if (targetIdx === currentIdx) return;
+
+         event.preventDefault();
+         onSelectFileRef.current?.(currentFiles[targetIdx]);
+         setPage(Math.floor(targetIdx / PAGE_SIZE) + 1);
+      };
+
+      window.addEventListener("keydown", handleKey);
+      return () => window.removeEventListener("keydown", handleKey);
+   // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, []);
 
    const pagedFiles = useMemo(() => {
       const start = (page - 1) * PAGE_SIZE;
@@ -99,6 +158,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
    useEffect(() => {
       currentPageRef.current = 1;
       triggerPagePrefetch(null);
+      prefetchPageInBackground(2, null);
    }, [files]);
 
    // Auto-select the first image when navigating into a new directory.
@@ -124,21 +184,78 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
       const pageFiles = files.slice(start, start + PAGE_SIZE);
 
       const toFetch = pageFiles.filter(
-         (f) => f !== excludePath && isImageFile(f) && !pageCacheRef.current.has(f)
+         (f) =>
+            f !== excludePath &&
+            isImageFile(f) &&
+            !pageCacheRef.current.has(f) &&
+            !inflightPrefetchRef.current.has(f)   // skip files already being fetched
       );
       if (toFetch.length === 0) return;
 
+      // Mark these paths as in-flight before any async work starts.
+      toFetch.forEach((f) => inflightPrefetchRef.current.add(f));
+
       setPageLoading(true);
-      getImages(toFetch, pipeid, system, cookieRef.current, controller.signal)
-         .then((urlMap) => {
-            if (currentPageRef.current !== thisPage) {
-               urlMap.forEach((url) => URL.revokeObjectURL(url));
-               return;
-            }
-            urlMap.forEach((url, path) => pageCacheRef.current.set(path, url));
-         })
-         .catch((e) => { if (e?.name !== "AbortError") console.error("Background page prefetch failed:", e); })
-         .finally(() => { if (currentPageRef.current === thisPage) setPageLoading(false); });
+
+      // Fire all fetches in parallel. Each image is written to the cache the moment
+      // it arrives — callers don't have to wait for the slowest image in the batch.
+      const perFile = toFetch.map((f) =>
+         getImage(f, pipeid, system, cookieRef.current, controller.signal)
+            .then((url) => {
+               if (currentPageRef.current !== thisPage) {
+                  URL.revokeObjectURL(url);
+               } else {
+                  pageCacheRef.current.set(f, url);
+               }
+            })
+            .catch((e) => { if (e?.name !== "AbortError") console.error(`Prefetch failed for ${f}:`, e); })
+            .finally(() => { inflightPrefetchRef.current.delete(f); })
+      );
+
+      Promise.all(perFile).finally(() => {
+         if (currentPageRef.current === thisPage) setPageLoading(false);
+      });
+   };
+
+   // Evict cached images for pages outside the [centerPage-1, centerPage, centerPage+1] window.
+   const evictPagesOutsideWindow = (centerPage: number) => {
+      const windowStartIdx = (Math.max(1, centerPage - 1) - 1) * PAGE_SIZE;
+      const windowEndIdx = (centerPage + 1) * PAGE_SIZE;
+      for (const [filePath, url] of pageCacheRef.current.entries()) {
+         const idx = files.indexOf(filePath);
+         if (idx === -1 || idx < windowStartIdx || idx >= windowEndIdx) {
+            URL.revokeObjectURL(url);
+            pageCacheRef.current.delete(filePath);
+         }
+      }
+   };
+
+   // Prefetch a specific page in the background (no loading indicator).
+   const prefetchPageInBackground = (targetPage: number, excludePath: string | null) => {
+      if (!system || files.length === 0) return;
+      const maxPage = Math.ceil(files.length / PAGE_SIZE);
+      if (targetPage < 1 || targetPage > maxPage) return;
+
+      if (!prefetchAbortRef.current) prefetchAbortRef.current = new AbortController();
+      const { signal } = prefetchAbortRef.current;
+
+      const start = (targetPage - 1) * PAGE_SIZE;
+      const toFetch = files.slice(start, start + PAGE_SIZE).filter(
+         (f) =>
+            f !== excludePath &&
+            isImageFile(f) &&
+            !pageCacheRef.current.has(f) &&
+            !inflightPrefetchRef.current.has(f)
+      );
+      if (toFetch.length === 0) return;
+
+      toFetch.forEach((f) => inflightPrefetchRef.current.add(f));
+      toFetch.forEach((f) =>
+         getImage(f, pipeid, system, cookieRef.current, signal)
+            .then((url) => { pageCacheRef.current.set(f, url); })
+            .catch((e) => { if (e?.name !== "AbortError") console.error(`Prefetch failed for ${f}:`, e); })
+            .finally(() => { inflightPrefetchRef.current.delete(f); })
+      );
    };
 
    useEffect(() => {
@@ -154,9 +271,10 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
       // Stamp this navigation so any older in-flight fetch can detect it's been superseded.
       const navId = ++navCounterRef.current;
 
-      // Cancel image downloads that belong to the previous directory.
+      // Cancel image downloads that belong to the previous directory and clear their in-flight tracking.
       prefetchAbortRef.current?.abort();
       prefetchAbortRef.current = null;
+      inflightPrefetchRef.current.clear();
 
       // On a new root directory, evict the entire dir cache (stale listings).
       if (isRootReset) dirCacheRef.current.clear();
@@ -176,17 +294,16 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
       }
 
       setPageLoading(true);
-      const encodedPath = encodeURIComponent(sanitizePath(dirPath));
       try {
-         const res = await fetchAndReturnData(
-            `/get-dir-contents/${pipeid}/${sys}?dir=${encodedPath}`,
-            cookie["tapis-token"]["access_token"]
+         const res = await getDirContentsFromTapis(
+            sanitizePath(dirPath),
+            sys,
+            cookie["tapis-token"]["access_token"],
          );
          // Another navigation started while we were waiting — discard these results.
          if (navId !== navCounterRef.current) return;
-         if (!res) return;
-         const newFiles: string[] = (res["imgs"] ?? []).map((f: string) => "/" + f.replace("tapis:/", ""));
-         const newDirs: Array<{ name: string; path: string }> = res["dirs"] ?? [];
+         const newFiles: string[] = res.imgs.map((f: string) => "/" + f.replace(/^\/+/, ""));
+         const newDirs: Array<{ name: string; path: string }> = res.dirs;
          dirCacheRef.current.set(dirPath, { dirs: newDirs, files: newFiles });
          setFiles(newFiles);
          setDirs(newDirs);
@@ -220,8 +337,27 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
    // filePath is the file's path string — the parent uses this as the annotation key.
    const onSelectFile = (filePath: string) => {
       if (!filePath || !isImageFile(filePath)) return;
+      // Already fetching this exact file — don't abort and restart the same request.
+      if (filePath === loadingPathRef.current) return;
+
+      // Abort any in-flight fetch and clear loading state before anything else.
+      // Without this clear, navigating to a cached file after an aborted request
+      // leaves loadingPath truthy indefinitely, blocking keyboard shortcuts.
+      selectAbortRef.current?.abort();
+      selectAbortRef.current = null;
+      setLoadingPath(null);
 
       setSelectedPath(filePath);
+      // Immediately notify parent so it can update annotation index before the image arrives.
+      onFileSelect(null, filePath);
+
+      // Sliding window: keep [clickedPage-1, clickedPage, clickedPage+1] in cache.
+      const fileIdx = files.indexOf(filePath);
+      if (fileIdx !== -1) {
+         const clickedPage = Math.floor(fileIdx / PAGE_SIZE) + 1;
+         evictPagesOutsideWindow(clickedPage);
+         prefetchPageInBackground(clickedPage + 1, filePath);
+      }
 
       const cached = pageCacheRef.current.get(filePath);
       if (cached) {
@@ -231,15 +367,20 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
 
       triggerPagePrefetch(filePath);
 
+      const controller = new AbortController();
+      selectAbortRef.current = controller;
+
       setLoadingPath(filePath);
-      getImage(filePath, pipeid, system ?? "", cookie)
+      getImage(filePath, pipeid, system ?? "", cookie, controller.signal)
          .then((url) => {
             pageCacheRef.current.set(filePath, url);
             onFileSelect(url, filePath);
          })
-         .catch((error) => console.error("Error fetching image:", error))
-         .finally(() => setLoadingPath(null));
-   };
+         .catch((error) => { if (error?.name !== "AbortError") console.error("Error fetching image:", error); })
+         .finally(() => { if (!controller.signal.aborted) setLoadingPath(null); });
+   }
+   // Keep the keydown handler ref in sync after onSelectFile is (re)defined each render
+   onSelectFileRef.current = onSelectFile;
 
    const handleSubmit = (values: { srcImgDir: string; system: string }) => {
       const dir = sanitizePath(values.srcImgDir);
@@ -308,46 +449,46 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                   initialValues={{ srcImgDir: fileDir ?? "", system: "" }}
                   onSubmit={(values) => handleSubmit(values)}
                >
-                     <form style={{ width: "100%" }}>
-                        <Stack spacing={1.5}>
-                           <Select
-                              mt="md"
-                              comboboxProps={{ withinPortal: true, zIndex: 1301 }}
-                              data={allowed_systems}
-                              label="System"
-                              placeholder="Pick one System"
-                              defaultValue={DEFAULT_SYSTEM}
-                              value={system}
-                              name="system"
-                              onChange={(value, option) => setSystem(value ?? "")}
-                           />
+                  <form style={{ width: "100%" }}>
+                     <Stack spacing={1.5}>
+                        <Select
+                           mt="md"
+                           comboboxProps={{ withinPortal: true, zIndex: 1301 }}
+                           data={allowed_systems}
+                           label="System"
+                           placeholder="Pick one System"
+                           defaultValue={DEFAULT_SYSTEM}
+                           value={system}
+                           name="system"
+                           onChange={(value, option) => setSystem(value ?? "")}
+                        />
 
-                           <FormikTapisFileWrapper
-                              name="srcImgDir"
-                              label="Source Image Directory"
-                              required={false}
-                              description="Enter full path to source image directory"
-                              placeholder="path/to/source-directory"
-                              systemId={system ?? ""}
-                              disabled={!system}
-                              files={false}
-                              dirs={true}
-                           />
+                        <FormikTapisFileWrapper
+                           name="srcImgDir"
+                           label="Source Image Directory"
+                           required={false}
+                           description="Enter full path to source image directory"
+                           placeholder="path/to/source-directory"
+                           systemId={system ?? ""}
+                           disabled={!system}
+                           files={false}
+                           dirs={true}
+                        />
 
-                           <Group>
-                              <SubmitButton style={{ width: "100%" }}>
-                                 Get Images
-                              </SubmitButton>
-                           </Group>
-                        </Stack>
-                     </form>
-                  </Formik>
-                  <Typography
-                     variant="caption"
-                     sx={{ display: "block", mt: 1, color: "text.disabled" }}
-                  >
-                     Tip: Select a directory of images. Non-image files will be listed but won't preview.
-                  </Typography>
+                        <Group>
+                           <SubmitButton style={{ width: "100%" }}>
+                              Get Images
+                           </SubmitButton>
+                        </Group>
+                     </Stack>
+                  </form>
+               </Formik>
+               <Typography
+                  variant="caption"
+                  sx={{ display: "block", mt: 1, color: "text.disabled" }}
+               >
+                  Tip: Select a directory of images. Non-image files will be listed but won't preview.
+               </Typography>
             </Box>
          )}
 

@@ -18,7 +18,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import Controls from "./controls";
 import { sam3Predictions } from "~/utils/utils";
 import { useCookies } from "react-cookie";
-import { SAM3_MODES, getLabelColor } from "./utils";
+import { MAX_SCALE, SAM3_MODES, getLabelColor } from "./utils";
 
 // ---------------------------------------------------------------------------
 // Canvas mode – single source of truth for which tool is active.
@@ -337,7 +337,6 @@ const ImageCanvas = (props: {
    // State
    // ---------------------------------------------------------------------------
    const [activeMode, setActiveMode] = useState<CanvasMode>(CanvasMode.NONE);
-   const [scale, setScale] = useState<number>(1);
    const transformContainerRef = useRef(null);
    const parentRef = useRef<HTMLDivElement>(null);
    const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -346,7 +345,6 @@ const ImageCanvas = (props: {
    const [generatedAnnotations, setGeneratedAnnotations] = useState<Annotation[]>(props.generatedBoxes || []);
    const [naturalHeight, setNaturalHeight] = useState<number>(1);
    const [naturalWidth, setNaturalWidth] = useState<number>(1);
-   const [trueScale, setTrueScale] = useState<number>(1);
    const [isAnnotationMode, setIsAnnotationMode] = useState<boolean>(false);
 
    const [image, setImage] = useState<HTMLImageElement | null>(null);
@@ -360,7 +358,6 @@ const ImageCanvas = (props: {
    const [selectedBoxIds, setSelectedBoxIds] = useState<string[]>(props.selectedAnnotationIds ?? []);
    const [bulkEditOpen, setBulkEditOpen] = useState<boolean>(false);
    const [bulkLabelValue, setBulkLabelValue] = useState<string>("");
-   const [initialScale, setInitialScale] = useState<number>(2.7);
    const [interaction, setInteraction] = useState<Interaction>({
       type: "none",
       targetId: null,
@@ -418,7 +415,7 @@ const ImageCanvas = (props: {
 
    useEffect(() => {
       const handleResize = () => {
-         setInitialScale(window.innerWidth > 1500 ? 2.7 : window.innerWidth > 1000 ? 3.5 : 4.0);
+         // setInitialScale(window.innerWidth > 1500 ? 2.7 : window.innerWidth > 1000 ? 3.5 : 4.0);
          if (file) {
             const img = new Image();
             img.src = file;
@@ -483,27 +480,50 @@ const ImageCanvas = (props: {
       return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
    }, []);
 
-   useEffect(() => {
-      const canvas = canvasRef.current;
-      if (canvas && image) {
-         canvas.width = image.naturalWidth;
-         canvas.height = image.naturalHeight;
-      }
-      setInitialScale(window.innerWidth > 1500 ? 2.7 : window.innerWidth > 1000 ? 4.0 : 4.5);
-      draw();
-   }, [image]);
+   // useEffect(() => {
+   //    const canvas = canvasRef.current;
+   //    const container = parentRef.current;
+   //    if (canvas && container) {
+   //       canvas.width = container.clientWidth;
+   //       canvas.height = container.clientHeight;
+   //    }
+   //    setInitialScale(window.innerWidth > 1500 ? 2.7 : window.innerWidth > 1000 ? 4.0 : 4.5);
+   //    draw();
+   // }, []);
+
+   const [displaySize, setDisplaySize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
 
    useEffect(() => {
-      const canvas = canvasRef.current;
-      if (!canvas || !image) return;
-      const canvasRect = canvas.getBoundingClientRect();
-      setTrueScale(Math.min(1, Math.min(canvasRect.width / naturalWidth, canvasRect.height / naturalHeight)));
-   }, [image, annotations, selectedBoxId, generatedAnnotations]);
+      if (!parentRef.current || !naturalWidth || !naturalHeight) return;
+      const el = parentRef.current;
+
+      const update = () => {
+         const pw = el.clientWidth;
+         const ph = el.clientHeight;
+         if (!pw || !ph) return;
+         // Fit: scale until whichever dimension hits the parent bound first.
+         // No Math.min(1, ...) — small images should scale UP to fill.
+         const s = Math.min(pw / naturalWidth, ph / naturalHeight);
+         setDisplaySize({ w: naturalWidth * s, h: naturalHeight * s });
+      };
+
+      update();
+      const ro = new ResizeObserver(update);
+      ro.observe(el);
+      return () => ro.disconnect();
+   }, [naturalWidth, naturalHeight]);
+
+   // useEffect(() => {
+   //    const canvas = canvasRef.current;
+   //    if (!canvas || !image) return;
+   //    const canvasRect = canvas.getBoundingClientRect();
+   //    setTrueScale(canvasRect.width / naturalWidth);
+   // }, [image, annotations, selectedBoxId, generatedAnnotations]);
 
    useEffect(() => {
       if (!graphEnabled) {
-         const canvas = canvasRef.current;
-         if (canvas && image) { canvas.width = image.naturalWidth; canvas.height = image.naturalHeight; }
+         // const canvas = canvasRef.current;
+         // if (canvas && image) { canvas.width = image.naturalWidth; canvas.height = image.naturalHeight; }
          draw();
       } else {
          props.handleRenderGraph?.();
@@ -520,11 +540,25 @@ const ImageCanvas = (props: {
    // ---------------------------------------------------------------------------
    // Helpers
    // ---------------------------------------------------------------------------
+   // const getCanvasCoordinates = (event: React.MouseEvent<HTMLCanvasElement>) => {
+   //    const canvas = canvasRef.current;
+   //    if (!canvas) return { x: 0, y: 0 };
+   //    const rect = canvas.getBoundingClientRect();
+   //    return { x: (event.clientX - rect.left) / trueScale, y: (event.clientY - rect.top) / trueScale };
+   // };
    const getCanvasCoordinates = (event: React.MouseEvent<HTMLCanvasElement>) => {
       const canvas = canvasRef.current;
       if (!canvas) return { x: 0, y: 0 };
       const rect = canvas.getBoundingClientRect();
-      return { x: (event.clientX - rect.left) / trueScale, y: (event.clientY - rect.top) / trueScale };
+      // rect reflects post-CSS-transform size (including zoom-pan-pinch scale)
+      // canvas.width/height = natural image size
+      // So this ratio always maps screen pixels → natural pixels correctly.
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      return {
+         x: (event.clientX - rect.left) * scaleX,
+         y: (event.clientY - rect.top) * scaleY,
+      };
    };
 
    const getHoveredPart = (mouseX: number, mouseY: number, box: Annotation) => {
@@ -564,7 +598,7 @@ const ImageCanvas = (props: {
       if (!ctx) return;
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(image, 0, 0);
 
       annotations.forEach((box) => {
          const labelColor = getLabelColor(box.label);
@@ -752,6 +786,23 @@ const ImageCanvas = (props: {
       setLabelDialogOpen(false);
    };
 
+   useEffect(() => {
+      if (!parentRef.current || !naturalWidth || !naturalHeight) return;
+      const el = parentRef.current;
+
+      const update = () => {
+         const pw = el.clientWidth;
+         if (!pw) return;
+         const s = pw / naturalWidth; // fit width, height scales proportionally
+         setDisplaySize({ w: naturalWidth * s, h: naturalHeight * s });
+      };
+
+      update();
+      const ro = new ResizeObserver(update);
+      ro.observe(el);
+      return () => ro.disconnect();
+   }, [naturalWidth, naturalHeight]);
+
    return (
       <>
          <Paper
@@ -770,7 +821,8 @@ const ImageCanvas = (props: {
                   flex: 1,
                   border: "1px solid black",
                   position: "relative",
-                  overflow: "scroll",
+                  overflow: "auto",
+                  // overflow: "scroll",
                   width: "100%",
                   height: "100%",
                   "&::-webkit-scrollbar": { width: "10px", height: "10px" },
@@ -784,24 +836,16 @@ const ImageCanvas = (props: {
                {displayImage ? (
                   <TransformWrapper
                      ref={transformContainerRef}
-                     centerOnInit
                      initialPositionX={0}
                      initialPositionY={0}
                      wheel={{ step: SCROLL_STEP }}
-                     doubleClick={{ disabled: isCanvasActive }}
+                     doubleClick={{ disabled: true }}
                      pinch={{ disabled: isCanvasActive }}
                      panning={{ disabled: isCanvasActive }}
-                     maxScale={initialScale}
-                     onTransformed={(
-                        ref: ReactZoomPanPinchRef,
-                        state: { scale: number; positionX: number; positionY: number }
-                     ) => {
-                        setScale(state.scale);
-                        const canvasRect = canvasRef.current!.getBoundingClientRect();
-                        setTrueScale(
-                           Math.min(1, Math.min(canvasRect.width / naturalWidth, canvasRect.height / naturalHeight))
-                        );
-                     }}
+                     maxScale={MAX_SCALE}
+                     minScale={1}
+                     limitToBounds={false}
+                     centerZoomedOut={true}
                   >
                      <Controls
                         isEditable={editable}
@@ -844,21 +888,46 @@ const ImageCanvas = (props: {
                         lineWidth={lineWidth}
                         onLineWidthChange={(w) => setLineWidth(w)}
                      />
-                     <TransformComponent>
+                     <TransformComponent
+                        wrapperStyle={{ width: "100%", height: "auto" }}
+                        contentStyle={{
+                           width: "100%",
+                           // display: "flex",
+                           // alignItems: "flex-start",
+                           // justifyContent: "flex-start",
+                           height: "auto",
+                           display: "block",
+                        }}
+                     >
                         {(graphEnabled && props.graph) ? props.graph : (
+                           // <canvas
+                           //    ref={canvasRef}
+                           //    width={parentRef.current?.clientWidth || 1}
+                           //    height={parentRef.current?.clientHeight || 1}
+                           //    // onMouseDown={isCanvasActive ? handleMouseDown : undefined}
+                           //    // onMouseMove={isCanvasActive ? handleMouseMove : undefined}
+                           //    // onMouseUp={isCanvasActive ? handleMouseUp : undefined}
+                           //    // onMouseLeave={isCanvasActive ? handleMouseLeave : undefined}
+                           //    onMouseDown={handleMouseDown}
+                           //    onMouseMove={handleMouseMove}
+                           //    onMouseUp={handleMouseUp}
+                           //    onMouseLeave={handleMouseLeave}
+                           //    style={{ width: "100%", display: "block", cursor: "crosshair" }}
+                           // />
                            <canvas
                               ref={canvasRef}
-                              width={parentRef.current?.clientWidth || 1}
-                              height={parentRef.current?.clientHeight || 1}
-                              // onMouseDown={isCanvasActive ? handleMouseDown : undefined}
-                              // onMouseMove={isCanvasActive ? handleMouseMove : undefined}
-                              // onMouseUp={isCanvasActive ? handleMouseUp : undefined}
-                              // onMouseLeave={isCanvasActive ? handleMouseLeave : undefined}
+                              width={naturalWidth}
+                              height={naturalHeight}
                               onMouseDown={handleMouseDown}
                               onMouseMove={handleMouseMove}
                               onMouseUp={handleMouseUp}
                               onMouseLeave={handleMouseLeave}
-                              style={{ width: "100%", display: "block", cursor: "crosshair" }}
+                              style={{
+                                 width: `${displaySize.w}px`,
+                                 height: `${displaySize.h}px`,
+                                 display: "block",
+                                 cursor: "crosshair",
+                              }}
                            />
                         )}
                      </TransformComponent>

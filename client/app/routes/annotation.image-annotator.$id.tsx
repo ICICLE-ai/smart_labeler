@@ -396,21 +396,22 @@ const ImageAnnotation = () => {
    // ────────────────────────────────────────────────────────────────────────
 
    useEffect(() => {
-      if (!selectedFile) return;
+      if (!selectedFilePath) return;
       if (isSegmentation) {
-         const fa = fileToMasksMap.get(selectedFilePath ?? "");
+         const fa = fileToMasksMap.get(selectedFilePath);
          setSegmentationMasks([...(fa?.masks ?? [])]);
       } else {
-         const fa = fileToAnnotationsMap.get(selectedFilePath ?? "");
+         const fa = fileToAnnotationsMap.get(selectedFilePath);
          setBoundingBoxes([...(fa?.annotations ?? [])]);
       }
-   }, [selectedFile]); // intentionally narrow – avoids overwriting live edits on import
+   }, [selectedFilePath]); // fires immediately on navigation, not after image load
 
-   const handleFileSelect = (file: Blob, filePath: string) => {
-      if (!firstImageLoadedRef.current) setIsImageLoading(true);
+   const handleFileSelect = (file: Blob | null, filePath: string) => {
       const prevPath = selectedFilePath;
 
-      if (prevPath !== null) {
+      // Persist annotations for the departing file immediately so rapid arrow-key
+      // navigation never shows stale annotations for the wrong file.
+      if (prevPath !== null && prevPath !== filePath) {
          if (isSegmentation) {
             setFileToMasksMap((prev) => {
                const updated = new Map(prev);
@@ -429,8 +430,12 @@ const ImageAnnotation = () => {
       }
 
       setSelectedFilePath(filePath);
-      setSelectedFile(file);
       setSelectedBoxId(undefined);
+
+      if (file) {
+         if (!firstImageLoadedRef.current) setIsImageLoading(true);
+         setSelectedFile(file);
+      }
       setSelectedMaskId(undefined);
    };
 
