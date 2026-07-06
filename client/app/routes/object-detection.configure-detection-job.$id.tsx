@@ -28,7 +28,7 @@ import {
   isImageFile,
   QueryImageConfiguration,
   steps,
-} from "~/components/ImageAnnotation/utils";
+} from "~/components/ImageAnnotation/utils/utils";
 import QueryImageConfigurationItem from "~/components/ObjectDetection/QueryImageConfigurationItem";
 import {
   allowed_systems,

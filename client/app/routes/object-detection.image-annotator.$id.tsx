@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { FileExplorer } from "../components/ImageAnnotation/FileExplorer";
+import { FileExplorer } from "../components/FileExplorer/FileExplorer";
 import {
    ImageCanvas,
+   detectionEngine,
    type Annotation,
-} from "../components/ImageAnnotation/ImageCanvas";
-import { AnnotationDetails } from "../components/ImageAnnotation/AnnotationDetails";
+} from "../components/ImageAnnotation/canvas/ImageCanvas";
+import { AnnotationDetails } from "../components/ImageAnnotation/AnnotationDetails/AnnotationDetails";
 import { CircularProgress, Drawer, Grid, Box, Button, LinearProgress, Typography } from "@mui/material";
-import Tools from "../components/ImageAnnotation/Tools";
+import Tools from "../components/ImageAnnotation/utils/Tools";
 import {
    downloadFile,
    exportToCoco,
@@ -14,7 +15,7 @@ import {
    FileAnnotations,
    importFromCocoJsonUtil,
    importFromDefaultJsonUtil,
-} from "../components/ImageAnnotation/utils";
+} from "../components/ImageAnnotation/utils/utils";
 import { fetchAndReturnData, fetchFile, saveFile, SubmitData } from "~/utils/utils";
 import { useCookies } from "react-cookie";
 import { useLoaderData } from "@remix-run/react";
@@ -460,16 +461,17 @@ const ImageAnnotation = () => {
             <Grid size={9}>
                {selectedFile ? (
                   <ImageCanvas
+                     engine={detectionEngine}
                      file={selectedFile}
-                     boxes={boundingBoxes}
-                     onBoxAddition={(annotations) =>
+                     annotations={boundingBoxes}
+                     onAddition={(annotations) =>
                         setBoundingBoxes((prev) => [...prev, ...annotations])
                      }
                      selectedAnnotationId={selectedBoxId || ""}
-                     onBoxSelection={(id) => { setSelectedBoxId(id ?? undefined); setSelectedBoxIds([]); }}
-                     onBoxMultiSelection={(ids) => { setSelectedBoxIds(ids); if (ids.length > 0) setSelectedBoxId(undefined); }}
+                     onSelection={(id) => { setSelectedBoxId(id ?? undefined); setSelectedBoxIds([]); }}
+                     onMultiSelection={(ids) => { setSelectedBoxIds(ids); if (ids.length > 0) setSelectedBoxId(undefined); }}
                      selectedAnnotationIds={selectedBoxIds}
-                     onBoxUpdate={handleBoxUpdate}
+                     onUpdate={handleBoxUpdate}
                      isEditable={true}
                      setFileSize={handleSetFileSize}
                      isGraphEnabled={false}
@@ -520,6 +522,7 @@ const ImageAnnotation = () => {
             </Grid>
             <Grid size={3}>
                <AnnotationDetails
+                  variant="detection"
                   annotations={boundingBoxes}
                   selectedBoxId={selectedBoxId}
                   selectedBoxIds={selectedBoxIds}
@@ -530,7 +533,7 @@ const ImageAnnotation = () => {
                      setSelectedBoxIds(ids);
                      if (ids.length > 0) setSelectedBoxId(undefined);
                   }}
-                  onBoundingBoxUpdate={handleBoundingBoxUpdate}
+                  onAnnotationUpdate={handleBoundingBoxUpdate}
                   deleteAnnotations={(ids: string[]) => {
                      // console.log("Deleting boxes with ids:", ids);
                      const newSet = boundingBoxes.filter(

@@ -26,7 +26,7 @@ import React, { useEffect, useState } from "react";
 import { useCookies } from "react-cookie";
 import { SubmitButton } from "~/components/formik-mantine";
 import { HeroTitle } from "~/components/HeroTitle/HeroTitle";
-import { isImageFile, steps } from "~/components/ImageAnnotation/utils";
+import { isImageFile, steps } from "~/components/ImageAnnotation/utils/utils";
 import { allowed_systems, DEFAULT_SYSTEM, fetchAndReturnData, SubmitData } from "~/utils/utils";
 import { ModelSelector } from "~/components/ModelSelector/ModelSelector";
 import { usePipeline } from "~/context/PipelineContext";

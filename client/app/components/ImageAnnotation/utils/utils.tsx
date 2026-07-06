@@ -1,4 +1,4 @@
-import type { Annotation } from "./ImageCanvas";
+import type { Annotation } from "../canvas/ImageCanvas";
 import { LineChart } from '@mui/x-charts/LineChart';
 import React from 'react';
 import { saveFile } from "~/utils/utils";

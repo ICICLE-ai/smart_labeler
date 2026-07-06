@@ -31,7 +31,7 @@ import { useNavigate } from "@remix-run/react";
 import React, { useEffect, useState } from "react";
 import { allowed_systems, DEFAULT_SYSTEM, fetchFile } from "~/utils/utils";
 import { useCookies } from "react-cookie";
-import AnnotationFileFormatSwitch from "./AnnotationFileFormatSwitch";
+import AnnotationFileFormatSwitch from "../AnnotationFileFormatSwitch";
 
 interface SaveModalProps {
    open: boolean;
