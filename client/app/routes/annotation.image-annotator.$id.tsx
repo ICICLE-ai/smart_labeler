@@ -831,6 +831,7 @@ const ImageAnnotation = () => {
                   <ImageCanvas
                      engine={activeConfig.engine as CanvasEngine<any>}
                      {...(canvasProps as any)}
+                     file={selectedFile}
                      isEditable={true}
                      setFileSize={handleSetFileSize}
                      isGraphEnabled={false}
