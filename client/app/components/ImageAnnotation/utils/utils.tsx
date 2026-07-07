@@ -1,8 +1,9 @@
-import type { Annotation } from "./ImageCanvas";
+import type { Annotation } from "../canvas/ImageCanvas";
 import { LineChart } from '@mui/x-charts/LineChart';
 import React from 'react';
 import { saveFile } from "~/utils/utils";
 
+export const MAX_SCALE = 8
 
 export interface QueryImageConfiguration {
    id: number;
@@ -274,7 +275,10 @@ export function importFromCocoJsonUtil(
    files: string[]
 ): Map<number, FileAnnotations> {
    const fileNameToIndex = new Map<string, number>();
-   files.forEach((file, idx) => fileNameToIndex.set(file.substring(file.lastIndexOf("/") + 1), idx));
+   files.forEach((file, idx) => {
+      if (typeof file !== "string") return;
+      fileNameToIndex.set(file.substring(file.lastIndexOf("/") + 1), idx);
+   });
 
    // Build category id to label map
    const categoryIdToLabel = new Map<number, string>();
@@ -335,9 +339,10 @@ export function importFromDefaultJsonUtil(
    files: string[]
 ): Map<number, FileAnnotations> {
    const fileNameToIndex = new Map<string, number>();
-   files.forEach((file, idx) =>
-      fileNameToIndex.set(file.substring(file.lastIndexOf("/") + 1), idx)
-   );
+   files.forEach((file, idx) => {
+      if (typeof file !== "string") return;
+      fileNameToIndex.set(file.substring(file.lastIndexOf("/") + 1), idx);
+   });
 
    const fileToAnnotationsMap = new Map<number, FileAnnotations>();
    if (Array.isArray(defaultJson.annotations)) {

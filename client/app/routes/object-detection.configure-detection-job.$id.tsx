@@ -28,13 +28,14 @@ import {
   isImageFile,
   QueryImageConfiguration,
   steps,
-} from "~/components/ImageAnnotation/utils";
+} from "~/components/ImageAnnotation/utils/utils";
 import QueryImageConfigurationItem from "~/components/ObjectDetection/QueryImageConfigurationItem";
 import {
   allowed_systems,
   fetchAndReturnData,
   SubmitData,
   getBaseURL,
+  DEFAULT_SYSTEM,
 } from "~/utils/utils";
 import { ModelSelector } from "~/components/ModelSelector/ModelSelector";
 import { usePipeline } from "~/context/PipelineContext";
@@ -55,7 +56,7 @@ interface FormValues {
 const ConfigureDetectionJob: React.FC = () => {
   // Basic configuration state
   const [name, setName] = useState<string>("Predict objects");
-  const [system, setSystem] = useState<string>("");
+  const [system, setSystem] = useState<string>(DEFAULT_SYSTEM);
   const [device, setDevice] = useState<string>("CPU");
   const [queryImagePath, setQueryImagePath] = useState<string>("");
   const [method, setMethod] = useState<string>("Image");
@@ -215,7 +216,7 @@ const ConfigureDetectionJob: React.FC = () => {
   // Reset form to defaults
   const resetForm = () => {
     setName("Predict objects");
-    setSystem("");
+    setSystem(DEFAULT_SYSTEM);
     setDevice("CPU");
     setProposerModelIds([]);
     setEmbedderModelIds([]);
@@ -406,6 +407,7 @@ const ConfigureDetectionJob: React.FC = () => {
                       label="Training System"
                       placeholder="Pick one Training System"
                       value={system}
+                      defaultValue={DEFAULT_SYSTEM}
                       onChange={(value) => setSystem(value ?? "")}
                     />
 

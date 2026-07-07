@@ -5,6 +5,7 @@ import type { RuntimeEnv } from "~/context/AppConfigContext";
 // start without a Docker rebuild.
 let _baseUrl = "http://127.0.0.1:11112";
 let _sam3Endpoint = "https://sam3-sailab.nrp-nautilus.io";
+let _tapisBase = "https://icicleai.tapis.io";
 let _annotatorType: string | null = null;
 
 export let allowed_systems: { value: string; label: string }[] = [
@@ -13,7 +14,10 @@ export let allowed_systems: { value: string; label: string }[] = [
    { value: "ascend-tapis", label: "Ascend (OSC)" },
    { value: "cardinal-tapis", label: "Cardinal (OSC)" },
    { value: "ascend-static", label: "Ascend Authenticated (OSC)" },
+   { value: "expanse-tapis-static", label: "Expanse - Authenticated (SDSC)" },
 ];
+
+export const DEFAULT_SYSTEM = "expanse-tapis-static";
 
 export let EMBEDDERS: string[] = [
    "OWLv2 Large Patch14 Ensemble",
@@ -29,6 +33,7 @@ export let PROPOSERS: string[] = [
 export const initConfig = (env: RuntimeEnv) => {
    _baseUrl = env.apiBaseUrl;
    _sam3Endpoint = env.sam3Endpoint;
+   if (env.tapisBaseUrl) _tapisBase = env.tapisBaseUrl;
    if (env.allowedSystems) allowed_systems = JSON.parse(env.allowedSystems);
    if (env.embedders) EMBEDDERS = env.embedders.split(",");
    if (env.proposers) PROPOSERS = env.proposers.split(",");
@@ -42,7 +47,10 @@ export const getAnnotatorType = () => _annotatorType;
 export const sanitizePath = (path: string): string =>
    path
       .trim()
-      .replace(/[\u00A0\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u202F\u205F\u3000]/g, " ")
+      .replace(
+         /[\u00A0\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u202F\u205F\u3000]/g,
+         " ",
+      )
       .replace(/[\u200B\u200C\u200D\uFEFF\u200E\u200F\u2028\u2029]/g, "")
       .replace(/[\r\n\t]+/g, "");
 
@@ -119,10 +127,7 @@ export const SubmitData = async (
    return response.json();
 };
 
-export const DeleteData = async (
-   url: string,
-   token: string,
-): Promise<any> => {
+export const DeleteData = async (url: string, token: string): Promise<any> => {
    const response = await fetch(`${_baseUrl}${url}`, {
       method: "DELETE",
       headers: {
@@ -152,6 +157,22 @@ export const SubmitFile = async (
    return response.json();
 };
 
+// Encode a file-system path for use in a Tapis URL: strip the leading slash and
+// percent-encode each segment individually so path separators stay intact.
+const encodeTapisPath = (path: string): string =>
+   path.replace(/^\/+/, "").split("/").map(encodeURIComponent).join("/");
+
+const TAPIS_IMAGE_EXTS = new Set([
+   ".jpeg",
+   ".jpg",
+   ".png",
+   ".tif",
+   ".tiff",
+   ".gif",
+   ".bmp",
+   ".webp",
+]);
+
 export const getImage = async (
    path: string,
    pipeId: string,
@@ -160,16 +181,63 @@ export const getImage = async (
    signal?: AbortSignal,
 ): Promise<string> => {
    const token = cookie["tapis-token"]?.["access_token"] ?? "";
-   const encodedPath = encodeURIComponent(path);
-   const response = await fetch(
-      `${_baseUrl}/get-img/${pipeId}/${system}?filePath=${encodedPath}`,
-      {
-         headers: { "Tapis-Token": token },
-         signal,
-      },
-   );
+   const lower = path.toLowerCase();
+   const isTiff = lower.endsWith(".tif") || lower.endsWith(".tiff");
+
+   if (isTiff) {
+      // TIFF files must go through the backend for OpenCV → JPEG conversion.
+      const encodedPath = encodeURIComponent(path);
+      const response = await fetch(
+         `${_baseUrl}/get-img/${pipeId}/${system}?filePath=${encodedPath}`,
+         { headers: { "Tapis-Token": token }, signal },
+      );
+      const blob = await response.blob();
+      return URL.createObjectURL(blob);
+   }
+
+   // All other formats: call Tapis directly (CORS is open on icicleai.tapis.io).
+   const url = `${_tapisBase}/v3/files/content/${system}/${encodeTapisPath(
+      path,
+   )}`;
+   const response = await fetch(url, {
+      headers: { "X-Tapis-Token": token },
+      signal,
+   });
+   if (!response.ok)
+      throw new Error(`Tapis image fetch failed: ${response.status}`);
    const blob = await response.blob();
    return URL.createObjectURL(blob);
+};
+
+// List subdirectories and image files at a Tapis path directly from the browser.
+// Returns the same shape as the backend /get-dir-contents endpoint.
+export const getDirContentsFromTapis = async (
+   dirPath: string,
+   system: string,
+   token: string,
+): Promise<{ dirs: Array<{ name: string; path: string }>; imgs: string[] }> => {
+   const url = `${_tapisBase}/v3/files/ops/${system}/${encodeTapisPath(
+      dirPath,
+   )}?offset=0&limit=1000`;
+   const response = await fetch(url, { headers: { "X-Tapis-Token": token } });
+   if (!response.ok) return { dirs: [], imgs: [] };
+   const results: Array<{ name: string; path: string; type: string }> =
+      (await response.json()).result ?? [];
+   const cleanDir = dirPath.replace(/^\/+/, "").replace(/\/+$/, "");
+   const dirs: Array<{ name: string; path: string }> = [];
+   const imgs: string[] = [];
+   for (const item of results) {
+      if (
+         item.type === "dir" &&
+         item.path.replace(/^\/+/, "").replace(/\/+$/, "") !== cleanDir
+      ) {
+         dirs.push({ name: item.name, path: item.path });
+      } else if (item.type === "file") {
+         const ext = `.${item.name.toLowerCase().split(".").pop() ?? ""}`;
+         if (TAPIS_IMAGE_EXTS.has(ext)) imgs.push(item.path);
+      }
+   }
+   return { dirs, imgs };
 };
 
 export const getImages = async (
@@ -224,7 +292,7 @@ export const sam3Predictions = async (
       method: "POST",
       headers: {
          "Content-Type": "application/json",
-         "token": token,
+         token: token,
       },
       body: JSON.stringify(payload),
    });
@@ -233,39 +301,41 @@ export const sam3Predictions = async (
 };
 
 export enum TYPE {
-  DETECTION = "DETECTION",
-  CLASSIFICATION = "CLASSIFICATION",
-  SEGMENTATION = "SEGMENTATION",
+   DETECTION = "DETECTION",
+   CLASSIFICATION = "CLASSIFICATION",
+   SEGMENTATION = "SEGMENTATION",
 }
 
 export enum JobStatus {
-  PENDING = "PENDING",
-  PROCESSING_INPUTS = "PROCESSING_INPUTS",
-  STAGING_INPUTS = "STAGING_INPUTS",
-  STAGING_JOB = "STAGING_JOB",
-  SUBMITTING_JOB = "SUBMITTING_JOB",
-  QUEUED = "QUEUED",
-  RUNNING = "RUNNING",
-  ARCHIVING = "ARCHIVING",
-  BLOCKED = "BLOCKED",
-  PAUSED = "PAUSED",
-  FINISHED = "FINISHED",
-  CANCELLED = "CANCELLED",
-  FAILED = "FAILED",
+   PENDING = "PENDING",
+   PROCESSING_INPUTS = "PROCESSING_INPUTS",
+   STAGING_INPUTS = "STAGING_INPUTS",
+   STAGING_JOB = "STAGING_JOB",
+   SUBMITTING_JOB = "SUBMITTING_JOB",
+   QUEUED = "QUEUED",
+   RUNNING = "RUNNING",
+   ARCHIVING = "ARCHIVING",
+   BLOCKED = "BLOCKED",
+   PAUSED = "PAUSED",
+   FINISHED = "FINISHED",
+   CANCELLED = "CANCELLED",
+   FAILED = "FAILED",
 }
 
 export const JobStatusDescriptions: Record<JobStatus, string> = {
-  [JobStatus.PENDING]: "Job processing beginning",
-  [JobStatus.PROCESSING_INPUTS]: "Identifying input files for staging",
-  [JobStatus.STAGING_INPUTS]: "Transferring job input data to execution system",
-  [JobStatus.STAGING_JOB]: "Staging runtime assets to execution system",
-  [JobStatus.SUBMITTING_JOB]: "Submitting job to execution system",
-  [JobStatus.QUEUED]: "Job queued to execution system queue (when jobType is BATCH)",
-  [JobStatus.RUNNING]: "Job running on execution system",
-  [JobStatus.ARCHIVING]: "Transferring job output to archive system",
-  [JobStatus.BLOCKED]: "Job blocked",
-  [JobStatus.PAUSED]: "Job processing suspended",
-  [JobStatus.FINISHED]: "Job completed successfully",
-  [JobStatus.CANCELLED]: "Job execution cancelled",
-  [JobStatus.FAILED]: "Job failed",
+   [JobStatus.PENDING]: "Job processing beginning",
+   [JobStatus.PROCESSING_INPUTS]: "Identifying input files for staging",
+   [JobStatus.STAGING_INPUTS]:
+      "Transferring job input data to execution system",
+   [JobStatus.STAGING_JOB]: "Staging runtime assets to execution system",
+   [JobStatus.SUBMITTING_JOB]: "Submitting job to execution system",
+   [JobStatus.QUEUED]:
+      "Job queued to execution system queue (when jobType is BATCH)",
+   [JobStatus.RUNNING]: "Job running on execution system",
+   [JobStatus.ARCHIVING]: "Transferring job output to archive system",
+   [JobStatus.BLOCKED]: "Job blocked",
+   [JobStatus.PAUSED]: "Job processing suspended",
+   [JobStatus.FINISHED]: "Job completed successfully",
+   [JobStatus.CANCELLED]: "Job execution cancelled",
+   [JobStatus.FAILED]: "Job failed",
 };

@@ -7,14 +7,14 @@ import React, { useEffect, useState } from "react";
 import { useCookies } from "react-cookie";
 import { SubmitButton } from "~/components/formik-mantine";
 import { HeroTitle } from "~/components/HeroTitle/HeroTitle";
-import { allowed_systems, fetchAndReturnData, SubmitData } from "~/utils/utils";
+import { allowed_systems, DEFAULT_SYSTEM, fetchAndReturnData, SubmitData } from "~/utils/utils";
 import { ModelSelector } from "~/components/ModelSelector/ModelSelector";
 import { usePipeline } from "~/context/PipelineContext";
 import FormikTapisFileWrapper from "~/components/FileExplorer/FormikTapisFileWrapper";
 
 
 const GenerateClassSupports: React.FC = () => {
-   const [system, setSystem] = useState<string>("");
+   const [system, setSystem] = useState<string>(DEFAULT_SYSTEM);
    const [srcImgDir, setSrcImgDir] = useState<string>("");
    const [annotationFilePath, setAnnotationFilePath] = useState<string>("");
    const [device, setDevice] = useState<string>("CPU");
@@ -45,7 +45,7 @@ const GenerateClassSupports: React.FC = () => {
          }
 
          const data: any = res;
-         const resolvedSystem = data["system"] || "";
+         const resolvedSystem = data["system"] || DEFAULT_SYSTEM;
          let resolvedSrcImgDir = data["srcImgDir"] || "";
          let resolvedAnnotationFilePath = data["annotationFilePath"] || "";
 
@@ -224,7 +224,7 @@ const GenerateClassSupports: React.FC = () => {
                         data={allowed_systems}
                         label="System"
                         placeholder="Pick one System"
-                        defaultValue="ascend-tapis"
+                        defaultValue={DEFAULT_SYSTEM}
                         value={system}
                         name="system"
                         onChange={(value, option) => setSystem(value ?? "")}

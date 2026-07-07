@@ -1,7 +1,7 @@
 import { Outlet, useLocation, useMatches } from "@remix-run/react";
 import { PipelineProvider } from "~/context/PipelineContext";
 import StepperStatusBar from "~/components/StepperStatusBar/stepper-status-bar";
-import { steps } from "~/components/ImageAnnotation/utils";
+import { steps } from "~/components/ImageAnnotation/utils/utils";
 import { Box } from "@mui/material";
 
 export default function ObjectDetectionLayout() {

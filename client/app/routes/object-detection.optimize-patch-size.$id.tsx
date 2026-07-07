@@ -22,7 +22,8 @@ import React, { useEffect, useMemo, useRef } from "react";
 import {
    Annotation,
    ImageCanvas,
-} from "~/components/ImageAnnotation/ImageCanvas";
+   detectionEngine,
+} from "~/components/ImageAnnotation/canvas/ImageCanvas";
 import {
    fetchAndReturnData,
    fetchFile,
@@ -39,8 +40,8 @@ import {
    getCropSize,
    generateClassSupportGraph,
    generateMultipleIoUScoreGraph
-} from "~/components/ImageAnnotation/utils";
-import { FileExplorer } from "~/components/ImageAnnotation/FileExplorer";
+} from "~/components/ImageAnnotation/utils/utils";
+import { FileExplorer } from "~/components/FileExplorer/FileExplorer";
 import { usePipeline } from "~/context/PipelineContext";
 
 const OptimizeClassSupports: React.FC = () => {
@@ -391,10 +392,8 @@ const OptimizeClassSupports: React.FC = () => {
    };
 
    const handleFileSelect = (file: any, filePath: string) => {
-      if (file) {
-         setSelectedFile(file);
-         setSelectedFileIndex(files.indexOf(filePath));
-      }
+      setSelectedFileIndex(files.indexOf(filePath));
+      if (file) setSelectedFile(file);
    };
 
    return (
@@ -506,13 +505,14 @@ const OptimizeClassSupports: React.FC = () => {
                <Grid size={9} sx={{ height: "100%" }}>
                   {selectedFile ? (
                      <ImageCanvas
+                        engine={detectionEngine}
                         file={selectedFile}
-                        boxes={boundingBoxes}
+                        annotations={boundingBoxes}
                         graph={graph}
-                        generatedBoxes={generatedBoxes}
+                        generatedAnnotations={generatedBoxes}
                         selectedAnnotationId={""}
-                        onBoxSelection={(id) => {}}
-                        onBoxUpdate={() => {}}
+                        onSelection={(id) => {}}
+                        onUpdate={() => {}}
                         isEditable={false}
                         setFileSize={() => { }}
                         handleRenderGraph={generateGraph}

@@ -1,5 +1,5 @@
 import { Paper, Typography, Box, Chip, Stack, Divider } from "@mui/material";
-import { QueryImageConfiguration } from "../ImageAnnotation/utils";
+import { QueryImageConfiguration } from "../ImageAnnotation/utils/utils";
 import { blueGrey, blue, green, orange } from "@mui/material/colors";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 

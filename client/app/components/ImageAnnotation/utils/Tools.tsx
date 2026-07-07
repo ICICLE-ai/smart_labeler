@@ -29,32 +29,9 @@ import {
 } from "@mui/material";
 import { useNavigate } from "@remix-run/react";
 import React, { useEffect, useState } from "react";
-import { allowed_systems, fetchFile } from "~/utils/utils";
+import { allowed_systems, DEFAULT_SYSTEM, fetchFile } from "~/utils/utils";
 import { useCookies } from "react-cookie";
-import AnnotationFileFormatSwitch from "./AnnotationFileFormatSwitch";
-
-// Strip srcImgDir prefix from a stored full path to get the relative filename.
-// Normalises leading/trailing slashes before comparing so format differences don't break the match.
-// Falls back to just the filename if the prefix doesn't match.
-const toRelative = (fullPath: string, dir: string): string => {
-   if (!fullPath) return "";
-   // Normalise: strip leading and trailing slashes for comparison
-   const normDir = dir.replace(/^\/+/, "").replace(/\/+$/, "");
-   const normPath = fullPath.replace(/^\/+/, "");
-   if (normDir && normPath.startsWith(normDir + "/")) {
-      return normPath.slice(normDir.length + 1);
-   }
-   // Prefix doesn't match (e.g. annotation saved to a different dir) — show just the filename
-   const lastSlash = fullPath.lastIndexOf("/");
-   return lastSlash >= 0 ? fullPath.slice(lastSlash + 1) : fullPath;
-};
-
-// Join srcImgDir + relative filename into a full path.
-// If relative already looks absolute (starts with "/"), use it as-is.
-const toFullPath = (relative: string, dir: string): string => {
-   if (!dir || relative.startsWith("/")) return relative;
-   return `${dir.replace(/\/+$/, "")}/${relative.replace(/^\/+/, "")}`;
-};
+import AnnotationFileFormatSwitch from "../AnnotationFileFormatSwitch";
 
 interface SaveModalProps {
    open: boolean;
@@ -63,32 +40,27 @@ interface SaveModalProps {
    initialFilePath?: string;
    initialSystem?: string;
    initialIsCoco?: boolean;
-   srcImgDir?: string;
 }
 
 const SaveModal: React.FC<SaveModalProps> = ({
    open, onClose, onSave,
-   initialFilePath = "", initialSystem = "pitzer-tapis", initialIsCoco = false,
-   srcImgDir = "",
+   initialFilePath = "", initialSystem = DEFAULT_SYSTEM, initialIsCoco = false,
 }) => {
-   const [relativeFilePath, setRelativeFilePath] = useState(() => toRelative(initialFilePath, srcImgDir));
+   const [filePath, setFilePath] = useState(initialFilePath);
    const [isCocoJson, setIsCocoJson] = useState(initialIsCoco);
    const [system, setSystem] = useState<string>(initialSystem);
 
-   // Sync with parent values whenever the modal is (re)opened
    useEffect(() => {
       if (open) {
-         setRelativeFilePath(toRelative(initialFilePath, srcImgDir));
+         setFilePath(initialFilePath);
          setIsCocoJson(initialIsCoco);
-         setSystem(initialSystem || "pitzer-tapis");
+         setSystem(initialSystem || DEFAULT_SYSTEM);
       }
-   }, [open, initialFilePath, initialIsCoco, initialSystem, srcImgDir]);
-
-   const fullPath = srcImgDir ? toFullPath(relativeFilePath, srcImgDir) : relativeFilePath;
+   }, [open, initialFilePath, initialIsCoco, initialSystem]);
 
    const handleSave = () => {
-      if (!relativeFilePath.trim()) return;
-      onSave(fullPath, isCocoJson, system);
+      if (!filePath.trim()) return;
+      onSave(filePath, isCocoJson, system);
       onClose();
    };
 
@@ -108,24 +80,15 @@ const SaveModal: React.FC<SaveModalProps> = ({
                   </MenuItem>
                ))}
             </Select>
-            {srcImgDir && (
-               <Box sx={{ mb: 0.5, display: "flex", alignItems: "center", gap: 0.5 }}>
-                  <Typography variant="caption" color="text.secondary">Save in:</Typography>
-                  <Typography variant="caption" sx={{ fontFamily: "monospace", color: "text.primary", wordBreak: "break-all" }}>
-                     {srcImgDir}/
-                  </Typography>
-               </Box>
-            )}
             <TextField
                autoFocus
                margin="dense"
-               label={srcImgDir ? "Filename" : "File Path"}
+               label="File Path"
                type="text"
                fullWidth
-               value={relativeFilePath}
-               onChange={(e) => setRelativeFilePath(e.target.value)}
-               placeholder="annotations.json"
-               helperText={srcImgDir && relativeFilePath.trim() ? `Full path: ${fullPath}` : undefined}
+               value={filePath}
+               onChange={(e) => setFilePath(e.target.value)}
+               placeholder="path/to/annotations.json"
                sx={{ mb: 2 }}
             />
             <FormControl component="fieldset" sx={{ width: "100%" }}>
@@ -142,7 +105,7 @@ const SaveModal: React.FC<SaveModalProps> = ({
             <Button
                onClick={handleSave}
                color="primary"
-               disabled={!relativeFilePath.trim()}
+               disabled={!filePath.trim()}
             >
                Save
             </Button>
@@ -173,7 +136,7 @@ const Tools = (props: {
    const [pipeId, setPipeId] = useState(props.pipeId);
    const [isCoco, setIsCoco] = useState<boolean>(false);
    const [filePath, setFilePath] = useState<string>("");
-   const [system, setSystem] = useState<string>("pitzer-tapis");
+   const [system, setSystem] = useState<string>(DEFAULT_SYSTEM);
    const [cookie, setCookie] = useCookies(["tapis-token"]);
    const [fileUploaded, setFileUploaded] = useState<boolean>(
       props.filesUploaded
@@ -344,7 +307,7 @@ const Tools = (props: {
                <Tooltip
                   title={
                      props.annotationFilePath
-                        ? `Save to: ${toRelative(props.annotationFilePath, props.annotationSrcImgDir ?? "")}`
+                        ? `Save to: ${props.annotationFilePath}`
                         : "Save annotations (choose path)"
                   }
                >
@@ -491,9 +454,8 @@ const Tools = (props: {
             onClose={() => setOpenSaveModal(false)}
             onSave={handleSaveModalConfirm}
             initialFilePath={props.annotationFilePath ?? ""}
-            initialSystem={props.annotationSystem ?? "pitzer-tapis"}
+            initialSystem={props.annotationSystem ?? DEFAULT_SYSTEM}
             initialIsCoco={props.annotationIsCoco ?? false}
-            srcImgDir={props.annotationSrcImgDir ?? ""}
          />
       </>
    );

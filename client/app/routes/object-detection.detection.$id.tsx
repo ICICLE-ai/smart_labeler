@@ -16,7 +16,8 @@ import React, { useEffect } from "react";
 import {
    Annotation,
    ImageCanvas,
-} from "~/components/ImageAnnotation/ImageCanvas";
+   detectionEngine,
+} from "~/components/ImageAnnotation/canvas/ImageCanvas";
 import {
    fetchAndReturnData,
    getImage,
@@ -30,9 +31,9 @@ import {
    importFromDefaultJsonUtil,
    isImageFile,
    QueryImageConfiguration,
-} from "~/components/ImageAnnotation/utils";
+} from "~/components/ImageAnnotation/utils/utils";
 import QueryImageConfigurationItem from "~/components/ObjectDetection/QueryImageConfigurationItem";
-import { FileExplorer } from "~/components/ImageAnnotation/FileExplorer";
+import { FileExplorer } from "~/components/FileExplorer/FileExplorer";
 import { usePipeline } from "~/context/PipelineContext";
 
 
@@ -383,13 +384,14 @@ const OptimizeObjectnessThreshold: React.FC = () => {
                <Grid size={9}>
                   {selectedFile ? (
                      <ImageCanvas
+                        engine={detectionEngine}
                         file={selectedFile}
-                        boxes={[]}
+                        annotations={[]}
                         graph={graph}
-                        generatedBoxes={boundingBoxes}
+                        generatedAnnotations={boundingBoxes}
                         selectedAnnotationId={""}
-                        onBoxSelection={(id) => console.log(id)}
-                        onBoxUpdate={() => console.log("update")}
+                        onSelection={(id) => console.log(id)}
+                        onUpdate={() => console.log("update")}
                         isEditable={false}
                         setFileSize={() => { }}
                         handleRenderGraph={generateGraph}

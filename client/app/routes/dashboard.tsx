@@ -29,7 +29,7 @@ import { useCookies } from "react-cookie";
 import FormikTapisFileWrapper from "~/components/FileExplorer/FormikTapisFileWrapper";
 import { IndexAppShell } from "~/components/IndexAppShell";
 import { useAppConfig } from "~/context/AppConfigContext";
-import { DeleteData, fetchAndReturnData, SubmitData, TYPE, allowed_systems } from "~/utils/utils";
+import { DeleteData, fetchAndReturnData, SubmitData, TYPE, allowed_systems, DEFAULT_SYSTEM } from "~/utils/utils";
 
 type Pipeline = {
   pid: string;
@@ -84,7 +84,7 @@ export default function DashBoardPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
   const [createDesc, setCreateDesc] = useState("");
-  const [createSlurm, setCreateSlurm] = useState("");
+  const [createSlurm, setCreateSlurm] = useState("uot260");
   const [createType, setCreateType] = useState<TYPE>(TYPE.DETECTION);
   const [creating, setCreating] = useState(false);
 
@@ -99,7 +99,7 @@ export default function DashBoardPage() {
 
   // Upload state
   const [uploadOpen, setUploadOpen] = useState(false);
-  const [uploadSystem, setUploadSystem] = useState<string>(allowed_systems[0]?.value ?? "");
+  const [uploadSystem, setUploadSystem] = useState<string>(DEFAULT_SYSTEM);
   const [uploadItems, setUploadItems] = useState<{ file: File; relativePath: string }[]>([]);
   const [uploadStates, setUploadStates] = useState<Record<string, FileUploadState>>({});
   const [isUploading, setIsUploading] = useState(false);
@@ -138,7 +138,7 @@ export default function DashBoardPage() {
 
   const uploadSingleFile = ({ file, relativePath }: { file: File; relativePath: string }): Promise<void> =>
     new Promise((resolve, reject) => {
-      const destPath = uploadFormRef.current?.values?.destPath?.trim().replace(/\/+$/, "") ?? "";
+      const destPath = uploadFormRef.current?.values?.destPath?.trim().replace(/^\/+/, "").replace(/\/+$/, "") ?? "";
       const url = `${tapisBaseUrl}/v3/files/ops/${uploadSystem}/${destPath}/${relativePath}`;
       const xhr = new XMLHttpRequest();
       const fd = new FormData();
@@ -173,10 +173,11 @@ export default function DashBoardPage() {
 
   const handleUpload = async () => {
     const destPath = uploadFormRef.current?.values?.destPath?.trim() ?? "";
-    if (!uploadItems.length || !uploadSystem || !destPath) return;
+    const pending = uploadItems.filter(i => uploadStates[i.relativePath]?.status !== "done");
+    if (!pending.length || !uploadSystem || !destPath) return;
     setIsUploading(true);
     setUploadResult(null);
-    const results = await Promise.allSettled(uploadItems.map(uploadSingleFile));
+    const results = await Promise.allSettled(pending.map(uploadSingleFile));
     setIsUploading(false);
     const succeeded = results.filter((r) => r.status === "fulfilled").length;
     const failed = results.filter((r) => r.status === "rejected").length;
@@ -189,7 +190,7 @@ export default function DashBoardPage() {
     setUploadItems([]);
     setUploadStates({});
     setUploadResult(null);
-    setUploadSystem(allowed_systems[0]?.value ?? "");
+    setUploadSystem(DEFAULT_SYSTEM);
     uploadFormRef.current?.resetForm?.();
     setUploadOpen(true);
   };
@@ -197,23 +198,23 @@ export default function DashBoardPage() {
   const openCreate = () => {
     setCreateName("");
     setCreateDesc("");
-    setCreateSlurm("");
+    setCreateSlurm("uot260");
     setCreateType(activeType ?? TYPE.DETECTION);
     setCreateOpen(true);
   };
 
   const handleCreate = async () => {
-    if (!createName.trim() || !createSlurm.trim()) return;
+    if (!createName.trim()) return;
     setCreating(true);
     let pipeId: string | null = null;
     try {
       const res = await SubmitData(`/pipe/create`, {
         name: createName.trim(),
-        slurm: createSlurm.trim(),
+        slurmaccount: createSlurm.trim() || "uot260",
         description: createDesc.trim(),
         type: createType,
       }, token);
-      pipeId = res != null ? String(res) : null;
+      pipeId = res?.id != null ? String(res.id) : null;
     } finally {
       setCreating(false);
       setCreateOpen(false);
@@ -228,7 +229,7 @@ export default function DashBoardPage() {
   const openRename = (p: Pipeline) => {
     setRenameId(p.pid);
     setRenameName(p.name ?? "");
-    setRenameSlurm(p.slurm_account ?? "");
+    setRenameSlurm(p.slurm_account || "uot260");
     setRenameDesc(p.description ?? "");
   };
 
@@ -509,10 +510,9 @@ export default function DashBoardPage() {
             />
             <TextInput
               label="SLURM Account"
-              placeholder="e.g. PAS1234"
+              placeholder="uot260"
               value={createSlurm}
               onChange={(e) => setCreateSlurm(e.currentTarget.value)}
-              required
             />
             {!activeType && (
               <Select
@@ -538,7 +538,7 @@ export default function DashBoardPage() {
               mt="xs"
               onClick={handleCreate}
               loading={creating}
-              disabled={!createName.trim() || !createSlurm.trim()}
+              disabled={!createName.trim()}
               leftSection={<IconPlus size={16} />}
             >
               Create & Open
@@ -682,9 +682,9 @@ export default function DashBoardPage() {
                   leftSection={<IconUpload size={16} />}
                   onClick={handleUpload}
                   loading={isUploading}
-                  disabled={!uploadItems.length || !uploadSystem || !values.destPath.trim() || isUploading || uploadResult !== null}
+                  disabled={!uploadItems.some(i => uploadStates[i.relativePath]?.status !== "done") || !uploadSystem || !values.destPath.trim() || isUploading}
                 >
-                  Upload {uploadItems.length > 0 ? `${uploadItems.length} file${uploadItems.length > 1 ? "s" : ""}` : ""}
+                  {uploadResult === "error" || uploadResult === "partial" ? "Retry Failed" : `Upload${uploadItems.length > 0 ? ` ${uploadItems.filter(i => uploadStates[i.relativePath]?.status !== "done").length} file${uploadItems.filter(i => uploadStates[i.relativePath]?.status !== "done").length !== 1 ? "s" : ""}` : ""}`}
                 </Button>
 
                 {/* File list with progress */}

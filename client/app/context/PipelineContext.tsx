@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode, useCallback } from "react";
 import { fetchAndReturnData, JobStatus, getBaseURL } from "~/utils/utils";
 import { useCookies } from "react-cookie";
-import { Step } from "~/components/ImageAnnotation/utils";
+import { Step } from "~/components/ImageAnnotation/utils/utils";
 
 interface PipelineContextType {
     stepsData: Step[];
@@ -75,7 +75,7 @@ export const PipelineProvider: React.FC<PipelineProviderProps> = ({ children, pi
                 return;
             }
 
-            import("~/components/ImageAnnotation/utils").then(async (utils) => {
+            import("~/components/ImageAnnotation/utils/utils").then(async (utils) => {
                 const baseSteps = utils.steps;
                 const classSupportsJobId = res["generateClassSupportJobId"] || "";
                 let detectionJobId = "";

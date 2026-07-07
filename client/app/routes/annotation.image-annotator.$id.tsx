@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { FileExplorer } from "../components/ImageAnnotation/FileExplorer";
-import { ImageCanvas, type Annotation } from "../components/ImageAnnotation/ImageCanvas";
-import { SegmentationCanvas, type SegmentationAnnotation } from "../components/ImageAnnotation/SegmentationCanvas";
-import { AnnotationDetails } from "../components/ImageAnnotation/AnnotationDetails";
-import { SegmentationAnnotationDetails } from "../components/ImageAnnotation/SegmentationAnnotationDetails";
+import { FileExplorer } from "../components/FileExplorer/FileExplorer";
+import {
+   ImageCanvas,
+   detectionEngine,
+   segmentationEngine,
+   type Annotation,
+   type SegmentationAnnotation,
+   type CanvasEngine,
+} from "../components/ImageAnnotation/canvas/ImageCanvas";
+import { AnnotationDetails, type DetailsVariant } from "../components/ImageAnnotation/AnnotationDetails/AnnotationDetails";
 import { CircularProgress, Drawer, Grid, Box, Button, LinearProgress, Typography } from "@mui/material";
-import Tools from "../components/ImageAnnotation/Tools";
+import Tools from "../components/ImageAnnotation/utils/Tools";
 import {
    downloadFile,
    exportToCoco,
@@ -13,7 +18,7 @@ import {
    FileAnnotations,
    importFromCocoJsonUtil,
    importFromDefaultJsonUtil,
-} from "../components/ImageAnnotation/utils";
+} from "../components/ImageAnnotation/utils/utils";
 import { fetchFile, saveFile, SubmitData, fetchAndReturnData } from "~/utils/utils";
 import { useCookies } from "react-cookie";
 import { useLoaderData } from "@remix-run/react";
@@ -240,6 +245,21 @@ function importSegmentationFromCoco(
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Mode injection map – pick the canvas engine + details-panel variant per
+// pipeline type. To support a new annotation kind: add an entry here.
+// ────────────────────────────────────────────────────────────────────────────
+interface ModeConfig {
+   engine: CanvasEngine<any>;
+   detailsVariant: DetailsVariant;
+}
+
+const MODE_CONFIG: Record<string, ModeConfig> = {
+   [TYPE.SEGMENTATION]: { engine: segmentationEngine, detailsVariant: "segmentation" },
+};
+
+const DETECTION_CONFIG: ModeConfig = { engine: detectionEngine, detailsVariant: "detection" };
+
+// ────────────────────────────────────────────────────────────────────────────
 // Component
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -396,21 +416,22 @@ const ImageAnnotation = () => {
    // ────────────────────────────────────────────────────────────────────────
 
    useEffect(() => {
-      if (!selectedFile) return;
+      if (!selectedFilePath) return;
       if (isSegmentation) {
-         const fa = fileToMasksMap.get(selectedFilePath ?? "");
+         const fa = fileToMasksMap.get(selectedFilePath);
          setSegmentationMasks([...(fa?.masks ?? [])]);
       } else {
-         const fa = fileToAnnotationsMap.get(selectedFilePath ?? "");
+         const fa = fileToAnnotationsMap.get(selectedFilePath);
          setBoundingBoxes([...(fa?.annotations ?? [])]);
       }
-   }, [selectedFile]); // intentionally narrow – avoids overwriting live edits on import
+   }, [selectedFilePath]); // fires immediately on navigation, not after image load
 
-   const handleFileSelect = (file: Blob, filePath: string) => {
-      if (!firstImageLoadedRef.current) setIsImageLoading(true);
+   const handleFileSelect = (file: Blob | null, filePath: string) => {
       const prevPath = selectedFilePath;
 
-      if (prevPath !== null) {
+      // Persist annotations for the departing file immediately so rapid arrow-key
+      // navigation never shows stale annotations for the wrong file.
+      if (prevPath !== null && prevPath !== filePath) {
          if (isSegmentation) {
             setFileToMasksMap((prev) => {
                const updated = new Map(prev);
@@ -429,8 +450,12 @@ const ImageAnnotation = () => {
       }
 
       setSelectedFilePath(filePath);
-      setSelectedFile(file);
       setSelectedBoxId(undefined);
+
+      if (file) {
+         if (!firstImageLoadedRef.current) setIsImageLoading(true);
+         setSelectedFile(file);
+      }
       setSelectedMaskId(undefined);
    };
 
@@ -578,6 +603,70 @@ const ImageAnnotation = () => {
          });
       }
    };
+
+   // ────────────────────────────────────────────────────────────────────────
+   // Mode-driven wiring – engine + details panel are injected from MODE_CONFIG;
+   // the annotation state each one reads/writes is selected per mode below.
+   // ────────────────────────────────────────────────────────────────────────
+   const activeConfig = (pipelineType && MODE_CONFIG[pipelineType]) || DETECTION_CONFIG;
+
+   const handleImageLoaded = () => {
+      if (!firstImageLoadedRef.current) { firstImageLoadedRef.current = true; setIsImageLoading(false); }
+   };
+
+   const handleFilterAnnotations = (s: number, labels: string[], flags: string[]) => {
+      setScore(s);
+      setActiveLabels(labels);
+      setActiveFlags(flags);
+   };
+
+   // Props fed into the single <ImageCanvas>, chosen by mode.
+   const canvasProps = isSegmentation
+      ? {
+           annotations: segmentationMasks,
+           onAddition: (added: SegmentationAnnotation[]) => setSegmentationMasks((prev) => [...prev, ...added]),
+           selectedAnnotationId: selectedMaskId ?? null,
+           selectedAnnotationIds: selectedMaskIds,
+           onSelection: (id: string | null) => { setSelectedMaskId(id ?? undefined); setSelectedMaskIds([]); },
+           onMultiSelection: (ids: string[]) => { setSelectedMaskIds(ids); if (ids.length > 0) setSelectedMaskId(undefined); },
+           onUpdate: (id: string, updates: Partial<SegmentationAnnotation>) =>
+              setSegmentationMasks((prev) => prev.map((m) => (m.id === id ? { ...m, ...updates } : m))),
+           deleteAnnotations: (ids: string[]) => setSegmentationMasks((prev) => prev.filter((m) => !ids.includes(m.id))),
+        }
+      : {
+           annotations: boundingBoxes,
+           onAddition: (added: Annotation[]) => setBoundingBoxes((prev) => [...prev, ...added]),
+           selectedAnnotationId: selectedBoxId ?? "",
+           selectedAnnotationIds: selectedBoxIds,
+           onSelection: (id: string | null) => { setSelectedBoxId(id ?? undefined); setSelectedBoxIds([]); },
+           onMultiSelection: (ids: string[]) => { setSelectedBoxIds(ids); if (ids.length > 0) setSelectedBoxId(undefined); },
+           onUpdate: handleBoundingBoxUpdate,
+           deleteAnnotations: (ids: string[]) => setBoundingBoxes((prev) => prev.filter((x) => !ids.includes(x.id))),
+        };
+
+   // Props fed into the injected <Details> panel, chosen by mode.
+   const detailsProps = isSegmentation
+      ? {
+           annotations: segmentationMasks,
+           selectedBoxId: selectedMaskId,
+           selectedBoxIds: selectedMaskIds,
+           onSelectedBoxChange: (id: string) => setSelectedMaskId(id),
+           onSelectedBoxIdsChange: (ids: string[]) => { setSelectedMaskIds(ids); if (ids.length > 0) setSelectedMaskId(undefined); },
+           onAnnotationUpdate: (id: string, updates: Partial<SegmentationAnnotation>) =>
+              setSegmentationMasks((prev) => prev.map((m) => (m.id === id ? { ...m, ...updates } : m))),
+           deleteAnnotations: (ids: string[]) => setSegmentationMasks((prev) => prev.filter((m) => !ids.includes(m.id))),
+           handleFilterAnnotations,
+        }
+      : {
+           annotations: boundingBoxes,
+           selectedBoxId,
+           selectedBoxIds,
+           onSelectedBoxChange: (id: string) => setSelectedBoxId(id),
+           onSelectedBoxIdsChange: (ids: string[]) => { setSelectedBoxIds(ids); if (ids.length > 0) setSelectedBoxId(undefined); },
+           onAnnotationUpdate: handleBoundingBoxUpdate,
+           deleteAnnotations: (ids: string[]) => setBoundingBoxes((prev) => prev.filter((box) => !ids.includes(box.id))),
+           handleFilterAnnotations,
+        };
 
    // ────────────────────────────────────────────────────────────────────────
    // Render
@@ -739,57 +828,21 @@ const ImageAnnotation = () => {
          <Grid container spacing={2} sx={{ overflow: "hidden" }}>
             <Grid size={9}>
                {selectedFile ? (
-                  isSegmentation ? (
-                     <SegmentationCanvas
-                        file={selectedFile}
-                        annotations={segmentationMasks}
-                        onAnnotationAddition={(added) => setSegmentationMasks((prev) => [...prev, ...added])}
-                        selectedAnnotationId={selectedMaskId ?? null}
-                        selectedAnnotationIds={selectedMaskIds}
-                        onAnnotationSelection={(id) => { setSelectedMaskId(id ?? undefined); setSelectedMaskIds([]); }}
-                        onAnnotationMultiSelection={(ids) => { setSelectedMaskIds(ids); if (ids.length > 0) setSelectedMaskId(undefined); }}
-                        onAnnotationUpdate={(id, updates) =>
-                           setSegmentationMasks((prev) => prev.map((m) => (m.id === id ? { ...m, ...updates } : m)))
-                        }
-                        deleteAnnotations={(ids) => setSegmentationMasks((prev) => prev.filter((m) => !ids.includes(m.id)))}
-                        isEditable={true}
-                        setFileSize={handleSetFileSize}
-                        isGraphEnabled={false}
-                        fileName={selectedFilePath ?? ""}
-                        systemId={system}
-                        pipeId={pipeid}
-                        score={score}
-                        activeLabels={activeLabels}
-                        activeFlags={activeFlags}
-                        onImageLoaded={() => {
-                           if (!firstImageLoadedRef.current) { firstImageLoadedRef.current = true; setIsImageLoading(false); }
-                        }}
-                     />
-                  ) : (
-                     <ImageCanvas
-                        file={selectedFile}
-                        boxes={boundingBoxes}
-                        onBoxAddition={(annotations) => setBoundingBoxes((prev) => [...prev, ...annotations])}
-                        selectedAnnotationId={selectedBoxId ?? ""}
-                        selectedAnnotationIds={selectedBoxIds}
-                        onBoxSelection={(id) => { setSelectedBoxId(id ?? undefined); setSelectedBoxIds([]); }}
-                        onBoxMultiSelection={(ids) => { setSelectedBoxIds(ids); if (ids.length > 0) setSelectedBoxId(undefined); }}
-                        onBoxUpdate={handleBoundingBoxUpdate}
-                        deleteAnnotations={(ids) => setBoundingBoxes((prev) => prev.filter((x) => !ids.includes(x.id)))}
-                        isEditable={true}
-                        setFileSize={handleSetFileSize}
-                        isGraphEnabled={false}
-                        fileName={selectedFilePath ?? ""}
-                        systemId={system}
-                        pipeId={pipeid}
-                        score={score}
-                        activeLabels={activeLabels}
-                        activeFlags={activeFlags}
-                        onImageLoaded={() => {
-                           if (!firstImageLoadedRef.current) { firstImageLoadedRef.current = true; setIsImageLoading(false); }
-                        }}
-                     />
-                  )
+                  <ImageCanvas
+                     engine={activeConfig.engine as CanvasEngine<any>}
+                     {...(canvasProps as any)}
+                     file={selectedFile}
+                     isEditable={true}
+                     setFileSize={handleSetFileSize}
+                     isGraphEnabled={false}
+                     fileName={selectedFilePath ?? ""}
+                     systemId={system}
+                     pipeId={pipeid}
+                     score={score}
+                     activeLabels={activeLabels}
+                     activeFlags={activeFlags}
+                     onImageLoaded={handleImageLoaded}
+                  />
                ) : isConfigLoading ? (
                   <Box sx={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center", mt: 10, gap: 2 }}>
                      <CircularProgress size={48} />
@@ -807,45 +860,7 @@ const ImageAnnotation = () => {
             </Grid>
 
             <Grid size={3}>
-               {isSegmentation ? (
-                  <SegmentationAnnotationDetails
-                     annotations={segmentationMasks}
-                     selectedBoxId={selectedMaskId}
-                     selectedBoxIds={selectedMaskIds}
-                     onSelectedBoxChange={(id) => setSelectedMaskId(id)}
-                     onSelectedBoxIdsChange={(ids) => {
-                        setSelectedMaskIds(ids);
-                        if (ids.length > 0) setSelectedMaskId(undefined);
-                     }}
-                     onAnnotationUpdate={(id, updates) =>
-                        setSegmentationMasks((prev) => prev.map((m) => (m.id === id ? { ...m, ...updates } : m)))
-                     }
-                     deleteAnnotations={(ids) => setSegmentationMasks((prev) => prev.filter((m) => !ids.includes(m.id)))}
-                     handleFilterAnnotations={(s, labels, flags) => {
-                        setScore(s);
-                        setActiveLabels(labels);
-                        setActiveFlags(flags);
-                     }}
-                  />
-               ) : (
-                  <AnnotationDetails
-                     annotations={boundingBoxes}
-                     selectedBoxId={selectedBoxId}
-                     selectedBoxIds={selectedBoxIds}
-                     onSelectedBoxChange={(id) => setSelectedBoxId(id)}
-                     onSelectedBoxIdsChange={(ids) => {
-                        setSelectedBoxIds(ids);
-                        if (ids.length > 0) setSelectedBoxId(undefined);
-                     }}
-                     onBoundingBoxUpdate={handleBoundingBoxUpdate}
-                     deleteAnnotations={(ids) => setBoundingBoxes((prev) => prev.filter((box) => !ids.includes(box.id)))}
-                     handleFilterAnnotations={(s, labels, flags) => {
-                        setScore(s);
-                        setActiveLabels(labels);
-                        setActiveFlags(flags);
-                     }}
-                  />
-               )}
+               <AnnotationDetails variant={activeConfig.detailsVariant} {...(detailsProps as any)} />
             </Grid>
          </Grid>
       </>

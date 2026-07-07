@@ -281,7 +281,8 @@ class ObjectClassification:
         }
         if body.get("is_query_dir", False):
             data["parameterSet"]["appArgs"].append({"name": "is_dir", "arg": "--is_query_dir"})
-
+            
+        print('data : ', data)
         res = submit_tapis_job(data, token)
         print("Classification - Job submission response:", res)
         if res["status"] == "success":

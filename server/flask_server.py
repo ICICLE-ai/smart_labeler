@@ -306,7 +306,6 @@ def get_img(path: DigidSystemPath, query: ImgQuery):
         abort(400, description="Missing imgURL or filePath query parameter")
     imgURL = raw.replace("tapis://", "")
     token, user = getAuth(request)
-    test_pipe(path.digid, user)
     headers = {"X-Tapis-Token": token}
     url = f"https://icicleai.tapis.io/v3/files/content/{path.system}/{imgURL}"
     resp = requests.get(url, headers=headers)
@@ -364,7 +363,6 @@ def get_files(path: DigidSystemPath, query: DirQuery):
 @files_blp.post("/getimgs/<digid>")
 def get_imgs(path: DigidPath):
     token, user = getAuth(request)
-    test_pipe(path.digid, user)
     headers = {"X-Tapis-Token": token}
     url = f"https://icicleai.tapis.io/v3/files/ops/{get_data_dir(path.digid).replace('tapis://','')}"
     resp = requests.get(url, headers=headers)

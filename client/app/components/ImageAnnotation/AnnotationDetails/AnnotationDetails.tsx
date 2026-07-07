@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from "react";
-import type { SegmentationAnnotation } from "./SegmentationCanvas";
+import type { BaseAnnotation } from "../canvas/ImageCanvas";
 import {
    Box,
    Button,
@@ -27,37 +27,95 @@ import FlagIcon from "@mui/icons-material/Flag";
 import FlagOutlinedIcon from "@mui/icons-material/FlagOutlined";
 import AddIcon from "@mui/icons-material/Add";
 import { TextField } from "@mui/material";
-import { getLabelColor } from "./utils";
+import { applyNMS, getLabelColor } from "../utils/utils";
 
+// Colour palette for dynamically created flags (cycles through)
 const FLAG_PALETTE = ["#f57c00", "#1976d2", "#388e3c", "#c62828", "#7b1fa2", "#00838f", "#ad1457", "#6d4c41"];
 const getFlagColor = (index: number) => FLAG_PALETTE[index % FLAG_PALETTE.length];
 
+// Default flag – only "Needs Review" pre-loaded.
 const DEFAULT_FLAGS: { value: string; label: string; color: string }[] = [
    { value: "review", label: "Needs Review", color: "#f57c00" },
 ];
 
-// Human-readable info for a segmentation annotation: point count + bounding box.
-function humanInfo(ann: SegmentationAnnotation): string {
-   if (ann.points.length === 0) return "no points";
-   const xs = ann.points.map((p) => p.x);
-   const ys = ann.points.map((p) => p.y);
+// ---------------------------------------------------------------------------
+// Variant config – the small set of things that differ between the detection
+// (bounding box) and segmentation (polygon mask) panels. Everything else in
+// this component is shared. To add a new kind, add a variant here.
+// ---------------------------------------------------------------------------
+export type DetailsVariant = "detection" | "segmentation";
+
+interface VariantConfig {
+   /** Section header + count noun for the list */
+   listTitle: string;
+   /** Singular noun used in the bulk-edit dialog ("annotation" / "mask") */
+   itemNoun: string;
+   /** Secondary info line for a single item */
+   describe: (ann: any) => string;
+   /** Whether to show the Non-Maximum-Suppression control (detection only) */
+   enableNMS: boolean;
+   emptyState: React.ReactNode;
+   removeBelowLabel: (confidence: string) => string;
+   removeBelowTooltip: (confidence: string) => string;
+   bulkPlaceholder: string;
+}
+
+// Detection: bounding-box coordinates.
+const humanCoords = (b: any) =>
+   `x:${b.x.toFixed(0)}, y:${b.y.toFixed(0)}, w:${b.width.toFixed(0)}, h:${b.height.toFixed(0)}`;
+
+// Segmentation: point count + bounding box of the polygon.
+const humanInfo = (ann: any): string => {
+   if (!ann.points || ann.points.length === 0) return "no points";
+   const xs = ann.points.map((p: any) => p.x);
+   const ys = ann.points.map((p: any) => p.y);
    const minX = Math.min(...xs), maxX = Math.max(...xs);
    const minY = Math.min(...ys), maxY = Math.max(...ys);
    return `pts:${ann.points.length}  bb:${minX.toFixed(0)},${minY.toFixed(0)} ${(maxX - minX).toFixed(0)}×${(maxY - minY).toFixed(0)}`;
-}
+};
 
-interface SegmentationAnnotationDetailsProps {
-   annotations: SegmentationAnnotation[];
+const VARIANT_CONFIG: Record<DetailsVariant, VariantConfig> = {
+   detection: {
+      listTitle: "Annotations",
+      itemNoun: "annotation",
+      describe: humanCoords,
+      enableNMS: true,
+      emptyState: (
+         <>No annotations yet. <b>Lock</b> the view to enter draw mode, then click-drag on the image.</>
+      ),
+      removeBelowLabel: (c) => `Remove annotations below score : ${c}`,
+      removeBelowTooltip: (c) => `Delete all annotations with score < ${c}`,
+      bulkPlaceholder: "e.g., person, cat",
+   },
+   segmentation: {
+      listTitle: "Masks",
+      itemNoun: "mask",
+      describe: humanInfo,
+      enableNMS: false,
+      emptyState: (
+         <>No masks yet. <b>Lock</b> the view, then click to place polygon points. Click the first point (green) to close a mask.</>
+      ),
+      removeBelowLabel: (c) => `Remove masks below score: ${c}`,
+      removeBelowTooltip: (c) => `Delete all masks with score < ${c}`,
+      bulkPlaceholder: "e.g., car, building",
+   },
+};
+
+interface AnnotationDetailsProps {
+   /** Condition that selects the detection vs segmentation differences. */
+   variant?: DetailsVariant;
+   annotations: BaseAnnotation[];
    selectedBoxId?: string;
    selectedBoxIds?: string[];
    onSelectedBoxChange: (id: string | undefined) => void;
    onSelectedBoxIdsChange?: (ids: string[]) => void;
-   onAnnotationUpdate: (id: string, updates: Partial<SegmentationAnnotation>) => void;
-   deleteAnnotations: (ids: string[]) => void;
+   onAnnotationUpdate: (id: string, updates: Partial<BaseAnnotation>) => void;
+   deleteAnnotations: (id: string[]) => void;
    handleFilterAnnotations?: (score: number, activeLabels: string[], activeFlags: string[]) => void;
 }
 
-export const SegmentationAnnotationDetails: React.FC<SegmentationAnnotationDetailsProps> = ({
+export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
+   variant = "detection",
    annotations,
    selectedBoxId,
    selectedBoxIds: selectedBoxIdsProp = [],
@@ -67,28 +125,34 @@ export const SegmentationAnnotationDetails: React.FC<SegmentationAnnotationDetai
    deleteAnnotations,
    handleFilterAnnotations,
 }) => {
-   const [items, setItems] = useState<SegmentationAnnotation[]>(annotations);
+   const config = VARIANT_CONFIG[variant];
+
+   const [boxes, setBoxes] = useState<BaseAnnotation[]>(annotations);
    const [selectedId, setSelectedId] = useState<string | undefined>(selectedBoxId);
    const [selectedIds, setSelectedIds] = useState<string[]>(selectedBoxIdsProp);
-   const [editingId, setEditingId] = useState<string | null>(null);
+   const [editingBoxId, setEditingBoxId] = useState<string | null>(null);
    const [labelValue, setLabelValue] = useState<string>("");
-   const [bulkEditOpen, setBulkEditOpen] = useState(false);
-   const [bulkLabelValue, setBulkLabelValue] = useState("");
+   const [bulkEditOpen, setBulkEditOpen] = useState<boolean>(false);
+   const [bulkLabelValue, setBulkLabelValue] = useState<string>("");
 
    const [availableLabels, setAvailableLabels] = useState<string[]>([]);
    const [activeLabels, setActiveLabels] = useState<string[]>([]);
    const [activeFlags, setActiveFlags] = useState<string[]>([]);
    const itemRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
-   const [confidence, setConfidence] = useState(0.3);
+   const [confidence, setConfidence] = useState<number>(0.3);
+   const [nms, setNms] = useState<number>(0.95);
 
+   // Flag options – starts with defaults, user can add more at runtime
    const [flagOptions, setFlagOptions] = useState(DEFAULT_FLAGS);
-   const [newFlagInput, setNewFlagInput] = useState("");
+   const [newFlagInput, setNewFlagInput] = useState<string>("");
 
+   // Flag menu state
    const [flagMenuAnchor, setFlagMenuAnchor] = useState<null | HTMLElement>(null);
    const [flagTargetId, setFlagTargetId] = useState<string | null>(null);
 
-   // ── Effects ──
-
+   // ---------------------------------------------------------------------------
+   // Effects
+   // ---------------------------------------------------------------------------
    useEffect(() => {
       handleFilterAnnotations?.(confidence, activeLabels, activeFlags);
    }, [confidence, activeLabels, activeFlags]);
@@ -103,7 +167,7 @@ export const SegmentationAnnotationDetails: React.FC<SegmentationAnnotationDetai
    useEffect(() => { setSelectedIds(selectedBoxIdsProp); }, [selectedBoxIdsProp]);
 
    useEffect(() => {
-      setItems(annotations);
+      setBoxes(annotations);
       const distinctLabels = Array.from(new Set(annotations.map((a) => a.label)));
       setAvailableLabels((prev) => Array.from(new Set([...prev, ...distinctLabels])));
 
@@ -121,16 +185,17 @@ export const SegmentationAnnotationDetails: React.FC<SegmentationAnnotationDetai
       });
    }, [annotations]);
 
-   // ── Handlers ──
-
-   const deleteItems = (ids: string[]) => {
-      setItems((prev) => prev.filter((a) => !ids.includes(a.id)));
+   // ---------------------------------------------------------------------------
+   // Handlers
+   // ---------------------------------------------------------------------------
+   const deleteBoxes = (ids: string[]) => {
+      setBoxes((prev) => prev.filter((a) => !ids.includes(a.id)));
       deleteAnnotations(ids);
    };
 
    const deleteSelected = () => {
       const toDelete = selectedIds.length > 0 ? selectedIds : selectedId ? [selectedId] : [];
-      deleteItems(toDelete);
+      deleteBoxes(toDelete);
       setSelectedIds([]);
       setSelectedId(undefined);
       onSelectedBoxIdsChange?.([]);
@@ -138,31 +203,35 @@ export const SegmentationAnnotationDetails: React.FC<SegmentationAnnotationDetai
    };
 
    const removeBelowThreshold = () => {
-      const toRemove = items.filter((b) => b.score !== undefined && b.score < confidence).map((b) => b.id);
-      deleteItems(toRemove);
+      const toRemove: string[] = boxes
+         .filter((b) => b.score !== undefined && b.score < confidence)
+         .map((b) => b.id);
+      deleteBoxes(toRemove);
    };
 
    const applyBulkLabel = (newLabel: string) => {
       const trimmed = newLabel.trim();
       if (!trimmed) return;
       const ids = selectedIds.length > 0 ? selectedIds : selectedId ? [selectedId] : [];
-      setItems((prev) => prev.map((b) => (ids.includes(b.id) ? { ...b, label: trimmed } : b)));
+      setBoxes((prev) =>
+         prev.map((b) => ids.includes(b.id) ? { ...b, label: trimmed } : b)
+      );
       ids.forEach((id) => {
-         const ann = items.find((b) => b.id === id);
-         if (ann) onAnnotationUpdate(id, { ...ann, label: trimmed });
+         const box = boxes.find((b) => b.id === id);
+         if (box) onAnnotationUpdate(id, { ...box, label: trimmed });
       });
       setBulkEditOpen(false);
       setBulkLabelValue("");
    };
 
-   const editItem = (id: string) => {
-      const ann = items.find((a) => a.id === id);
-      if (ann) { setEditingId(id); setLabelValue(ann.label); }
+   const editBox = (id: string) => {
+      const annotation = boxes.find((a) => a.id === id);
+      if (annotation) { setEditingBoxId(id); setLabelValue(annotation.label); }
    };
 
-   const commitEdit = (ann: SegmentationAnnotation) => {
-      onAnnotationUpdate(ann.id, { ...ann, label: labelValue.trim() });
-      setEditingId(null);
+   const commitEdit = (b: BaseAnnotation) => {
+      onAnnotationUpdate(b.id, { ...b, label: labelValue.trim() });
+      setEditingBoxId(null);
       setLabelValue("");
    };
 
@@ -174,10 +243,10 @@ export const SegmentationAnnotationDetails: React.FC<SegmentationAnnotationDetai
 
    const applyFlag = (flagValue: string | null) => {
       if (flagTargetId) {
-         const ann = items.find((b) => b.id === flagTargetId);
-         if (ann) {
-            const updated = { ...ann, flag: flagValue ?? undefined };
-            setItems((prev) => prev.map((b) => (b.id === flagTargetId ? updated : b)));
+         const box = boxes.find((b) => b.id === flagTargetId);
+         if (box) {
+            const updated = { ...box, flag: flagValue ?? undefined };
+            setBoxes((prev) => prev.map((b) => (b.id === flagTargetId ? updated : b)));
             onAnnotationUpdate(flagTargetId, updated);
          }
       }
@@ -190,181 +259,228 @@ export const SegmentationAnnotationDetails: React.FC<SegmentationAnnotationDetai
       if (!trimmed) return;
       const value = trimmed.toLowerCase().replace(/\s+/g, "_");
       if (flagOptions.some((f) => f.value === value)) return;
-      setFlagOptions((prev) => [...prev, { value, label: trimmed, color: getFlagColor(prev.length) }]);
+      setFlagOptions((prev) => [
+         ...prev,
+         { value, label: trimmed, color: getFlagColor(prev.length) },
+      ]);
       setNewFlagInput("");
    };
 
-   // ── Filtered + grouped data ──
-
-   const visibleItems = items.filter(
+   // ---------------------------------------------------------------------------
+   // Filtered + grouped data
+   // ---------------------------------------------------------------------------
+   const visibleBoxes = boxes.filter(
       (x) =>
-         (x.score === undefined || x.score >= confidence) &&
+         (x.score === undefined || (x.score !== undefined && x.score >= confidence)) &&
          (activeLabels.length === 0 || activeLabels.includes(x.label)) &&
          (activeFlags.length === 0 || (x.flag !== undefined && activeFlags.includes(x.flag)))
    );
-   const groupedLabels = Array.from(new Set(visibleItems.map((b) => b.label)));
+   const groupedLabels = Array.from(new Set(visibleBoxes.map((b) => b.label)));
 
-   // ── Render ──
-
+   // ---------------------------------------------------------------------------
+   // Render
+   // ---------------------------------------------------------------------------
    return (
       <Paper
          elevation={3}
          sx={{ p: 1.5, height: "90vh", display: "flex", flexDirection: "column", position: "relative", gap: 1 }}
       >
-         {/* ── Filters (scrollable) ── */}
+         {/* ── Filters (label, flag, confidence) – scrollable so annotations are never hidden ── */}
          <Box sx={{ flexShrink: 1, overflow: "auto", minHeight: 0 }}>
 
-            {/* Label filter */}
-            <Box>
-               <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1, letterSpacing: 0.5, textTransform: "uppercase", fontSize: "0.78rem", color: "text.secondary" }}>
-                  Filter by Label
-               </Typography>
-               <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
-                  {availableLabels.map((label) => {
-                     const color = getLabelColor(label);
-                     const active = activeLabels.includes(label);
-                     return (
-                        <Chip
-                           key={label}
-                           label={label}
-                           size="medium"
-                           onClick={() =>
-                              setActiveLabels((prev) =>
-                                 prev.includes(label) ? prev.filter((l) => l !== label) : [...prev, label]
-                              )
-                           }
-                           sx={{
-                              fontWeight: 600,
-                              fontSize: "0.82rem",
-                              borderRadius: "8px",
-                              border: `2px solid ${color}`,
-                              backgroundColor: active ? color : "transparent",
-                              color: active ? "#fff" : color,
-                              transition: "all 0.15s ease",
-                              "&:hover": { backgroundColor: color, color: "#fff", opacity: 0.9 },
-                           }}
-                        />
-                     );
-                  })}
-                  {activeLabels.length > 0 && (
-                     <Chip label="Clear" size="small" variant="outlined" onClick={() => setActiveLabels([])}
-                        sx={{ fontSize: "0.75rem", borderRadius: "8px", color: "text.secondary" }} />
-                  )}
-               </Box>
-            </Box>
-
-            <Divider />
-
-            {/* Flag filter */}
-            <Box>
-               <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1, letterSpacing: 0.5, textTransform: "uppercase", fontSize: "0.78rem", color: "text.secondary" }}>
-                  Filter by Flag
-               </Typography>
-               <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
-                  {flagOptions.map((opt) => {
-                     const active = activeFlags.includes(opt.value);
-                     const count = items.filter((b) => b.flag === opt.value).length;
-                     return (
-                        <Chip
-                           key={opt.value}
-                           icon={<FlagIcon sx={{ fontSize: "0.85rem !important", color: `${active ? "#fff" : opt.color} !important` }} />}
-                           label={`${opt.label}${count > 0 ? ` (${count})` : ""}`}
-                           size="medium"
-                           onClick={() =>
-                              setActiveFlags((prev) =>
-                                 prev.includes(opt.value) ? prev.filter((f) => f !== opt.value) : [...prev, opt.value]
-                              )
-                           }
-                           sx={{
-                              fontWeight: 600,
-                              fontSize: "0.82rem",
-                              borderRadius: "8px",
-                              border: `2px solid ${opt.color}`,
-                              backgroundColor: active ? opt.color : "transparent",
-                              color: active ? "#fff" : opt.color,
-                              transition: "all 0.15s ease",
-                              "&:hover": { backgroundColor: opt.color, color: "#fff", opacity: 0.9 },
-                           }}
-                        />
-                     );
-                  })}
-                  {activeFlags.length > 0 && (
-                     <Chip label="Clear" size="small" variant="outlined" onClick={() => setActiveFlags([])}
-                        sx={{ fontSize: "0.75rem", borderRadius: "8px", color: "text.secondary" }} />
-                  )}
-               </Box>
-               <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.75 }}>
-                  <TextField
+         {/* ── Label filter section ── */}
+         <Box>
+            <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1, letterSpacing: 0.5, textTransform: "uppercase", fontSize: "0.78rem", color: "text.secondary" }}>
+               Filter by Label
+            </Typography>
+            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
+               {availableLabels.map((label) => {
+                  const color = getLabelColor(label);
+                  const active = activeLabels.includes(label);
+                  return (
+                     <Chip
+                        key={label}
+                        label={label}
+                        size="medium"
+                        onClick={() =>
+                           setActiveLabels((prev) =>
+                              prev.includes(label) ? prev.filter((l) => l !== label) : [...prev, label]
+                           )
+                        }
+                        sx={{
+                           fontWeight: 600,
+                           fontSize: "0.82rem",
+                           borderRadius: "8px",
+                           border: `2px solid ${color}`,
+                           backgroundColor: active ? color : "transparent",
+                           color: active ? "#fff" : color,
+                           transition: "all 0.15s ease",
+                           "&:hover": { backgroundColor: color, color: "#fff", opacity: 0.9 },
+                        }}
+                     />
+                  );
+               })}
+               {activeLabels.length > 0 && (
+                  <Chip
+                     label="Clear"
                      size="small"
-                     placeholder="New flag name…"
-                     value={newFlagInput}
-                     onChange={(e) => setNewFlagInput(e.target.value)}
-                     onKeyDown={(e) => { if (e.key === "Enter") addFlag(); }}
-                     sx={{ flex: 1, "& .MuiInputBase-input": { fontSize: "0.82rem", py: 0.5 } }}
+                     variant="outlined"
+                     onClick={() => setActiveLabels([])}
+                     sx={{ fontSize: "0.75rem", borderRadius: "8px", color: "text.secondary" }}
                   />
-                  <Tooltip title="Add flag">
-                     <span>
-                        <IconButton size="small" onClick={addFlag} disabled={!newFlagInput.trim()} color="primary">
-                           <AddIcon fontSize="small" />
-                        </IconButton>
-                     </span>
-                  </Tooltip>
-               </Stack>
+               )}
             </Box>
+         </Box>
 
-            <Divider />
+         <Divider />
 
-            {/* Confidence slider */}
-            <Box sx={{ px: 1 }}>
-               <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.5 }}>
-                  <Typography variant="subtitle1" fontWeight={700} sx={{ letterSpacing: 0.5, textTransform: "uppercase", fontSize: "0.78rem", color: "text.secondary" }}>
-                     Confidence
-                  </Typography>
-                  <Typography variant="body2" fontWeight={700} color="primary">
-                     {confidence.toFixed(2)}
-                  </Typography>
-               </Stack>
-               <Slider
-                  value={confidence} min={0} max={1} step={0.01}
-                  valueLabelDisplay="auto"
-                  onChange={(_, v) => setConfidence(v as number)}
+         {/* ── Flag filter section ── */}
+         <Box>
+            <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1, letterSpacing: 0.5, textTransform: "uppercase", fontSize: "0.78rem", color: "text.secondary" }}>
+               Filter by Flag
+            </Typography>
+            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
+               {flagOptions.map((opt) => {
+                  const active = activeFlags.includes(opt.value);
+                  const count = boxes.filter((b) => b.flag === opt.value).length;
+                  return (
+                     <Chip
+                        key={opt.value}
+                        icon={<FlagIcon sx={{ fontSize: "0.85rem !important", color: `${active ? "#fff" : opt.color} !important` }} />}
+                        label={`${opt.label}${count > 0 ? ` (${count})` : ""}`}
+                        size="medium"
+                        onClick={() =>
+                           setActiveFlags((prev) =>
+                              prev.includes(opt.value) ? prev.filter((f) => f !== opt.value) : [...prev, opt.value]
+                           )
+                        }
+                        sx={{
+                           fontWeight: 600,
+                           fontSize: "0.82rem",
+                           borderRadius: "8px",
+                           border: `2px solid ${opt.color}`,
+                           backgroundColor: active ? opt.color : "transparent",
+                           color: active ? "#fff" : opt.color,
+                           transition: "all 0.15s ease",
+                           "&:hover": { backgroundColor: opt.color, color: "#fff", opacity: 0.9 },
+                        }}
+                     />
+                  );
+               })}
+               {activeFlags.length > 0 && (
+                  <Chip
+                     label="Clear"
+                     size="small"
+                     variant="outlined"
+                     onClick={() => setActiveFlags([])}
+                     sx={{ fontSize: "0.75rem", borderRadius: "8px", color: "text.secondary" }}
+                  />
+               )}
+            </Box>
+            {/* ── Add new flag ── */}
+            <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.75 }}>
+               <TextField
                   size="small"
+                  placeholder="New flag name…"
+                  value={newFlagInput}
+                  onChange={(e) => setNewFlagInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") addFlag(); }}
+                  sx={{ flex: 1, "& .MuiInputBase-input": { fontSize: "0.82rem", py: 0.5 } }}
                />
-               <Tooltip title={`Delete all masks with score < ${confidence.toFixed(2)}`}>
+               <Tooltip title="Add flag">
                   <span>
-                     <Button
-                        size="small"
-                        variant="outlined"
-                        color="error"
-                        startIcon={<DeleteIcon fontSize="small" />}
-                        onClick={removeBelowThreshold}
-                        disabled={!items.some((b) => b.score !== undefined && b.score < confidence)}
-                        sx={{ mt: 0.5, fontSize: "0.75rem", textTransform: "none", borderRadius: 2, width: "100%" }}
-                     >
-                        Remove masks below score: {confidence.toFixed(2)}
-                     </Button>
+                     <IconButton size="small" onClick={addFlag} disabled={!newFlagInput.trim()} color="primary">
+                        <AddIcon fontSize="small" />
+                     </IconButton>
                   </span>
                </Tooltip>
-            </Box>
-
-            <Divider />
+            </Stack>
          </Box>
+
+         <Divider />
+
+         {/* ── Confidence slider ── */}
+         <Box sx={{ px: 1 }}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.5 }}>
+               <Typography variant="subtitle1" fontWeight={700} sx={{ letterSpacing: 0.5, textTransform: "uppercase", fontSize: "0.78rem", color: "text.secondary" }}>
+                  Confidence
+               </Typography>
+               <Typography variant="body2" fontWeight={700} color="primary">
+                  {confidence.toFixed(2)}
+               </Typography>
+            </Stack>
+            <Slider
+               value={confidence}
+               min={0} max={1} step={0.01}
+               valueLabelDisplay="auto"
+               onChange={(_, v) => setConfidence(v as number)}
+               size="small"
+            />
+            <Tooltip title={config.removeBelowTooltip(confidence.toFixed(2))}>
+               <span>
+                  <Button
+                     size="small"
+                     variant="outlined"
+                     color="error"
+                     startIcon={<DeleteIcon fontSize="small" />}
+                     onClick={removeBelowThreshold}
+                     disabled={!boxes.some((b) => b.score !== undefined && b.score < confidence)}
+                     sx={{ mt: 0.5, fontSize: "0.75rem", textTransform: "none", borderRadius: 2, width: '100%' }}
+                  >
+                     {config.removeBelowLabel(confidence.toFixed(2))}
+                  </Button>
+               </span>
+            </Tooltip>
+            {config.enableNMS && (
+               <Tooltip title="Apply Non-Maximum Suppression to eliminate overlapping boxes (keeps highest confidence)"
+                  sx={{ width: '100%' }}
+               >
+                  <span>
+                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, width: '100%', gap: 2 }}>
+                         <TextField
+                           type="number"
+                           size="small"
+                           value={nms}
+                           onChange={(e) => setNms(parseFloat(e.target.value))}
+                           sx={{ flex: '0 0 30%', "& .MuiInputBase-input": { fontSize: "0.75rem", textAlign: "center" } }}
+                         />
+                         <Button
+                           size="small"
+                           variant="outlined"
+                           color="warning"
+                           onClick={() => {
+                              const boxesToRemove = applyNMS(boxes as any, nms);
+                              deleteBoxes(boxesToRemove);
+                           }}
+                           disabled={boxes.length < 2}
+                           sx={{ flex: 1, fontSize: "0.75rem", textTransform: "none", borderRadius: 2 }}
+                         >
+                           NMS (IoU ≥ {nms.toFixed(2)})
+                         </Button>
+                       </div>
+                  </span>
+               </Tooltip>
+            )}
+         </Box>
+
+         <Divider />
+
+         </Box>{/* end scrollable filters */}
 
          {/* ── Annotations list ── */}
          <Box sx={{ flex: 1, minHeight: 180, display: "flex", flexDirection: "column" }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.5 }}>
                <Typography variant="subtitle1" fontWeight={700} sx={{ letterSpacing: 0.5, textTransform: "uppercase", fontSize: "0.78rem", color: "text.secondary" }}>
-                  Masks
+                  {config.listTitle}
                </Typography>
                <Typography variant="caption" color="text.secondary">
-                  {visibleItems.length} / {items.length}
+                  {visibleBoxes.length} / {boxes.length}
                </Typography>
             </Stack>
 
-            {/* Bulk action bar */}
+            {/* Bulk action bar – visible when ≥1 item is multi-selected */}
             {selectedIds.length > 0 && (
-               <Stack direction="row" spacing={0.75} alignItems="center"
-                  sx={{ mb: 0.5, p: 0.5, borderRadius: 1, backgroundColor: "#e535351a", border: "1px solid #e5353566" }}>
+               <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mb: 0.5, p: 0.5, borderRadius: 1, backgroundColor: "#e535351a", border: "1px solid #e5353566" }}>
                   <Chip
                      label={`${selectedIds.length} selected`}
                      size="small"
@@ -389,34 +505,55 @@ export const SegmentationAnnotationDetails: React.FC<SegmentationAnnotationDetai
             )}
 
             <Box sx={{ flex: 1, overflow: "auto" }}>
-               {items.length === 0 ? (
+               {boxes.length === 0 ? (
                   <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                     No masks yet. <b>Lock</b> the view, then click to place polygon points. Click the first point (green) to close a mask.
+                     {config.emptyState}
                   </Typography>
                ) : (
                   groupedLabels.map((label) => {
                      const color = getLabelColor(label);
-                     const groupItems = visibleItems.filter((b) => b.label === label);
+                     const groupBoxes = visibleBoxes.filter((b) => b.label === label);
                      return (
                         <Box key={label} sx={{ mb: 1.5 }}>
                            {/* Group header */}
-                           <Box sx={{ display: "flex", alignItems: "center", gap: 1, px: 1, py: 0.5, borderRadius: "8px 8px 0 0", backgroundColor: color }}>
-                              <Typography variant="body2" fontWeight={700}
-                                 sx={{ color: "#fff", fontSize: "0.88rem", letterSpacing: 0.4, flex: 1 }}>
+                           <Box
+                              sx={{
+                                 display: "flex",
+                                 alignItems: "center",
+                                 gap: 1,
+                                 px: 1,
+                                 py: 0.5,
+                                 borderRadius: "8px 8px 0 0",
+                                 backgroundColor: color,
+                              }}
+                           >
+                              <Typography
+                                 variant="body2"
+                                 fontWeight={700}
+                                 sx={{ color: "#fff", fontSize: "0.88rem", letterSpacing: 0.4, flex: 1 }}
+                              >
                                  {label}
                               </Typography>
                               <Chip
-                                 label={groupItems.length}
+                                 label={groupBoxes.length}
                                  size="small"
-                                 sx={{ height: 20, fontSize: "0.72rem", fontWeight: 700, backgroundColor: "rgba(255,255,255,0.25)", color: "#fff" }}
+                                 sx={{
+                                    height: 20,
+                                    fontSize: "0.72rem",
+                                    fontWeight: 700,
+                                    backgroundColor: "rgba(255,255,255,0.25)",
+                                    color: "#fff",
+                                 }}
                               />
                            </Box>
 
                            {/* Group items */}
-                           <Paper variant="outlined"
-                              sx={{ borderRadius: "0 0 8px 8px", borderTop: "none", borderColor: color, overflow: "hidden" }}>
+                           <Paper
+                              variant="outlined"
+                              sx={{ borderRadius: "0 0 8px 8px", borderTop: "none", borderColor: color, overflow: "hidden" }}
+                           >
                               <List dense disablePadding>
-                                 {groupItems.map((b, idx) => {
+                                 {groupBoxes.map((b, idx) => {
                                     const isSelected = selectedId === b.id;
                                     const isMultiSelected = selectedIds.includes(b.id);
                                     const flagInfo = flagOptions.find((f) => f.value === b.flag);
@@ -456,7 +593,7 @@ export const SegmentationAnnotationDetails: React.FC<SegmentationAnnotationDetai
                                              <ListItemText
                                                 primary={
                                                    <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
-                                                      {editingId === b.id ? (
+                                                      {editingBoxId === b.id ? (
                                                          <input
                                                             type="text"
                                                             value={labelValue}
@@ -465,7 +602,7 @@ export const SegmentationAnnotationDetails: React.FC<SegmentationAnnotationDetai
                                                             onBlur={() => commitEdit(b)}
                                                             onKeyDown={(e) => {
                                                                if (e.key === "Enter") commitEdit(b);
-                                                               else if (e.key === "Escape") { setEditingId(null); setLabelValue(""); }
+                                                               else if (e.key === "Escape") { setEditingBoxId(null); setLabelValue(""); }
                                                             }}
                                                             style={{
                                                                fontSize: "0.88rem",
@@ -480,12 +617,18 @@ export const SegmentationAnnotationDetails: React.FC<SegmentationAnnotationDetai
                                                       ) : (
                                                          <>
                                                             {isMultiSelected && (
-                                                               <Chip size="small" label="✓"
-                                                                  sx={{ height: 18, fontSize: "0.7rem", fontWeight: 700, backgroundColor: "#e53535", color: "#fff" }} />
+                                                               <Chip
+                                                                  size="small"
+                                                                  label="✓"
+                                                                  sx={{ height: 18, fontSize: "0.7rem", fontWeight: 700, backgroundColor: "#e53535", color: "#fff" }}
+                                                               />
                                                             )}
                                                             {isSelected && !isMultiSelected && (
-                                                               <Chip size="small" label="Selected"
-                                                                  sx={{ height: 18, fontSize: "0.7rem", fontWeight: 700, backgroundColor: color, color: "#fff" }} />
+                                                               <Chip
+                                                                  size="small"
+                                                                  label="Selected"
+                                                                  sx={{ height: 18, fontSize: "0.7rem", fontWeight: 700, backgroundColor: color, color: "#fff" }}
+                                                               />
                                                             )}
                                                          </>
                                                       )}
@@ -508,11 +651,13 @@ export const SegmentationAnnotationDetails: React.FC<SegmentationAnnotationDetai
                                                 }
                                                 secondary={
                                                    <Typography variant="caption" color="text.secondary" component="span">
-                                                      {humanInfo(b)}
+                                                      {config.describe(b)}
                                                       {b.score !== undefined && ` · ${(b.score * 100).toFixed(0)}%`}
                                                    </Typography>
                                                 }
                                              />
+
+                                             {/* Action buttons */}
                                              <Stack direction="row" alignItems="center" spacing={0}>
                                                 <Tooltip title={b.flag ? `Flag: ${flagInfo?.label ?? b.flag}` : "Add Flag"}>
                                                    <IconButton
@@ -524,12 +669,12 @@ export const SegmentationAnnotationDetails: React.FC<SegmentationAnnotationDetai
                                                    </IconButton>
                                                 </Tooltip>
                                                 <Tooltip title="Edit label">
-                                                   <IconButton size="small" onClick={(e) => { e.stopPropagation(); editItem(b.id); }}>
+                                                   <IconButton size="small" onClick={(e) => { e.stopPropagation(); editBox(b.id); }}>
                                                       <EditIcon fontSize="small" />
                                                    </IconButton>
                                                 </Tooltip>
                                                 <Tooltip title="Delete">
-                                                   <IconButton size="small" color="error" onClick={(e) => { e.stopPropagation(); deleteItems([b.id]); }}>
+                                                   <IconButton size="small" color="error" onClick={(e) => { e.stopPropagation(); deleteBoxes([b.id]); }}>
                                                       <DeleteIcon fontSize="small" />
                                                    </IconButton>
                                                 </Tooltip>
@@ -555,7 +700,11 @@ export const SegmentationAnnotationDetails: React.FC<SegmentationAnnotationDetai
             PaperProps={{ elevation: 3, sx: { minWidth: 160, borderRadius: 2 } }}
          >
             {flagOptions.map((opt) => (
-               <MenuItem key={opt.value} onClick={() => applyFlag(opt.value)} sx={{ gap: 1, fontSize: "0.88rem" }}>
+               <MenuItem
+                  key={opt.value}
+                  onClick={() => applyFlag(opt.value)}
+                  sx={{ gap: 1, fontSize: "0.88rem" }}
+               >
                   <FlagIcon sx={{ color: opt.color, fontSize: "1rem" }} />
                   <Typography variant="body2" sx={{ color: opt.color, fontWeight: 600 }}>{opt.label}</Typography>
                </MenuItem>
@@ -569,7 +718,7 @@ export const SegmentationAnnotationDetails: React.FC<SegmentationAnnotationDetai
          {/* ── Bulk label edit dialog ── */}
          <Dialog open={bulkEditOpen} onClose={() => setBulkEditOpen(false)} maxWidth="xs" fullWidth>
             <DialogTitle>
-               Edit label for {selectedIds.length} selected mask{selectedIds.length !== 1 ? "s" : ""}
+               Edit label for {selectedIds.length} selected {config.itemNoun}{selectedIds.length !== 1 ? "s" : ""}
             </DialogTitle>
             <DialogContent>
                <TextField
@@ -580,7 +729,7 @@ export const SegmentationAnnotationDetails: React.FC<SegmentationAnnotationDetai
                   value={bulkLabelValue}
                   onChange={(e) => setBulkLabelValue(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") applyBulkLabel(bulkLabelValue); }}
-                  placeholder="e.g., car, building"
+                  placeholder={config.bulkPlaceholder}
                />
             </DialogContent>
             <DialogActions>

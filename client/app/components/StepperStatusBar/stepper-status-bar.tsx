@@ -27,7 +27,7 @@ import ImageIcon from "@mui/icons-material/Image";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import DescriptionOutlinedIcon from "@mui/icons-material/DescriptionOutlined";
-import { Step } from "../ImageAnnotation/utils";
+import { Step } from "../ImageAnnotation/utils/utils";
 import { useNavigate } from "@remix-run/react";
 import { usePipeline } from "~/context/PipelineContext";
 
