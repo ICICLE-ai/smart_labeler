@@ -15,13 +15,14 @@ import { ColorSchemeScript, MantineProvider } from "@mantine/core";
 import { LinksFunction } from "@remix-run/node";
 import { CookiesProvider } from "react-cookie";
 import { TapisProvider } from "@tapis/tapisui-hooks";
-import { initConfig } from "~/utils/utils";
+import { getAppTitle, initConfig } from "~/utils/utils";
 import { AppConfigProvider, type RuntimeEnv } from "~/context/AppConfigContext";
 
-export const meta: MetaFunction = () => {
+export const meta: MetaFunction = ({ data }) => {
+  const title = getAppTitle((data as any)?.ENV?.annotatorType);
   return [
-    { title: "Smart Labeler" },
-    { name: "Smart Labeler", content: "Welcome to Smart Labeler" },
+    { title },
+    { name: title, content: `Welcome to ${title}` },
   ];
 };
 
@@ -40,6 +41,7 @@ export async function loader() {
       proposers:       process.env.PROPOSERS        ?? null,
       annotatorType:   process.env.ANNOTATOR_TYPE   ?? "DETECTION",
       docUrl: process.env.DOC_URL ?? "https://buckeyemailosu-my.sharepoint.com/:w:/g/personal/jajodia_6_buckeyemail_osu_edu/IQDKR27YD4HXTo2eFkEU5umiAToGmQAUjXW03u7YsBRhjKE?e=NAXqEx",
+      demoVideoUrl:  process.env.DEMO_VIDEO_URL ?? "https://www.youtube.com/watch?v=8_My9auZnds",
     } satisfies RuntimeEnv,
   };
 }

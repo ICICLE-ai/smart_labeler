@@ -43,6 +43,16 @@ export const initConfig = (env: RuntimeEnv) => {
 export const getBaseURL = () => _baseUrl;
 export const getAnnotatorType = () => _annotatorType;
 
+// Full application title per annotator type. Falls back to the bare product
+// name when the type is unset (show-all mode) or unrecognised.
+export const APP_TITLES: Record<string, string> = {
+   DETECTION: "Smart Labeling Service for Object Detection",
+   SEGMENTATION: "Intelligent Semantic Segmentation & Annotation",
+};
+
+export const getAppTitle = (annotatorType?: string | null): string =>
+   (annotatorType && APP_TITLES[annotatorType.toUpperCase()]) || "Smart Labeler";
+
 // Strips PowerPoint/rich-text artefacts that silently break URL encoding.
 export const sanitizePath = (path: string): string =>
    path

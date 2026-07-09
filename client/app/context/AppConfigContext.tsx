@@ -9,6 +9,7 @@ export interface RuntimeEnv {
   proposers: string | null;       // comma-separated model names
   annotatorType: string | null;   // "DETECTION" | "SEGMENTATION" | null (show all)
   docUrl: string;        // Help Doc
+  demoVideoUrl: string;  // Live demo video
 }
 
 const AppConfigContext = createContext<RuntimeEnv | null>(null);

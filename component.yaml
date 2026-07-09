@@ -1,5 +1,5 @@
-- id: SmartLabeler:0.1.0
-  name: Smart Labeler
+- id: SmartDetector:0.1.0
+  name: Smart Labeling Service for Object Detection
   owner: Hari Subramoni
   primaryThrust: core/AI4CI
   targetIcicleRelease: 2026-05
