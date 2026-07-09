@@ -1,4 +1,4 @@
-# Smart Labeler — Semantic Segmentation
+# Intelligent Semantic Segmentation & Annotation
 
 A streamlined, HPC-backed pipeline dedicated exclusively to semantic and instance image segmentation using interactive masking tools and Tapis job execution.
 

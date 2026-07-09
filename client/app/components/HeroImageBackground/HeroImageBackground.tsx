@@ -3,15 +3,11 @@ import { Title, Text, Container, Button, Overlay, Group } from "@mantine/core";
 import classes from "./HeroImageBackground.module.css";
 import { Link } from "@remix-run/react";
 import { useAppConfig } from "~/context/AppConfigContext";
-
-const TYPE_SUBTITLES: Record<string, string> = {
-  DETECTION: "Object Detection",
-  SEGMENTATION: "Semantic Segmentation",
-};
+import { getAppTitle } from "~/utils/utils";
 
 export function HeroImageBackground() {
-  const { annotatorType } = useAppConfig();
-  const subtitle = annotatorType ? (TYPE_SUBTITLES[annotatorType.toUpperCase()] ?? null) : null;
+  const { annotatorType, demoVideoUrl } = useAppConfig();
+  const title = getAppTitle(annotatorType);
 
   return (
     <div className={classes.wrapper}>
@@ -20,9 +16,8 @@ export function HeroImageBackground() {
       <div className={classes.inner}>
         <Title className={classes.title}>
           <Text component="span" inherit className={classes.highlight}>
-            Smart Labeler
+            {title}
           </Text>
-          {subtitle && <> : {subtitle}</>}
         </Title>
 
         <Container size={640}>
@@ -46,7 +41,7 @@ export function HeroImageBackground() {
           <div>
             <Button
               component="a"
-              href="https://www.youtube.com/watch?v=RlM7ZrZvJqM"
+              href={demoVideoUrl}
               target="_blank"
               rel="noopener noreferrer"
               className={cx(classes.control, classes.secondaryControl)}

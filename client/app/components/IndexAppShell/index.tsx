@@ -2,6 +2,8 @@ import { AppShell, Burger, Group, NavLink, Text } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { Link, useLocation } from "@remix-run/react";
 import React from "react";
+import { useAppConfig } from "~/context/AppConfigContext";
+import { getAppTitle } from "~/utils/utils";
 
 const navItems = [
   { label: "Dashboard", to: "/dashboard" },
@@ -14,6 +16,8 @@ export const IndexAppShell: React.FC<{ children: React.ReactNode }> = ({
 }) => {
   const [opened, { toggle }] = useDisclosure();
   const location = useLocation();
+  const { annotatorType } = useAppConfig();
+  const title = getAppTitle(annotatorType);
 
   return (
     <AppShell
@@ -25,7 +29,7 @@ export const IndexAppShell: React.FC<{ children: React.ReactNode }> = ({
         <Group h="100%" px="md">
           <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" />
           <Text fw={700} size="lg">
-            Smart Labeler
+            {title}
           </Text>
         </Group>
       </AppShell.Header>
