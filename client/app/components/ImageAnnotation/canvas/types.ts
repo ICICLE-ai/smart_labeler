@@ -12,6 +12,7 @@ export enum CanvasMode {
    EDIT = "EDIT",
    SAM3_CLICK = "SAM3_CLICK",
    SAM3_TEXT = "SAM3_TEXT",
+   SAM3_EXEMPLAR = "SAM3_EXEMPLAR",
 }
 
 // ---------------------------------------------------------------------------

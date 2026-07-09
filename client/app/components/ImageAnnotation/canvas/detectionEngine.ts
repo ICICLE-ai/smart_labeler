@@ -1,4 +1,4 @@
-import { sam3Predictions } from "~/utils/utils";
+import { sam3ExemplarPredictions, sam3Predictions } from "~/utils/utils";
 import { getLabelColor } from "../utils/utils";
 import { CanvasMode, type Annotation, type CanvasEngine, type Coords, type EngineContext } from "./types";
 
@@ -74,6 +74,21 @@ function sam3Payload(ctx: Ctx, x?: number, y?: number, textPrompts?: string[]) {
       ...(ctx.sam3Config.patchSize > 0 ? { patch_size: ctx.sam3Config.patchSize } : {}),
       ...(x !== undefined && y !== undefined ? { x, y } : {}),
       ...(textPrompts ? { text_prompts: textPrompts } : {}),
+   };
+}
+
+/** Build the SAM3 exemplar-prompt payload. exemplarBox is [x_min, y_min, x_max, y_max]. */
+function sam3ExemplarPayload(ctx: Ctx, exemplarBox: [number, number, number, number]) {
+   const fileName = ctx.fileName;
+   return {
+      image_path: fileName,
+      image_id: fileName?.substring(fileName.lastIndexOf("/") + 1, fileName.lastIndexOf(".")) || "image_0",
+      pipe_id: ctx.pipeId || "0",
+      system_id: ctx.systemId || "pitzer-tapis",
+      // patch_size: ctx.sam3Config.patchSize > 0 ? ctx.sam3Config.patchSize : 640,
+      threshold: ctx.sam3Config.detectionConfidence,
+      mask_threshold: ctx.sam3Config.maskPrecision,
+      exemplar_box: exemplarBox,
    };
 }
 
@@ -249,6 +264,60 @@ const sam3ClickHandler: CanvasActionHandler = {
    },
 };
 
+/**
+ * SAM3 exemplar-prompt prediction – user draws a box around one example object,
+ * and on release the service returns the remaining similar objects as boxes.
+ * Reuses the "drawing" interaction so the in-progress box renders via draw().
+ */
+const sam3ExemplarHandler: CanvasActionHandler = {
+   cursor: "crosshair",
+   onMouseDown({ x, y }, ctx) {
+      ctx.setEngineState({ isAnnotationMode: true, interaction: { type: "drawing", startX: x, startY: y, currentX: x, currentY: y } });
+   },
+   onMouseMove({ x, y }, ctx) {
+      const s = ctx.engineState as DetectionEngineState;
+      if (!s.isAnnotationMode) return;
+      ctx.setEngineState((prev: DetectionEngineState) => ({ ...prev, interaction: { ...prev.interaction, currentX: x, currentY: y } }));
+   },
+   onMouseUp(_coords, ctx) {
+      const s = ctx.engineState as DetectionEngineState;
+      if (!s.isAnnotationMode) return;
+      const { startX, startY, currentX, currentY } = s.interaction;
+      ctx.setEngineState((prev: DetectionEngineState) => ({ ...prev, isAnnotationMode: false, interaction: { type: "none", targetId: null } }));
+
+      const xMin = Math.round(Math.min(startX!, currentX!));
+      const yMin = Math.round(Math.min(startY!, currentY!));
+      const xMax = Math.round(Math.max(startX!, currentX!));
+      const yMax = Math.round(Math.max(startY!, currentY!));
+      if (xMax - xMin < 5 || yMax - yMin < 5) return; // ignore stray clicks
+
+      ctx.setIsSam3Loading(true);
+      sam3ExemplarPredictions(sam3ExemplarPayload(ctx, [xMin, yMin, xMax, yMax]), ctx.tapisToken)
+         .then((res: any) => {
+            if (!res?.bboxes?.length) {
+               alert("No similar objects found for the drawn exemplar.");
+            } else {
+               const newAnnotations: Annotation[] = res.bboxes.map((p: any, i: number) => ({
+                  id: `${Date.now()}-${i}`,
+                  x: p.x_min,
+                  y: p.y_min,
+                  width: p.x_max - p.x_min,
+                  height: p.y_max - p.y_min,
+                  label: ctx.labelValue || p.label || "object",
+                  score: p.confidence,
+               }));
+               ctx.setAnnotations((prev) => [...prev, ...newAnnotations]);
+               ctx.onAddition?.(newAnnotations);
+            }
+         })
+         .catch((err: any) => {
+            console.error("SAM3 exemplar prediction failed:", err);
+            alert("SAM3 exemplar prediction failed. Please try again.");
+         })
+         .finally(() => ctx.setIsSam3Loading(false));
+   },
+};
+
 /** Selection-only handler – select/deselect without drawing or editing */
 const selectionHandler: CanvasActionHandler = {
    cursor: "default",
@@ -282,6 +351,7 @@ const ACTION_HANDLERS: Record<CanvasMode, CanvasActionHandler> = {
    [CanvasMode.EDIT]: boxEditHandler,
    [CanvasMode.SAM3_CLICK]: sam3ClickHandler,
    [CanvasMode.SAM3_TEXT]: selectionHandler,
+   [CanvasMode.SAM3_EXEMPLAR]: sam3ExemplarHandler,
 };
 
 // ---------------------------------------------------------------------------

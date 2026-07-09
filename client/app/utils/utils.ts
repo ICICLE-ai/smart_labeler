@@ -300,6 +300,22 @@ export const sam3Predictions = async (
    return response.json();
 };
 
+export const sam3ExemplarPredictions = async (
+   payload: object,
+   token: string,
+): Promise<any> => {
+   const response = await fetch(`${_sam3Endpoint}/predict_exemplar`, {
+      method: "POST",
+      headers: {
+         "Content-Type": "application/json",
+         token: token,
+      },
+      body: JSON.stringify(payload),
+   });
+   if (!response.ok) throw new Error("SAM3 exemplar prediction failed");
+   return response.json();
+};
+
 export enum TYPE {
    DETECTION = "DETECTION",
    CLASSIFICATION = "CLASSIFICATION",

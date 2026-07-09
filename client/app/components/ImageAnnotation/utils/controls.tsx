@@ -270,30 +270,19 @@ const Controls = (props: {
                   fullWidth
                   label="Mode"
                   value={mode}
-                  onChange={(e) => {
-                     console.log(e.target.value);
-                     setMode(e.target.value == "SINGLE_CLICK" ? SAM3_MODES.SINGLE_CLICK : SAM3_MODES.TEXT_PROMPTS)}
-                  }
+                  onChange={(e) => setMode(e.target.value as SAM3_MODES)}
                   variant="filled"
                   SelectProps={{
                      native: true,
                   }}
                   sx={{ mb: 2 }}
                >
-               
+
                   <option value={SAM3_MODES.SINGLE_CLICK}>Single Click</option>
                   <option value={SAM3_MODES.TEXT_PROMPTS}>Text Prompt</option>
+                  <option value={SAM3_MODES.EXEMPLAR}>Exemplar Prompt</option>
                </TextField>
-                  {mode === SAM3_MODES.SINGLE_CLICK ?
-                    <TextField
-                      variant="filled"
-                      autoFocus
-                      fullWidth
-                      label="Label"
-                      value={labelValue}
-                      onChange={(e) => setLabelValue(e.target.value)}
-                      placeholder={"e.g., person, cat"}
-                    /> : (
+                  {mode === SAM3_MODES.TEXT_PROMPTS ? (
                       <TextField
                         variant="filled"
                         autoFocus
@@ -303,7 +292,22 @@ const Controls = (props: {
                         onChange={(e) => setTextPrompts(e.target.value.split(","))}
                         placeholder="Enter prompts separated by commas"
                       />
+                    ) : (
+                    <TextField
+                      variant="filled"
+                      autoFocus
+                      fullWidth
+                      label="Label"
+                      value={labelValue}
+                      onChange={(e) => setLabelValue(e.target.value)}
+                      placeholder={"e.g., person, cat"}
+                    />
                     )}
+                  {mode === SAM3_MODES.EXEMPLAR && (
+                     <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+                        After clicking Enter, draw a box around one example object. The service will detect the remaining similar objects automatically.
+                     </Typography>
+                  )}
                   <Box sx={{ mt: 2, mb: 1 }}>
                      <Typography variant="body2" sx={{ mb: 0.5 }}>Enable SAHI</Typography>
                      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>

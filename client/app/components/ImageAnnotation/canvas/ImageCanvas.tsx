@@ -365,6 +365,8 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
                               if (mode === SAM3_MODES.TEXT_PROMPTS && textPrompts?.length) {
                                  setActiveMode(CanvasMode.SAM3_TEXT);
                                  engine.runSam3Text?.(textPrompts, buildContext({ sam3Config: cfg, labelValue: label ?? labelValue }));
+                              } else if (mode === SAM3_MODES.EXEMPLAR) {
+                                 setActiveMode(CanvasMode.SAM3_EXEMPLAR);
                               } else {
                                  setActiveMode(CanvasMode.SAM3_CLICK);
                               }

@@ -71,7 +71,8 @@ export const systems = [
 
 export enum SAM3_MODES {
    SINGLE_CLICK = 'SINGLE_CLICK',
-   TEXT_PROMPTS = 'TEXT_PROMPTS'
+   TEXT_PROMPTS = 'TEXT_PROMPTS',
+   EXEMPLAR = 'EXEMPLAR'
 }
 
 export const DISPLAY_TYPE = ['IMAGE', 'GRAPH'];
