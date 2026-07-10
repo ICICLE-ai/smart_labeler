@@ -26,9 +26,7 @@ Please open an issue at [github.com/OSU-SAI-Lab/smart-labeler/issues](https://gi
 
 ---
 
-# Semantic Segmentation
-
-## Tutorials
+# Tutorials
 
 ### Running Your First Segmentation Pipeline
 
@@ -129,7 +127,7 @@ To load an existing annotation file, click the **Import** (upload) icon. Choose 
 
 ---
 
-## How-To Guides
+# How-To Guides
 
 ### How to Create a Segmentation Pipeline
 
@@ -249,7 +247,7 @@ With your token ready, add it to your ICICLE/Tapis credentials so it can be inje
 
 ---
 
-## Explanation
+# Explanation
 
 ### Segmentation Pipeline Architecture
 
