@@ -25,9 +25,7 @@ Please open an issue at [github.com/OSU-SAI-Lab/smart-labeler/issues](https://gi
 
 ---
 
-# Object Detection
-
-## Tutorials
+# Tutorials
 
 ### Running Your First Detection Pipeline
 
@@ -140,7 +138,7 @@ Open **Step 7 — Object Classification**. Select a result file from the right p
 
 ---
 
-## How-To Guides
+# How-To Guides
 
 ### How to Import Existing Annotations
 
@@ -268,7 +266,7 @@ Some models (e.g. DinoV3, certain SAM variants) require a Hugging Face token.
 
 ---
 
-## Explanation
+# Explanation
 
 ### Pipeline Architecture
 
