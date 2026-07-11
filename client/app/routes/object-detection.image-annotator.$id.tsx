@@ -10,11 +10,11 @@ import { CircularProgress, Drawer, Grid, Box, Button, LinearProgress, Typography
 import Tools from "../components/ImageAnnotation/utils/Tools";
 import {
    downloadFile,
-   exportToCoco,
-   exportToDefaultJson,
    FileAnnotations,
    importFromCocoJsonUtil,
    importFromDefaultJsonUtil,
+   mergeDetectionForSave,
+   toRelativeFilename,
 } from "../components/ImageAnnotation/utils/utils";
 import { fetchAndReturnData, fetchFile, saveFile, SubmitData } from "~/utils/utils";
 import { useCookies } from "react-cookie";
@@ -28,6 +28,10 @@ interface AnnotatorConfig {
    fileType: string;
 }
 
+// Stable identity for "no annotations" so the derived value doesn't create a new
+// array every render (ImageCanvas re-syncs when the annotations prop identity changes).
+const NO_ANNOTATIONS: Annotation[] = [];
+
 const ImageAnnotation = () => {
    const { pipeid } = useLoaderData<{ pipeid: string }>();
    const [selectedFile, setSelectedFile] = useState<any | null>(null);
@@ -35,12 +39,40 @@ const ImageAnnotation = () => {
    const [selectedFileIndex, setSelectedFileIndex] = useState<number | null>(
       null
    );
-   const [boundingBoxes, setBoundingBoxes] = useState<Annotation[]>([]);
    const [selectedBoxId, setSelectedBoxId] = useState<string | undefined>();
    const [selectedBoxIds, setSelectedBoxIds] = useState<string[]>([]);
    const [fileToAnnotationsMap, setFileToAnnotationsMap] = useState<
       Map<number, FileAnnotations>
    >(new Map());
+
+   // Single source of truth: the displayed annotations are DERIVED from the map,
+   // never copied into separate state. Navigation is therefore just an index
+   // change — there is no persist/load hand-off that can race when setState is
+   // asynchronous (the old two-copy design corrupted neighbouring files during
+   // rapid arrow-key navigation).
+   const boundingBoxes =
+      selectedFileIndex !== null
+         ? fileToAnnotationsMap.get(selectedFileIndex)?.annotations ?? NO_ANNOTATIONS
+         : NO_ANNOTATIONS;
+
+   // All edits write straight into the map slot of the file they belong to.
+   const mutateAnnotations = (
+      fileIndex: number | null,
+      fn: (anns: Annotation[]) => Annotation[]
+   ) => {
+      if (fileIndex === null || fileIndex < 0) return;
+      setFileToAnnotationsMap((prev) => {
+         const updated = new Map(prev);
+         const fa = updated.get(fileIndex) || {
+            name: files[fileIndex] || "",
+            width: 0,
+            height: 0,
+            annotations: [],
+         };
+         updated.set(fileIndex, { ...fa, annotations: fn(fa.annotations) });
+         return updated;
+      });
+   };
 
    const [openFileExplorer, setOpenFileExplorer] = useState<boolean>(false);
    const [cookie] = useCookies(["tapis-token"]);
@@ -143,29 +175,10 @@ const ImageAnnotation = () => {
       }
    };
 
-   useEffect(() => {
-      if (selectedFileIndex === null) return;
-      const fa = fileToAnnotationsMap.get(selectedFileIndex) || null;
-      setBoundingBoxes([...(fa?.annotations || [])]);
-   // eslint-disable-next-line react-hooks/exhaustive-deps
-   }, [selectedFileIndex]);  // fires immediately on navigation; excludes fileToAnnotationsMap to avoid overwriting live edits on import
-
    const handleFileSelect = (file: Blob | null, filePath: string) => {
-      const index = files.indexOf(filePath);
-      const currentFileIndex = selectedFileIndex;
-
-      // Persist annotations for the departing file immediately, regardless of
-      // whether the new image has loaded yet. This prevents annotation mismatch
-      // when navigating rapidly with arrow keys.
-      if (currentFileIndex !== null && currentFileIndex !== index) {
-         setFileToAnnotationsMap((prev) => {
-            const updated = new Map(prev);
-            const fa = updated.get(currentFileIndex) || { name: "", width: 0, height: 0, annotations: [] };
-            updated.set(currentFileIndex, { ...fa, annotations: boundingBoxes });
-            return updated;
-         });
-      }
-      setSelectedFileIndex(index);
+      // Displayed annotations are derived from the map, so switching files is a
+      // pure index change — nothing to persist or reload, nothing to race.
+      setSelectedFileIndex(files.indexOf(filePath));
       setSelectedBoxId(undefined);
 
       if (file) {
@@ -174,63 +187,55 @@ const ImageAnnotation = () => {
       }
    };
 
-   const handleBoundingBoxUpdate = (
-      boxId: string,
-      updates: Partial<Annotation>
-   ) => {
-      setBoundingBoxes((prev) =>
-         prev.map((box) => (box.id === boxId ? { ...box, ...updates } : box))
+   const handleBoundingBoxUpdate = (boxId: string, updates: Partial<Annotation>) => {
+      mutateAnnotations(selectedFileIndex, (anns) =>
+         anns.map((box) => (box.id === boxId ? { ...box, ...updates } : box))
       );
    };
 
-   const handleBoxUpdate = (id: string, updates: Partial<Annotation>) => {
-      setBoundingBoxes((prev) =>
-         prev.map((box) => (box.id === id ? { ...box, ...updates } : box))
-      );
-   };
+   const handleBoxUpdate = handleBoundingBoxUpdate;
 
-   const updateAnnotationsForCurrentFile = () => {
-      let updatedMap = new Map(fileToAnnotationsMap);
-      if (selectedFileIndex !== null) {
-         const existingAnnotations = updatedMap.get(selectedFileIndex) || {
-            name: files[selectedFileIndex] || "",
-            width: 0,
-            height: 0,
-            annotations: [],
-         };
-         updatedMap.set(selectedFileIndex, {
-            ...existingAnnotations,
-            annotations: boundingBoxes,
-         });
-      }
-      if (!files || !updatedMap) return;
-      setFileToAnnotationsMap(updatedMap);
-      return updatedMap;
-   }
+   // The map always holds the latest annotations (edits write straight into it),
+   // so exporting needs no flush step.
+   const updateAnnotationsForCurrentFile = () => fileToAnnotationsMap;
 
    const generateJson = (coco: boolean, save: boolean, dir: string, system: string) => {
       // Ensure the latest annotations are saved for the currently selected file
       const updatedMap = updateAnnotationsForCurrentFile();
       if (!updatedMap) return;
       const srcImgDir = annotatorConfig?.srcImgDir ?? "";
-      const json = coco
-         ? exportToCoco(updatedMap, files, srcImgDir)
-         : exportToDefaultJson(updatedMap, files, srcImgDir);
+      // Key live annotations by path relative to srcImgDir, then overlay them on the
+      // imported baseline so annotations for folders never opened this session
+      // aren't dropped from the saved/downloaded file.
+      const liveRel = new Map<string, FileAnnotations>();
+      updatedMap.forEach((fa, idx) => {
+         const f = files[idx];
+         if (f) liveRel.set(toRelativeFilename(f, srcImgDir), fa);
+      });
+      const baseline = pendingAnnotationDataRef.current;
+      const json = mergeDetectionForSave(liveRel, baseline?.json ?? null, baseline?.isCoco ?? false, srcImgDir, coco);
       if (save && dir) {
          if (isDemo) {
             alert("Demo mode: Saving annotations is disabled for demo pipelines.");
             return;
          }
          const encodedPath = encodeURIComponent(dir);
-         saveFile(
+         return saveFile(
             `/save-file/${system}?path=${encodedPath}`,
             JSON.stringify(json, null, 2),
             cookie["tapis-token"]["access_token"]
-         );
-         console.log(
-            `Saving ${coco ? "COCO" : "Default"} JSON to directory:`,
-            dir
-         );
+         )
+            .then((ok) => {
+               alert(
+                  ok
+                     ? `Annotations saved successfully to ${dir}`
+                     : `Failed to save annotations to ${dir}. Please check the path and try again.`
+               );
+            })
+            .catch((err) => {
+               console.error("Error saving annotations:", err);
+               alert("Error saving annotations. Please try again.");
+            });
       } else {
          downloadFile(
             JSON.stringify(json, null, 2),
@@ -246,14 +251,13 @@ const ImageAnnotation = () => {
       const merged = new Map(existing);
       imported.forEach((importedFa, fileIdx) => {
          const existingFa = merged.get(fileIdx);
-         if (existingFa) {
-            merged.set(fileIdx, {
-               ...existingFa,
-               annotations: [...existingFa.annotations, ...importedFa.annotations],
-            });
-         } else {
-            merged.set(fileIdx, importedFa);
-         }
+         // Replace-per-file: an imported file overwrites that file's annotations
+         // instead of appending, so re-importing the same file is idempotent.
+         // Existing metadata (width/height) is preserved.
+         merged.set(fileIdx, existingFa
+            ? { ...existingFa, annotations: importedFa.annotations }
+            : importedFa
+         );
       });
       return merged;
    };
@@ -276,16 +280,10 @@ const ImageAnnotation = () => {
                   ? importFromCocoJsonUtil(parsed, files)
                   : importFromDefaultJsonUtil(parsed, files);
 
-               // Compute the merged map synchronously so we can derive
-               // boundingBoxes from it in the same render cycle.
-               const updatedMap = updateAnnotationsForCurrentFile() ?? fileToAnnotationsMap;
-               const mergedMap = mergeAnnotationMaps(updatedMap, importedMap);
+               // The displayed annotations are derived from the map, so updating
+               // the map is all that's needed — the canvas refreshes automatically.
+               const mergedMap = mergeAnnotationMaps(fileToAnnotationsMap, importedMap);
                setFileToAnnotationsMap(mergedMap);
-
-               // Update live canvas. Fall back to index 0 for auto-load before a file is explicitly selected.
-               const targetIndex = selectedFileIndex ?? 0;
-               const mergedAnnotations = mergedMap.get(targetIndex)?.annotations ?? [];
-               setBoundingBoxes([...mergedAnnotations]);
 
                console.log(`${coco ? "COCO" : "Default"} data imported:`, parsed);
             } catch (e) {
@@ -367,25 +365,18 @@ const ImageAnnotation = () => {
                onFileSelect={handleFileSelect}
                filesInDirectory={(newFiles, sys, isRootReset) => {
                   if (isRootReset) {
-                     // New root directory — full reset.
+                     // New root directory — full reset. Displayed annotations are
+                     // derived from the map, so clearing the map clears the canvas.
                      setFiles(newFiles);
                      setFileToAnnotationsMap(new Map());
-                     setBoundingBoxes([]);
                      setSelectedBoxId(undefined);
                      setSelectedFile(null);
                      setSelectedFileIndex(null);
                      annotationsAutoLoaded.current = false;
                      pendingAnnotationDataRef.current = null;
                   } else {
-                     // Subfolder navigation — flush live edits then accumulate files.
-                     if (selectedFileIndex !== null) {
-                        setFileToAnnotationsMap((prev) => {
-                           const updated = new Map(prev);
-                           const fa = updated.get(selectedFileIndex) || { name: files[selectedFileIndex] || "", width: 0, height: 0, annotations: [] };
-                           updated.set(selectedFileIndex, { ...fa, annotations: boundingBoxes });
-                           return updated;
-                        });
-                     }
+                     // Subfolder navigation — accumulate files. Edits already live
+                     // in the map, so there is nothing to flush.
                      setFiles((prev) => {
                         const existing = new Set(prev);
                         const toAdd = newFiles.filter((f) => !existing.has(f));
@@ -415,12 +406,19 @@ const ImageAnnotation = () => {
                importAnnotationsFromJson(file, false)
             }
             filesUploaded={files.length > 0}
-            onAnnotationSaved={(filePath, isCoco) =>
+            onAnnotationSaved={(filePath, isCoco) => {
+               // The file was just written from in-memory state, so that state is
+               // now the source of truth. Mark auto-load as done before updating
+               // the config — otherwise setting annotationFilePath re-triggers the
+               // auto-load effect (deps include annotatorConfig), which re-imports
+               // the just-saved file and merges it back in, duplicating annotations
+               // or (on basename collisions across subfolders) dropping them.
+               annotationsAutoLoaded.current = true;
                upsertAnnotatorConfig({
                   annotationFilePath: filePath,
                   fileType: isCoco ? "coco" : "default",
-               })
-            }
+               });
+            }}
             annotationFilePath={annotatorConfig?.annotationFilePath}
             annotationSystem={annotatorConfig?.system}
             annotationIsCoco={annotatorConfig?.fileType === "coco"}
@@ -465,7 +463,7 @@ const ImageAnnotation = () => {
                      file={selectedFile}
                      annotations={boundingBoxes}
                      onAddition={(annotations) =>
-                        setBoundingBoxes((prev) => [...prev, ...annotations])
+                        mutateAnnotations(selectedFileIndex, (anns) => [...anns, ...annotations])
                      }
                      selectedAnnotationId={selectedBoxId || ""}
                      onSelection={(id) => { setSelectedBoxId(id ?? undefined); setSelectedBoxIds([]); }}
@@ -482,7 +480,7 @@ const ImageAnnotation = () => {
                      activeLabels={activeLabels}
                      activeFlags={activeFlags}
                      deleteAnnotations={(ids) => {
-                        setBoundingBoxes(prev => prev.filter(x=> !ids.includes(x.id)))
+                        mutateAnnotations(selectedFileIndex, (anns) => anns.filter((x) => !ids.includes(x.id)));
                      }}
                      onImageLoaded={() => {
                         if (!firstImageLoadedRef.current) {
@@ -535,11 +533,7 @@ const ImageAnnotation = () => {
                   }}
                   onAnnotationUpdate={handleBoundingBoxUpdate}
                   deleteAnnotations={(ids: string[]) => {
-                     // console.log("Deleting boxes with ids:", ids);
-                     const newSet = boundingBoxes.filter(
-                        (box) => !ids.includes(box.id)
-                     );
-                     setBoundingBoxes(newSet);
+                     mutateAnnotations(selectedFileIndex, (anns) => anns.filter((box) => !ids.includes(box.id)));
                   }}
                   handleFilterAnnotations={(score: number, activeLabels: string[], activeFlags: string[]) => {
                     setScore(score);

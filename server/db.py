@@ -18,6 +18,8 @@ DB_PORT = int(DB_PORT_STR)
 DB_POOL_MIN = int(os.getenv("DB_POOL_MIN", "2"))
 DB_POOL_MAX = int(os.getenv("DB_POOL_MAX", "20"))
 
+TAPIS_BASE_URL = os.getenv("TAPIS_BASE_URL", "https://icicleai.tapis.io")
+
 print("connecting to database")
 connection_pool = pool.ThreadedConnectionPool(
     DB_POOL_MIN,
@@ -245,13 +247,13 @@ def make_jobdir(dataloc, pipeid, token, js=None):
     digidpath = dataloc[0 : dataloc.rfind("/")] + "/harvest_jobs/" + pipeid
     digidpath = digidpath.replace("tapis://", "")
     headers = {"X-Tapis-Token": token, "Content-Type": "application/json"}
-    url = f"https://icicleai.tapis.io/v3/files/ops/{(digidpath[0 : digidpath.index('/')])}/"
+    url = f"{TAPIS_BASE_URL}/v3/files/ops/{(digidpath[0 : digidpath.index('/')])}/"
     rdata = {"path": f"{digidpath[digidpath.index('/') + 1 :]}"}
     response = requests.post(url, data=json.dumps(rdata), headers=headers)
     print(response.content)
     if js:
         headers = {"X-Tapis-Token": token}
-        url = f"https://icicleai.tapis.io/v3/files/ops/{digidpath}/labelled_image_info.json"
+        url = f"{TAPIS_BASE_URL}/v3/files/ops/{digidpath}/labelled_image_info.json"
         rdata = {"file": f"{str(json.dumps(json.loads(js)))}"}
         print(url)
         print(rdata)

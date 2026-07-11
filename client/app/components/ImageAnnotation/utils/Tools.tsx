@@ -26,6 +26,7 @@ import {
    ListItemIcon,
    ListItemText,
    Divider,
+   CircularProgress,
 } from "@mui/material";
 import { useNavigate } from "@remix-run/react";
 import React, { useEffect, useState } from "react";
@@ -36,7 +37,7 @@ import AnnotationFileFormatSwitch from "../AnnotationFileFormatSwitch";
 interface SaveModalProps {
    open: boolean;
    onClose: () => void;
-   onSave: (filePath: string, isCocoJson: boolean, system: string) => void;
+   onSave: (filePath: string, isCocoJson: boolean, system: string) => void | Promise<void>;
    initialFilePath?: string;
    initialSystem?: string;
    initialIsCoco?: boolean;
@@ -49,19 +50,28 @@ const SaveModal: React.FC<SaveModalProps> = ({
    const [filePath, setFilePath] = useState(initialFilePath);
    const [isCocoJson, setIsCocoJson] = useState(initialIsCoco);
    const [system, setSystem] = useState<string>(initialSystem);
+   const [saving, setSaving] = useState(false);
 
    useEffect(() => {
       if (open) {
          setFilePath(initialFilePath);
          setIsCocoJson(initialIsCoco);
          setSystem(initialSystem || DEFAULT_SYSTEM);
+         setSaving(false);
       }
    }, [open, initialFilePath, initialIsCoco, initialSystem]);
 
-   const handleSave = () => {
-      if (!filePath.trim()) return;
-      onSave(filePath, isCocoJson, system);
-      onClose();
+   const handleSave = async () => {
+      if (!filePath.trim() || saving) return;
+      setSaving(true);
+      try {
+         // Wait for the save to actually finish so the dialog shows progress
+         // instead of closing before the success/error result is known.
+         await onSave(filePath, isCocoJson, system);
+      } finally {
+         setSaving(false);
+         onClose();
+      }
    };
 
    return (
@@ -99,15 +109,16 @@ const SaveModal: React.FC<SaveModalProps> = ({
             </FormControl>
          </DialogContent>
          <DialogActions>
-            <Button onClick={onClose} color="primary">
+            <Button onClick={onClose} color="primary" disabled={saving}>
                Cancel
             </Button>
             <Button
                onClick={handleSave}
                color="primary"
-               disabled={!filePath.trim()}
+               disabled={!filePath.trim() || saving}
+               startIcon={saving ? <CircularProgress size={16} color="inherit" /> : undefined}
             >
-               Save
+               {saving ? "Saving…" : "Save"}
             </Button>
          </DialogActions>
       </Dialog>
@@ -115,8 +126,8 @@ const SaveModal: React.FC<SaveModalProps> = ({
 };
 
 const Tools = (props: {
-   onDownloadCocoJson: (save: boolean, dir: string, system: string) => void;
-   onDownloadDefaultJson: (save: boolean, dir: string, system: string) => void;
+   onDownloadCocoJson: (save: boolean, dir: string, system: string) => void | Promise<void>;
+   onDownloadDefaultJson: (save: boolean, dir: string, system: string) => void | Promise<void>;
    handleCocoJsonUpload: (file: File) => void;
    handleDefaultJsonUpload: (file: File) => void;
    pipeId: string;
@@ -138,6 +149,7 @@ const Tools = (props: {
    const [filePath, setFilePath] = useState<string>("");
    const [system, setSystem] = useState<string>(DEFAULT_SYSTEM);
    const [cookie, setCookie] = useCookies(["tapis-token"]);
+   const [isSaving, setIsSaving] = useState<boolean>(false);
    const [fileUploaded, setFileUploaded] = useState<boolean>(
       props.filesUploaded
    );
@@ -160,30 +172,32 @@ const Tools = (props: {
       setDownloadAnchor(null);
    }
 
-   function handleDirectSave() {
+   async function handleDirectSave() {
       const path = props.annotationFilePath?.trim();
       if (!path) {
          // No known path – fall back to Save As dialog
          setOpenSaveModal(true);
          return;
       }
+      if (isSaving) return;
       const savedSystem = props.annotationSystem ?? system;
-      if (props.annotationIsCoco) {
-         props.onDownloadCocoJson(true, path, savedSystem);
-      } else {
-         props.onDownloadDefaultJson(true, path, savedSystem);
+      setIsSaving(true);
+      try {
+         await (props.annotationIsCoco
+            ? props.onDownloadCocoJson(true, path, savedSystem)
+            : props.onDownloadDefaultJson(true, path, savedSystem));
+         props.onAnnotationSaved?.(path, props.annotationIsCoco ?? false);
+      } finally {
+         setIsSaving(false);
       }
-      props.onAnnotationSaved?.(path, props.annotationIsCoco ?? false);
    }
 
-   function handleSaveModalConfirm(filePath: string, isCocoJson: boolean, system: string) {
-      if (isCocoJson) {
-         props.onDownloadCocoJson(true, filePath, system);
-      } else {
-         props.onDownloadDefaultJson(true, filePath, system);
-      }
-      props.onAnnotationSaved?.(filePath, isCocoJson);
+   async function handleSaveModalConfirm(filePath: string, isCocoJson: boolean, system: string) {
       setDownloadAnchor(null);
+      await (isCocoJson
+         ? props.onDownloadCocoJson(true, filePath, system)
+         : props.onDownloadDefaultJson(true, filePath, system));
+      props.onAnnotationSaved?.(filePath, isCocoJson);
    }
 
    async function handleUploadAnnotationFile() {
@@ -314,13 +328,14 @@ const Tools = (props: {
                   <IconButton
                      size="small"
                      onClick={handleDirectSave}
+                     disabled={isSaving}
                      sx={{
                         color: props.annotationFilePath ? "#69f0ae" : "rgba(255,255,255,0.85)",
                         borderRadius: 1.5,
                         "&:hover": { bgcolor: "rgba(255,255,255,0.1)", color: props.annotationFilePath ? "#69f0ae" : "white" },
                      }}
                   >
-                     <SaveIcon />
+                     {isSaving ? <CircularProgress size={20} sx={{ color: "#fff" }} /> : <SaveIcon />}
                   </IconButton>
                </Tooltip>
 
@@ -329,6 +344,7 @@ const Tools = (props: {
                   <IconButton
                      size="small"
                      onClick={() => setOpenSaveModal(true)}
+                     disabled={isSaving}
                      sx={{
                         color: "rgba(255,255,255,0.85)",
                         borderRadius: 1.5,

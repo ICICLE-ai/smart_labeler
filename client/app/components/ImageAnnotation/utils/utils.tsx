@@ -270,6 +270,99 @@ export function exportToDefaultJson(
    return { annotations };
 }
 
+// ---------------------------------------------------------------------------
+// Merge-on-save helpers
+//
+// When the user imports an annotation file spanning several folders but only
+// visits (and thus loads into memory) some of them, saving must not drop the
+// annotations for the folders that were never opened. These helpers rebuild a
+// complete export by overlaying the live in-memory annotations on top of the
+// originally-imported dataset (the "baseline"), keyed by each image's path
+// RELATIVE to srcImgDir — the same identity the exporters write — so live edits
+// win and untouched folders are preserved.
+// ---------------------------------------------------------------------------
+
+// Normalize a path to a single leading slash and no trailing/duplicate slashes.
+const canonPath = (p: string): string =>
+   "/" + p.replace(/^\/+/, "").replace(/\/+$/, "").replace(/\/{2,}/g, "/");
+
+// Reconstruct a full path from a path relative to srcImgDir. When srcImgDir is
+// empty the export already flattened paths to basenames, so this stays consistent.
+export const joinUnderDir = (rel: string, srcImgDir: string): string => {
+   const d = srcImgDir.replace(/\/+$/, "");
+   return d ? canonPath(`${d}/${rel}`) : "/" + rel.replace(/^\/+/, "");
+};
+
+// Parse an exported detection JSON back into a map keyed by each image's path
+// exactly as written in the JSON (relative to the export's srcImgDir). Unlike the
+// index-based importers, this preserves folder structure, so same-named files in
+// sibling folders don't collide.
+export function detectionJsonToRelMap(json: any, isCoco: boolean): Map<string, FileAnnotations> {
+   const map = new Map<string, FileAnnotations>();
+   if (isCoco) {
+      const catIdToName = new Map<number, string>();
+      (json?.categories ?? []).forEach((c: any) => catIdToName.set(c.id, c.name));
+      const imgIdToMeta = new Map<number, { rel: string; width: number; height: number }>();
+      (json?.images ?? []).forEach((im: any) =>
+         imgIdToMeta.set(im.id, { rel: im.file_name, width: im.width ?? 0, height: im.height ?? 0 }));
+      (json?.annotations ?? []).forEach((a: any) => {
+         const meta = imgIdToMeta.get(a.image_id);
+         if (!meta) return;
+         const fa: FileAnnotations = map.get(meta.rel) ?? { name: meta.rel, width: meta.width, height: meta.height, annotations: [] };
+         const [x, y, w, h] = a.bbox ?? [0, 0, 0, 0];
+         fa.annotations.push({
+            id: `${Date.now()}-${Math.random()}`,
+            label: catIdToName.get(a.category_id) ?? "unknown",
+            x, y, width: w, height: h,
+            ...(a.score !== undefined ? { score: a.score } : {}),
+            ...(a.flag ? { flag: a.flag } : {}),
+         });
+         map.set(meta.rel, fa);
+      });
+   } else {
+      (json?.annotations ?? []).forEach((a: any) => {
+         const rel = a.image_path;
+         if (rel === undefined) return;
+         const fa: FileAnnotations = map.get(rel) ?? { name: rel, width: 0, height: 0, annotations: [] };
+         const [x0, y0, x1, y1] = a.bounding_box ?? [0, 0, 0, 0];
+         fa.annotations.push({
+            id: `${Date.now()}-${Math.random()}`,
+            label: a.class,
+            x: x0, y: y0, width: x1 - x0, height: y1 - y0,
+            ...(a.score !== undefined ? { score: a.score } : {}),
+            ...(a.iou !== undefined ? { iou: a.iou } : {}),
+            ...(a.flag ? { flag: a.flag } : {}),
+         });
+         map.set(rel, fa);
+      });
+   }
+   return map;
+}
+
+// Build the detection export JSON, overlaying live annotations (keyed by path
+// relative to srcImgDir) on top of the imported baseline so that annotations for
+// unopened sibling folders survive the save. When baselineJson is null this is
+// equivalent to exporting just the live map.
+export function mergeDetectionForSave(
+   liveRelMap: Map<string, FileAnnotations>,
+   baselineJson: any | null,
+   baselineIsCoco: boolean,
+   srcImgDir: string,
+   coco: boolean,
+): object {
+   const complete = baselineJson
+      ? detectionJsonToRelMap(baselineJson, baselineIsCoco)
+      : new Map<string, FileAnnotations>();
+   liveRelMap.forEach((fa, rel) => complete.set(rel, fa)); // live edits win per file
+   const rels = [...complete.keys()];
+   const files = rels.map((r) => joinUnderDir(r, srcImgDir));
+   const indexMap = new Map<number, FileAnnotations>();
+   rels.forEach((r, i) => indexMap.set(i, complete.get(r)!));
+   return coco
+      ? exportToCoco(indexMap, files, srcImgDir)
+      : exportToDefaultJson(indexMap, files, srcImgDir);
+}
+
 export function importFromCocoJsonUtil(
    cocoJson: any,
    files: string[]

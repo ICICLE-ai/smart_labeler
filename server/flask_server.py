@@ -42,7 +42,8 @@ os.environ.setdefault("FRONT_URL", "https://localhost:5174")
 os.environ.setdefault("COOKIE_DOMAIN", "localhost")
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
 PATRA_BASE_NEW = os.getenv("PATRA_BASE_NEW", "https://patrabackend.pods.icicleai.tapis.io")
-TAPIS_BASE = "https://icicleai.tapis.io"
+TAPIS_BASE_URL = os.getenv("TAPIS_BASE_URL", "https://icicleai.tapis.io")
+TENANT = os.getenv("TENANT", "icicleai")
 
 from iciflaskn import auth
 from iciflaskn.config import config
@@ -137,7 +138,7 @@ def login():
         return {"path": "/", "code": 302}
     callback_url = f"{config['app_base_url']}/oauth2/callback"
     tapis_url = (
-        f"{config['tapis_base_url']}/v3/oauth2/authorize"
+        f"{TAPIS_BASE_URL}/v3/oauth2/authorize"
         f"?client_id={config['client_id']}&redirect_uri={callback_url}&response_type=code"
     )
     return {"path": tapis_url, "code": 302}
@@ -148,7 +149,7 @@ def callback():
     code = request.args.get("code")
     if not code:
         abort(400, description=f"No code in request; debug: {request.args}")
-    url = f"{config['tapis_base_url']}/v3/oauth2/tokens"
+    url = f"{TAPIS_BASE_URL}/v3/oauth2/tokens"
     data = {
         "code": code,
         "redirect_uri": f"{config['app_base_url']}/oauth2/callback",
@@ -290,7 +291,7 @@ def delete_annotator_config(path: ConfigPath):
 def fetch_file_from_tapis(system, file_path, token):
     clean_path = file_path.replace("tapis://", "").lstrip("/")
     headers = {"X-Tapis-Token": token}
-    url = f"https://icicleai.tapis.io/v3/files/content/{system}/{clean_path}"
+    url = f"{TAPIS_BASE_URL}/v3/files/content/{system}/{clean_path}"
     print(f"Fetching file from {url}")
     resp = requests.get(url, headers=headers)
     if resp.status_code != 200:
@@ -307,7 +308,7 @@ def get_img(path: DigidSystemPath, query: ImgQuery):
     imgURL = raw.replace("tapis://", "")
     token, user = getAuth(request)
     headers = {"X-Tapis-Token": token}
-    url = f"https://icicleai.tapis.io/v3/files/content/{path.system}/{imgURL}"
+    url = f"{TAPIS_BASE_URL}/v3/files/content/{path.system}/{imgURL}"
     resp = requests.get(url, headers=headers)
     con = resp.content
     mimetype = resp.headers.get("Content-Type", "application/octet-stream")
@@ -349,7 +350,7 @@ def get_files(path: DigidSystemPath, query: DirQuery):
     token, user = getAuth(request)
     dirPath = query.dir.replace("tapis://", "")
     headers = {"X-Tapis-Token": token}
-    url = f"https://icicleai.tapis.io/v3/files/ops/{path.system}/{urllib.parse.quote(dirPath, safe='/-_')}"
+    url = f"{TAPIS_BASE_URL}/v3/files/ops/{path.system}/{urllib.parse.quote(dirPath, safe='/-_')}"
     resp = requests.get(url, headers=headers)
     if resp.status_code != 200:
         abort(resp.status_code, description=f"Error fetching files: {resp.text}")
@@ -364,7 +365,7 @@ def get_files(path: DigidSystemPath, query: DirQuery):
 def get_imgs(path: DigidPath):
     token, user = getAuth(request)
     headers = {"X-Tapis-Token": token}
-    url = f"https://icicleai.tapis.io/v3/files/ops/{get_data_dir(path.digid).replace('tapis://','')}"
+    url = f"{TAPIS_BASE_URL}/v3/files/ops/{get_data_dir(path.digid).replace('tapis://','')}"
     resp = requests.get(url, headers=headers)
     list_of_files = [f["name"] for f in resp.json()["result"] if f["type"] == "file"]
     return jsonify({"img": list_of_files, "num": get_numlabels(path.digid)})
@@ -378,7 +379,7 @@ def get_imgs_in_dir(path: DigidSystemPath, query: ImgsInDirQuery):
     token, user = getAuth(request)
     supported = [".JPEG", ".JPG", ".PNG", ".TIF", ".TIFF"]
     headers = {"X-Tapis-Token": token}
-    url = f"https://icicleai.tapis.io/v3/files/ops/{path.system}/{urllib.parse.quote(query.dir, safe='/-_')}"
+    url = f"{TAPIS_BASE_URL}/v3/files/ops/{path.system}/{urllib.parse.quote(query.dir, safe='/-_')}"
     offset, list_of_files, count = 0, [], 0
     while True:
         resp = requests.get(url, headers=headers, params={"offset": offset, "limit": 1000})
@@ -406,7 +407,7 @@ def get_dir_contents(path: DigidSystemPath, query: DirContentsQuery):
     token, user = getAuth(request)
     supported = (".JPEG", ".JPG", ".PNG", ".TIF", ".TIFF")
     headers = {"X-Tapis-Token": token}
-    url = f"https://icicleai.tapis.io/v3/files/ops/{path.system}/{urllib.parse.quote(query.dir, safe='/-_')}"
+    url = f"{TAPIS_BASE_URL}/v3/files/ops/{path.system}/{urllib.parse.quote(query.dir, safe='/-_')}"
     resp = requests.get(url, headers=headers, params={"offset": 0, "limit": 1000})
     if resp.status_code != 200:
         return jsonify({"dirs": [], "imgs": []})
@@ -431,7 +432,7 @@ def get_imgs_batch(path: DigidSystemPath, body: BatchImgRequest):
     def fetch_and_encode(file_path):
         clean = file_path.replace("tapis://", "").lstrip("/")
         headers = {"X-Tapis-Token": token}
-        url = f"https://icicleai.tapis.io/v3/files/content/{path.system}/{clean}"
+        url = f"{TAPIS_BASE_URL}/v3/files/content/{path.system}/{clean}"
         try:
             r = requests.get(url, headers=headers, timeout=30)
             if r.status_code != 200:
@@ -466,7 +467,7 @@ def save_file(path: SystemPath, query: SaveFileQuery):
     file = request.get_data(as_text=True)
     if not file:
         abort(400, description="No file content in the request")
-    url = f"https://icicleai.tapis.io/v3/files/ops/{path.system}/{urllib.parse.quote(query.path, safe='/-_')}"
+    url = f"{TAPIS_BASE_URL}/v3/files/ops/{path.system}/{urllib.parse.quote(query.path, safe='/-_')}"
     file_stream = io.BytesIO(file.encode())
     files = [("file", (f"ann-{time.time()}.json", file_stream, "application/json"))]
     resp = requests.post(url, headers={"X-Tapis-Token": token}, files=files)
@@ -704,7 +705,7 @@ def update_object_detection_entry(path: PipeIdPath, body: ObjectDetectionUpdate)
 
 # ── Jobs ──────────────────────────────────────────────────────────────────────
 def _get_tapis_job_status(job_id, tapis_token):
-    url = f"https://icicleai.tapis.io/v3/jobs/{job_id}"
+    url = f"{TAPIS_BASE_URL}/v3/jobs/{job_id}"
     resp = requests.get(url, headers={"X-Tapis-Token": tapis_token, "Content-Type": "application/json"})
     if resp.status_code == 200:
         result = resp.json()["result"]
@@ -754,7 +755,7 @@ def download_job_logs(path: JobIdPath):
 def cancelCurrentJob(path: PipeJobPath):
     token, user = getAuth(request)
     resp = requests.post(
-        url=f"https://icicleai.tapis.io/v3/jobs/{path.jobId}/cancel",
+        url=f"{TAPIS_BASE_URL}/v3/jobs/{path.jobId}/cancel",
         headers={"X-Tapis-Token": token},
     )
     if resp.status_code == 200:
@@ -810,8 +811,8 @@ def patra_download_mc(mc_id, token, new=False):
                 summary="Store a secret in the Tapis vault")
 def create_vault_secret(path: SecretNamePath, body: VaultSecretWrite):
     token, user = getAuth(request)
-    url = f"{TAPIS_BASE}/v3/security/vault/secret/user/{path.secret_name}"
-    payload = {"tenant": "icicleai", "user": user, "data": body.data}
+    url = f"{TAPIS_BASE_URL}/v3/security/vault/secret/user/{path.secret_name}"
+    payload = {"tenant": TENANT, "user": user, "data": body.data}
     try:
         resp = requests.post(url, headers={"X-Tapis-Token": token, "Content-Type": "application/json"}, json=payload)
         return jsonify(resp.json()), resp.status_code
@@ -838,8 +839,8 @@ def read_vault_secret_route(path: SecretNamePath):
                   responses={"200": MessageOut})
 def destroy_vault_secret(path: SecretNamePath):
     token, user = getAuth(request)
-    url = f"{TAPIS_BASE}/v3/security/vault/secret/destroy/user/{path.secret_name}"
-    payload = {"tenant": "icicleai", "user": user, "versions": []}
+    url = f"{TAPIS_BASE_URL}/v3/security/vault/secret/destroy/user/{path.secret_name}"
+    payload = {"tenant": TENANT, "user": user, "versions": []}
     try:
         resp = requests.post(url, headers={"X-Tapis-Token": token, "Content-Type": "application/json"}, json=payload)
         return jsonify(resp.json()), resp.status_code
@@ -848,7 +849,7 @@ def destroy_vault_secret(path: SecretNamePath):
 
 
 def read_vault_secret(secret_name, user, token, mask=True):
-    url = f"{TAPIS_BASE}/v3/security/vault/secret/user/{secret_name}?tenant=icicleai&user={user}"
+    url = f"{TAPIS_BASE_URL}/v3/security/vault/secret/user/{secret_name}?tenant={TENANT}&user={user}"
     try:
         resp = requests.get(url, headers={"X-Tapis-Token": token})
         resp_json = json.loads(resp.content)

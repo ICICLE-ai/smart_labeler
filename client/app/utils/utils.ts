@@ -250,6 +250,41 @@ export const getDirContentsFromTapis = async (
    return { dirs, imgs };
 };
 
+// Generic Tapis directory listing: returns ALL subdirectories and files at a
+// path (not filtered to images). Backs the file/dir selection modal. Uses the
+// same direct-to-Tapis + X-Tapis-Token pattern as getDirContentsFromTapis, so
+// it authenticates identically to the rest of the app's client-side calls.
+export const getTapisDirListing = async (
+   dirPath: string,
+   system: string,
+   token: string,
+): Promise<{
+   dirs: Array<{ name: string; path: string }>;
+   files: Array<{ name: string; path: string }>;
+}> => {
+   const url = `${_tapisBase}/v3/files/ops/${system}/${encodeTapisPath(
+      dirPath,
+   )}?offset=0&limit=1000`;
+   const response = await fetch(url, { headers: { "X-Tapis-Token": token } });
+   if (!response.ok)
+      throw new Error(`Tapis listing failed: ${response.status}`);
+   const results: Array<{ name: string; path: string; type: string }> =
+      (await response.json()).result ?? [];
+   const cleanDir = dirPath.replace(/^\/+/, "").replace(/\/+$/, "");
+   const dirs: Array<{ name: string; path: string }> = [];
+   const files: Array<{ name: string; path: string }> = [];
+   for (const item of results) {
+      const norm = item.path.replace(/^\/+/, "").replace(/\/+$/, "");
+      // Tapis lists the queried directory itself as an entry — skip it.
+      if (item.type === "dir" && norm !== cleanDir) {
+         dirs.push({ name: item.name, path: item.path });
+      } else if (item.type === "file") {
+         files.push({ name: item.name, path: item.path });
+      }
+   }
+   return { dirs, files };
+};
+
 export const getImages = async (
    paths: string[],
    pipeId: string,
