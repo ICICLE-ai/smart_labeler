@@ -316,6 +316,28 @@ export const fetchFile = async (
    });
 };
 
+// fetchFile with automatic retry + exponential backoff. The backend /get_file
+export const fetchFileWithRetry = async (
+   url: string,
+   token: string,
+   attempts: number = 3,
+   initialDelayMs: number = 1000,
+): Promise<Response> => {
+   let lastError: unknown;
+   for (let i = 0; i < attempts; i++) {
+      try {
+         const res = await fetchFile(url, token);
+         if (res.ok) return res;
+         lastError = new Error(`HTTP ${res.status}`);
+      } catch (e) {
+         lastError = e; // network-level failure
+      }
+      if (i < attempts - 1)
+         await new Promise((r) => setTimeout(r, initialDelayMs * 2 ** i));
+   }
+   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+};
+
 export const getFile = async (
    url: string,
    pipeId: string,

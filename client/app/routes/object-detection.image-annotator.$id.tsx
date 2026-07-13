@@ -16,7 +16,7 @@ import {
    mergeDetectionForSave,
    toRelativeFilename,
 } from "../components/ImageAnnotation/utils/utils";
-import { fetchAndReturnData, fetchFile, saveFile, SubmitData } from "~/utils/utils";
+import { fetchAndReturnData, fetchFileWithRetry, saveFile, SubmitData } from "~/utils/utils";
 import { useCookies } from "react-cookie";
 import { useLoaderData } from "@remix-run/react";
 
@@ -126,19 +126,27 @@ const ImageAnnotation = () => {
       ) return;
       annotationsAutoLoaded.current = true;
       setIsAnnotationsLoading(true);
-      fetchFile(
+      // Retry with backoff — the first /get_file hit regularly fails while the
+      fetchFileWithRetry(
          `/get_file/${pipeid}/${annotatorConfig.system}?filePath=${encodeURIComponent(annotatorConfig.annotationFilePath)}`,
          token
       )
          .then((res) => res.text())
          .then((text) => {
             let parsed: any;
-            try { parsed = JSON.parse(text); } catch { return; }
+            try { parsed = JSON.parse(text); } catch { throw new Error("annotation file is not valid JSON"); }
             pendingAnnotationDataRef.current = { json: parsed, isCoco: annotatorConfig.fileType === "coco" };
             const file = new File([text], "annotations.json", { type: "application/json" });
             importAnnotationsFromJson(file, annotatorConfig.fileType === "coco");
          })
-         .catch((e) => console.error("Failed to auto-load annotations:", e))
+         .catch((e) => {
+            // Un-burn the one-shot flag so a later files/config change retries,
+            // instead of a transient failure silently skipping the saved
+            // annotations for the whole session.
+            annotationsAutoLoaded.current = false;
+            console.error("Failed to auto-load annotations:", e);
+            alert("Failed to load saved annotations. Reload the page to retry.");
+         })
          .finally(() => setIsAnnotationsLoading(false));
    // eslint-disable-next-line react-hooks/exhaustive-deps
    }, [files, annotatorConfig]);
@@ -280,10 +288,10 @@ const ImageAnnotation = () => {
                   ? importFromCocoJsonUtil(parsed, files)
                   : importFromDefaultJsonUtil(parsed, files);
 
-               // The displayed annotations are derived from the map, so updating
-               // the map is all that's needed — the canvas refreshes automatically.
-               const mergedMap = mergeAnnotationMaps(fileToAnnotationsMap, importedMap);
-               setFileToAnnotationsMap(mergedMap);
+               // Functional update: this runs long after the closure was created
+               // (fetch + FileReader), so merging into `prev` — not the captured
+               // map — keeps concurrent edits/size writes from being clobbered.
+               setFileToAnnotationsMap((prev) => mergeAnnotationMaps(prev, importedMap));
 
                console.log(`${coco ? "COCO" : "Default"} data imported:`, parsed);
             } catch (e) {
@@ -295,20 +303,17 @@ const ImageAnnotation = () => {
    };
 
    const handleSetFileSize = (size: { width: number; height: number }) => {
-      const existingAnnotations =
-         fileToAnnotationsMap.get(selectedFileIndex || 0) || {
-            name: "",
-            width: 0,
-            height: 0,
-            annotations: [],
-         };
-      const updatedMap = new Map(fileToAnnotationsMap);
-      updatedMap.set(selectedFileIndex || 0, {
-         ...existingAnnotations,
-         width: size.width,
-         height: size.height,
+      const idx = selectedFileIndex || 0;
+      // Functional update — this fires from ImageCanvas's image-load effect, which
+      // races the annotation auto-load on page load. A non-functional write here
+      // could replace the whole map with a stale pre-import copy and wipe the
+      // freshly loaded annotations.
+      setFileToAnnotationsMap((prev) => {
+         const updated = new Map(prev);
+         const fa = updated.get(idx) || { name: files[idx] || "", width: 0, height: 0, annotations: [] };
+         updated.set(idx, { ...fa, width: size.width, height: size.height });
+         return updated;
       });
-      setFileToAnnotationsMap(updatedMap);
    }
 
    return (

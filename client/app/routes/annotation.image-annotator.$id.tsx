@@ -19,7 +19,7 @@ import {
    joinUnderDir,
    mergeDetectionForSave,
 } from "../components/ImageAnnotation/utils/utils";
-import { fetchFile, saveFile, SubmitData, fetchAndReturnData } from "~/utils/utils";
+import { fetchFileWithRetry, saveFile, SubmitData, fetchAndReturnData } from "~/utils/utils";
 import { useCookies } from "react-cookie";
 import { useLoaderData } from "@remix-run/react";
 import { TYPE } from "~/utils/utils";
@@ -434,14 +434,16 @@ const ImageAnnotation = () => {
       ) return;
       annotationsAutoLoaded.current = true;
       setIsAnnotationsLoading(true);
-      fetchFile(
+      // Retry with backoff — the first /get_file hit regularly fails while the
+      // backend/Tapis is cold and image prefetches saturate the connection pool.
+      fetchFileWithRetry(
          `/get_file/${pipeid}/${annotatorConfig.system}?filePath=${encodeURIComponent(annotatorConfig.annotationFilePath)}`,
          token
       )
          .then((res) => res.text())
          .then((text) => {
             let parsed: any;
-            try { parsed = JSON.parse(text); } catch { return; }
+            try { parsed = JSON.parse(text); } catch { throw new Error("annotation file is not valid JSON"); }
             const isCoco = isSegmentation
                ? (Array.isArray(parsed?.images) && Array.isArray(parsed?.annotations))
                : annotatorConfig.fileType === "coco";
@@ -453,7 +455,14 @@ const ImageAnnotation = () => {
                importDetectionAnnotationsFromJson(file, annotatorConfig.fileType === "coco");
             }
          })
-         .catch((e) => console.error("Failed to auto-load annotations:", e))
+         .catch((e) => {
+            // Un-burn the one-shot flag so a later files/config change retries,
+            // instead of a transient failure silently skipping the saved
+            // annotations for the whole session.
+            annotationsAutoLoaded.current = false;
+            console.error("Failed to auto-load annotations:", e);
+            alert("Failed to load saved annotations. Reload the page to retry.");
+         })
          .finally(() => setIsAnnotationsLoading(false));
    }, [files, annotatorConfig, isSegmentation]);
 
@@ -577,20 +586,23 @@ const ImageAnnotation = () => {
             // Utils return index-keyed maps — convert to path-keyed for stable storage
             const importedIndexMap = coco ? importFromCocoJsonUtil(parsed, files) : importFromDefaultJsonUtil(parsed, files);
             const importedMap = indexMapToPathMap(importedIndexMap, files);
-            const currentMap = updateDetectionMapForCurrentFile();
-            const merged = new Map(currentMap);
-            importedMap.forEach((imported, path) => {
-               const existing = merged.get(path);
-               // Replace-per-path: an imported file overwrites that file's
-               // annotations instead of appending, so re-importing the same file
-               // is idempotent. Existing metadata (width/height) is preserved.
-               merged.set(path, existing
-                  ? { ...existing, annotations: imported.annotations }
-                  : imported
-               );
+            // Functional update: this runs long after the closure was created
+            // (fetch + FileReader), so merging into `prev` — not a captured map —
+            // keeps concurrent edits/size writes from being clobbered.
+            setFileToAnnotationsMap((prev) => {
+               const merged = new Map(prev);
+               importedMap.forEach((imported, path) => {
+                  const existing = merged.get(path);
+                  // Replace-per-path: an imported file overwrites that file's
+                  // annotations instead of appending, so re-importing the same file
+                  // is idempotent. Existing metadata (width/height) is preserved.
+                  merged.set(path, existing
+                     ? { ...existing, annotations: imported.annotations }
+                     : imported
+                  );
+               });
+               return merged;
             });
-            // Displayed annotations are derived from the map — no extra sync step.
-            setFileToAnnotationsMap(merged);
          } catch (e) {
             console.error("Failed to parse detection JSON:", e);
          }
@@ -645,20 +657,23 @@ const ImageAnnotation = () => {
             // Keep a copy so the re-apply effect can match newly-discovered files later.
             pendingAnnotationDataRef.current = { json: parsed, isCoco, isSegmentation: true };
             const importedMap = isCoco ? importSegmentationFromCoco(parsed, files) : importSegmentationJson(parsed, files);
-            const currentMap = updateSegmentationMapForCurrentFile();
-            const merged = new Map(currentMap);
-            importedMap.forEach((imported, path) => {
-               const existing = merged.get(path);
-               // Replace-per-path: an imported file overwrites that file's masks
-               // instead of appending, so re-importing the same file is idempotent.
-               // Existing metadata (width/height) is preserved.
-               merged.set(path, existing
-                  ? { ...existing, masks: imported.masks }
-                  : imported
-               );
+            // Functional update: this runs long after the closure was created
+            // (fetch + FileReader), so merging into `prev` — not a captured map —
+            // keeps concurrent edits/size writes from being clobbered.
+            setFileToMasksMap((prev) => {
+               const merged = new Map(prev);
+               importedMap.forEach((imported, path) => {
+                  const existing = merged.get(path);
+                  // Replace-per-path: an imported file overwrites that file's masks
+                  // instead of appending, so re-importing the same file is idempotent.
+                  // Existing metadata (width/height) is preserved.
+                  merged.set(path, existing
+                     ? { ...existing, masks: imported.masks }
+                     : imported
+                  );
+               });
+               return merged;
             });
-            // Displayed masks are derived from the map — no extra sync step.
-            setFileToMasksMap(merged);
          } catch (e) {
             console.error("Failed to parse segmentation JSON:", e);
          }
