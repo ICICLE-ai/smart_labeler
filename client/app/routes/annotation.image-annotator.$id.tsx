@@ -13,13 +13,13 @@ import { CircularProgress, Drawer, Grid, Box, Button, LinearProgress, Typography
 import Tools from "../components/ImageAnnotation/utils/Tools";
 import {
    downloadFile,
-   exportToCoco,
-   exportToDefaultJson,
    FileAnnotations,
    importFromCocoJsonUtil,
    importFromDefaultJsonUtil,
+   joinUnderDir,
+   mergeDetectionForSave,
 } from "../components/ImageAnnotation/utils/utils";
-import { fetchFile, saveFile, SubmitData, fetchAndReturnData } from "~/utils/utils";
+import { fetchFileWithRetry, saveFile, SubmitData, fetchAndReturnData } from "~/utils/utils";
 import { useCookies } from "react-cookie";
 import { useLoaderData } from "@remix-run/react";
 import { TYPE } from "~/utils/utils";
@@ -41,17 +41,9 @@ interface AnnotatorConfig {
 }
 
 // ── Adapter helpers ──
-// Utils functions (exportToCoco, importFromCocoJsonUtil, etc.) use Map<number, FileAnnotations>.
-// Our annotation maps are keyed by file path string so keys survive folder navigation.
-
-function pathMapToIndexMap(pathMap: Map<string, FileAnnotations>, files: string[]): Map<number, FileAnnotations> {
-   const indexMap = new Map<number, FileAnnotations>();
-   files.forEach((f, idx) => {
-      const fa = pathMap.get(f);
-      if (fa) indexMap.set(idx, fa);
-   });
-   return indexMap;
-}
+// The import utils return Map<number, FileAnnotations> keyed by index in the files
+// array. Our annotation maps are keyed by file path string so keys survive folder
+// navigation.
 
 function indexMapToPathMap(indexMap: Map<number, FileAnnotations>, files: string[]): Map<string, FileAnnotations> {
    const pathMap = new Map<string, FileAnnotations>();
@@ -157,6 +149,73 @@ function exportSegmentationToCoco(
    return { info: { version: "1.0", type: "segmentation" }, images, annotations, categories };
 }
 
+// Parse an exported segmentation JSON into a map keyed by each image's path
+// relative to srcImgDir (folder structure preserved, no basename collisions).
+function segJsonToRelMap(json: any, isCoco: boolean): Map<string, SegmentationFileAnnotations> {
+   const map = new Map<string, SegmentationFileAnnotations>();
+   if (isCoco) {
+      const catIdToName = new Map<number, string>();
+      (json?.categories ?? []).forEach((c: any) => catIdToName.set(c.id, c.name));
+      const imgIdToMeta = new Map<number, { rel: string; width: number; height: number }>();
+      (json?.images ?? []).forEach((im: any) =>
+         imgIdToMeta.set(im.id, { rel: im.file_name, width: im.width ?? 0, height: im.height ?? 0 }));
+      (json?.annotations ?? []).forEach((a: any) => {
+         const meta = imgIdToMeta.get(a.image_id);
+         if (!meta) return;
+         const fa = map.get(meta.rel) ?? { name: meta.rel, width: meta.width, height: meta.height, masks: [] };
+         const flat: number[] = Array.isArray(a.segmentation) ? (a.segmentation[0] ?? []) : [];
+         const points: { x: number; y: number }[] = [];
+         for (let i = 0; i + 1 < flat.length; i += 2) points.push({ x: flat[i], y: flat[i + 1] });
+         fa.masks.push({
+            id: `${Date.now()}-${Math.random()}`,
+            label: catIdToName.get(a.category_id) ?? "mask",
+            points,
+            ...(a.score !== undefined ? { score: a.score } : {}),
+            ...(a.flag ? { flag: a.flag } : {}),
+         });
+         map.set(meta.rel, fa);
+      });
+   } else {
+      (json?.files ?? []).forEach((entry: any) => {
+         map.set(entry.filename, {
+            name: entry.filename,
+            width: entry.width ?? 0,
+            height: entry.height ?? 0,
+            masks: (entry.masks ?? []).map((m: any) => ({
+               id: m.id ?? `${Date.now()}-${Math.random()}`,
+               label: m.label ?? "mask",
+               points: m.points ?? [],
+               ...(m.score !== undefined ? { score: m.score } : {}),
+               ...(m.flag ? { flag: m.flag } : {}),
+            })),
+         });
+      });
+   }
+   return map;
+}
+
+// Build the segmentation export, overlaying live masks (keyed by path relative to
+// srcImgDir) on top of the imported baseline so unopened folders survive the save.
+function mergeSegmentationForSave(
+   liveRelMap: Map<string, SegmentationFileAnnotations>,
+   baselineJson: any | null,
+   baselineIsCoco: boolean,
+   srcImgDir: string,
+   coco: boolean,
+): object {
+   const complete = baselineJson
+      ? segJsonToRelMap(baselineJson, baselineIsCoco)
+      : new Map<string, SegmentationFileAnnotations>();
+   liveRelMap.forEach((fa, rel) => complete.set(rel, fa)); // live edits win per file
+   const rels = [...complete.keys()];
+   const files = rels.map((r) => joinUnderDir(r, srcImgDir));
+   const fullMap = new Map<string, SegmentationFileAnnotations>();
+   rels.forEach((r, i) => fullMap.set(files[i], complete.get(r)!));
+   return coco
+      ? exportSegmentationToCoco(fullMap, files, srcImgDir)
+      : exportSegmentationJson(fullMap, files, srcImgDir);
+}
+
 function importSegmentationJson(
    json: any,
    files: string[]
@@ -259,6 +318,11 @@ const MODE_CONFIG: Record<string, ModeConfig> = {
 
 const DETECTION_CONFIG: ModeConfig = { engine: detectionEngine, detailsVariant: "detection" };
 
+// Stable identities for "no annotations" so the derived values don't create new
+// arrays every render (ImageCanvas re-syncs when the annotations prop identity changes).
+const NO_ANNOTATIONS: Annotation[] = [];
+const NO_MASKS: SegmentationAnnotation[] = [];
+
 // ────────────────────────────────────────────────────────────────────────────
 // Component
 // ────────────────────────────────────────────────────────────────────────────
@@ -295,16 +359,46 @@ const ImageAnnotation = () => {
    const pendingAnnotationDataRef = useRef<{ json: any; isCoco: boolean; isSegmentation: boolean } | null>(null);
 
    // ── Detection-specific state ──
-   const [boundingBoxes, setBoundingBoxes] = useState<Annotation[]>([]);
    const [selectedBoxId, setSelectedBoxId] = useState<string | undefined>();
    const [selectedBoxIds, setSelectedBoxIds] = useState<string[]>([]);
    const [fileToAnnotationsMap, setFileToAnnotationsMap] = useState<Map<string, FileAnnotations>>(new Map());
 
    // ── Segmentation-specific state ──
-   const [segmentationMasks, setSegmentationMasks] = useState<SegmentationAnnotation[]>([]);
    const [selectedMaskId, setSelectedMaskId] = useState<string | undefined>();
    const [selectedMaskIds, setSelectedMaskIds] = useState<string[]>([]);
    const [fileToMasksMap, setFileToMasksMap] = useState<Map<string, SegmentationFileAnnotations>>(new Map());
+
+   // Single source of truth: displayed annotations/masks are DERIVED from the
+   // per-file maps, never copied into separate state. Navigation is therefore a
+   // pure key change — no persist/load hand-off that can race when setState is
+   // asynchronous (the old two-copy design corrupted neighbouring files during
+   // rapid arrow-key navigation).
+   const boundingBoxes = selectedFilePath
+      ? fileToAnnotationsMap.get(selectedFilePath)?.annotations ?? NO_ANNOTATIONS
+      : NO_ANNOTATIONS;
+   const segmentationMasks = selectedFilePath
+      ? fileToMasksMap.get(selectedFilePath)?.masks ?? NO_MASKS
+      : NO_MASKS;
+
+   // All edits write straight into the map slot of the file they belong to.
+   const mutateBoxes = (path: string | null, fn: (anns: Annotation[]) => Annotation[]) => {
+      if (!path) return;
+      setFileToAnnotationsMap((prev) => {
+         const updated = new Map(prev);
+         const fa = updated.get(path) ?? { name: path, width: 0, height: 0, annotations: [] };
+         updated.set(path, { ...fa, annotations: fn(fa.annotations) });
+         return updated;
+      });
+   };
+   const mutateMasks = (path: string | null, fn: (masks: SegmentationAnnotation[]) => SegmentationAnnotation[]) => {
+      if (!path) return;
+      setFileToMasksMap((prev) => {
+         const updated = new Map(prev);
+         const fa = updated.get(path) ?? { name: path, width: 0, height: 0, masks: [] };
+         updated.set(path, { ...fa, masks: fn(fa.masks) });
+         return updated;
+      });
+   };
 
    // ────────────────────────────────────────────────────────────────────────
    // Init: load config + pipeline type
@@ -340,14 +434,16 @@ const ImageAnnotation = () => {
       ) return;
       annotationsAutoLoaded.current = true;
       setIsAnnotationsLoading(true);
-      fetchFile(
+      // Retry with backoff — the first /get_file hit regularly fails while the
+      // backend/Tapis is cold and image prefetches saturate the connection pool.
+      fetchFileWithRetry(
          `/get_file/${pipeid}/${annotatorConfig.system}?filePath=${encodeURIComponent(annotatorConfig.annotationFilePath)}`,
          token
       )
          .then((res) => res.text())
          .then((text) => {
             let parsed: any;
-            try { parsed = JSON.parse(text); } catch { return; }
+            try { parsed = JSON.parse(text); } catch { throw new Error("annotation file is not valid JSON"); }
             const isCoco = isSegmentation
                ? (Array.isArray(parsed?.images) && Array.isArray(parsed?.annotations))
                : annotatorConfig.fileType === "coco";
@@ -359,7 +455,14 @@ const ImageAnnotation = () => {
                importDetectionAnnotationsFromJson(file, annotatorConfig.fileType === "coco");
             }
          })
-         .catch((e) => console.error("Failed to auto-load annotations:", e))
+         .catch((e) => {
+            // Un-burn the one-shot flag so a later files/config change retries,
+            // instead of a transient failure silently skipping the saved
+            // annotations for the whole session.
+            annotationsAutoLoaded.current = false;
+            console.error("Failed to auto-load annotations:", e);
+            alert("Failed to load saved annotations. Reload the page to retry.");
+         })
          .finally(() => setIsAnnotationsLoading(false));
    }, [files, annotatorConfig, isSegmentation]);
 
@@ -415,40 +518,9 @@ const ImageAnnotation = () => {
    // File selection – persists current annotations before switching
    // ────────────────────────────────────────────────────────────────────────
 
-   useEffect(() => {
-      if (!selectedFilePath) return;
-      if (isSegmentation) {
-         const fa = fileToMasksMap.get(selectedFilePath);
-         setSegmentationMasks([...(fa?.masks ?? [])]);
-      } else {
-         const fa = fileToAnnotationsMap.get(selectedFilePath);
-         setBoundingBoxes([...(fa?.annotations ?? [])]);
-      }
-   }, [selectedFilePath]); // fires immediately on navigation, not after image load
-
    const handleFileSelect = (file: Blob | null, filePath: string) => {
-      const prevPath = selectedFilePath;
-
-      // Persist annotations for the departing file immediately so rapid arrow-key
-      // navigation never shows stale annotations for the wrong file.
-      if (prevPath !== null && prevPath !== filePath) {
-         if (isSegmentation) {
-            setFileToMasksMap((prev) => {
-               const updated = new Map(prev);
-               const fa = updated.get(prevPath) ?? { name: prevPath, width: 0, height: 0, masks: [] };
-               updated.set(prevPath, { ...fa, masks: segmentationMasks });
-               return updated;
-            });
-         } else {
-            setFileToAnnotationsMap((prev) => {
-               const updated = new Map(prev);
-               const fa = updated.get(prevPath) ?? { name: prevPath, width: 0, height: 0, annotations: [] };
-               updated.set(prevPath, { ...fa, annotations: boundingBoxes });
-               return updated;
-            });
-         }
-      }
-
+      // Displayed annotations/masks are derived from the maps, so switching files
+      // is a pure key change — nothing to persist or reload, nothing to race.
       setSelectedFilePath(filePath);
       setSelectedBoxId(undefined);
 
@@ -464,27 +536,38 @@ const ImageAnnotation = () => {
    // ────────────────────────────────────────────────────────────────────────
 
    const handleBoundingBoxUpdate = (id: string, updates: Partial<Annotation>) => {
-      setBoundingBoxes((prev) => prev.map((box) => (box.id === id ? { ...box, ...updates } : box)));
+      mutateBoxes(selectedFilePath, (anns) =>
+         anns.map((box) => (box.id === id ? { ...box, ...updates } : box))
+      );
    };
 
-   const updateDetectionMapForCurrentFile = () => {
-      const updated = new Map(fileToAnnotationsMap);
-      if (selectedFilePath !== null) {
-         const fa = updated.get(selectedFilePath) ?? { name: selectedFilePath, width: 0, height: 0, annotations: [] };
-         updated.set(selectedFilePath, { ...fa, annotations: boundingBoxes });
-      }
-      setFileToAnnotationsMap(updated);
-      return updated;
-   };
+   // The map always holds the latest annotations (edits write straight into it),
+   // so exporting needs no flush step.
+   const updateDetectionMapForCurrentFile = () => fileToAnnotationsMap;
 
    const generateDetectionJson = (coco: boolean, save: boolean, dir: string, sys: string) => {
       const updatedMap = updateDetectionMapForCurrentFile();
-      // Utils expect Map<number, FileAnnotations> keyed by index in the files array
-      const indexMap = pathMapToIndexMap(updatedMap, files);
-      const json = coco ? exportToCoco(indexMap, files, annotatorConfig?.srcImgDir ?? "") : exportToDefaultJson(indexMap, files, annotatorConfig?.srcImgDir ?? "");
+      const srcDir = annotatorConfig?.srcImgDir ?? "";
+      // Key live annotations by path relative to srcImgDir, then overlay them on
+      // the originally-imported dataset so annotations for folders that were never
+      // opened this session aren't dropped from the saved file.
+      const liveRel = new Map<string, FileAnnotations>();
+      updatedMap.forEach((fa, fullPath) => liveRel.set(toRelativeFilename(fullPath, srcDir), fa));
+      const baseline = pendingAnnotationDataRef.current && !pendingAnnotationDataRef.current.isSegmentation
+         ? pendingAnnotationDataRef.current : null;
+      const json = mergeDetectionForSave(liveRel, baseline?.json ?? null, baseline?.isCoco ?? false, srcDir, coco);
       if (save && dir) {
          if (isDemo) { alert("Demo mode: Saving is disabled."); return; }
-         saveFile(`/save-file/${sys}?path=${encodeURIComponent(dir)}`, JSON.stringify(json, null, 2), cookie["tapis-token"]["access_token"]);
+         return saveFile(`/save-file/${sys}?path=${encodeURIComponent(dir)}`, JSON.stringify(json, null, 2), cookie["tapis-token"]["access_token"])
+            .then((ok) => {
+               alert(ok
+                  ? `Annotations saved successfully to ${dir}`
+                  : `Failed to save annotations to ${dir}. Please check the path and try again.`);
+            })
+            .catch((err) => {
+               console.error("Error saving annotations:", err);
+               alert("Error saving annotations. Please try again.");
+            });
       } else {
          downloadFile(JSON.stringify(json, null, 2), coco ? "annotations.coco.json" : "annotations.json");
       }
@@ -503,18 +586,23 @@ const ImageAnnotation = () => {
             // Utils return index-keyed maps — convert to path-keyed for stable storage
             const importedIndexMap = coco ? importFromCocoJsonUtil(parsed, files) : importFromDefaultJsonUtil(parsed, files);
             const importedMap = indexMapToPathMap(importedIndexMap, files);
-            const currentMap = updateDetectionMapForCurrentFile();
-            const merged = new Map(currentMap);
-            importedMap.forEach((imported, path) => {
-               const existing = merged.get(path);
-               merged.set(path, existing
-                  ? { ...existing, annotations: [...existing.annotations, ...imported.annotations] }
-                  : imported
-               );
+            // Functional update: this runs long after the closure was created
+            // (fetch + FileReader), so merging into `prev` — not a captured map —
+            // keeps concurrent edits/size writes from being clobbered.
+            setFileToAnnotationsMap((prev) => {
+               const merged = new Map(prev);
+               importedMap.forEach((imported, path) => {
+                  const existing = merged.get(path);
+                  // Replace-per-path: an imported file overwrites that file's
+                  // annotations instead of appending, so re-importing the same file
+                  // is idempotent. Existing metadata (width/height) is preserved.
+                  merged.set(path, existing
+                     ? { ...existing, annotations: imported.annotations }
+                     : imported
+                  );
+               });
+               return merged;
             });
-            setFileToAnnotationsMap(merged);
-            const target = selectedFilePath ?? "";
-            setBoundingBoxes([...(merged.get(target)?.annotations ?? [])]);
          } catch (e) {
             console.error("Failed to parse detection JSON:", e);
          }
@@ -526,25 +614,32 @@ const ImageAnnotation = () => {
    // Segmentation helpers
    // ────────────────────────────────────────────────────────────────────────
 
-   const updateSegmentationMapForCurrentFile = () => {
-      const updated = new Map(fileToMasksMap);
-      if (selectedFilePath !== null) {
-         const fa = updated.get(selectedFilePath) ?? { name: selectedFilePath, width: 0, height: 0, masks: [] };
-         updated.set(selectedFilePath, { ...fa, masks: segmentationMasks });
-      }
-      setFileToMasksMap(updated);
-      return updated;
-   };
+   // The map always holds the latest masks (edits write straight into it),
+   // so exporting needs no flush step.
+   const updateSegmentationMapForCurrentFile = () => fileToMasksMap;
 
    const generateSegmentationJson = (coco: boolean, save: boolean, dir: string, sys: string) => {
       const updatedMap = updateSegmentationMapForCurrentFile();
       const srcDir = annotatorConfig?.srcImgDir ?? "";
-      const json = coco
-         ? exportSegmentationToCoco(updatedMap, files, srcDir)
-         : exportSegmentationJson(updatedMap, files, srcDir);
+      // Overlay live masks on the imported baseline so masks for folders that were
+      // never opened this session aren't dropped from the saved file.
+      const liveRel = new Map<string, SegmentationFileAnnotations>();
+      updatedMap.forEach((fa, fullPath) => liveRel.set(toRelativeFilename(fullPath, srcDir), fa));
+      const baseline = pendingAnnotationDataRef.current && pendingAnnotationDataRef.current.isSegmentation
+         ? pendingAnnotationDataRef.current : null;
+      const json = mergeSegmentationForSave(liveRel, baseline?.json ?? null, baseline?.isCoco ?? false, srcDir, coco);
       if (save && dir) {
          if (isDemo) { alert("Demo mode: Saving is disabled."); return; }
-         saveFile(`/save-file/${sys}?path=${encodeURIComponent(dir)}`, JSON.stringify(json, null, 2), cookie["tapis-token"]["access_token"]);
+         return saveFile(`/save-file/${sys}?path=${encodeURIComponent(dir)}`, JSON.stringify(json, null, 2), cookie["tapis-token"]["access_token"])
+            .then((ok) => {
+               alert(ok
+                  ? `Segmentation saved successfully to ${dir}`
+                  : `Failed to save segmentation to ${dir}. Please check the path and try again.`);
+            })
+            .catch((err) => {
+               console.error("Error saving segmentation:", err);
+               alert("Error saving segmentation. Please try again.");
+            });
       } else {
          downloadFile(JSON.stringify(json, null, 2), coco ? "segmentation.coco.json" : "segmentation.json");
       }
@@ -562,18 +657,23 @@ const ImageAnnotation = () => {
             // Keep a copy so the re-apply effect can match newly-discovered files later.
             pendingAnnotationDataRef.current = { json: parsed, isCoco, isSegmentation: true };
             const importedMap = isCoco ? importSegmentationFromCoco(parsed, files) : importSegmentationJson(parsed, files);
-            const currentMap = updateSegmentationMapForCurrentFile();
-            const merged = new Map(currentMap);
-            importedMap.forEach((imported, path) => {
-               const existing = merged.get(path);
-               merged.set(path, existing
-                  ? { ...existing, masks: [...existing.masks, ...imported.masks] }
-                  : imported
-               );
+            // Functional update: this runs long after the closure was created
+            // (fetch + FileReader), so merging into `prev` — not a captured map —
+            // keeps concurrent edits/size writes from being clobbered.
+            setFileToMasksMap((prev) => {
+               const merged = new Map(prev);
+               importedMap.forEach((imported, path) => {
+                  const existing = merged.get(path);
+                  // Replace-per-path: an imported file overwrites that file's masks
+                  // instead of appending, so re-importing the same file is idempotent.
+                  // Existing metadata (width/height) is preserved.
+                  merged.set(path, existing
+                     ? { ...existing, masks: imported.masks }
+                     : imported
+                  );
+               });
+               return merged;
             });
-            setFileToMasksMap(merged);
-            const target = selectedFilePath ?? "";
-            setSegmentationMasks([...(merged.get(target)?.masks ?? [])]);
          } catch (e) {
             console.error("Failed to parse segmentation JSON:", e);
          }
@@ -620,28 +720,36 @@ const ImageAnnotation = () => {
       setActiveFlags(flags);
    };
 
+   const handleMaskUpdate = (id: string, updates: Partial<SegmentationAnnotation>) =>
+      mutateMasks(selectedFilePath, (masks) => masks.map((m) => (m.id === id ? { ...m, ...updates } : m)));
+   const deleteMasks = (ids: string[]) =>
+      mutateMasks(selectedFilePath, (masks) => masks.filter((m) => !ids.includes(m.id)));
+   const deleteBoxes = (ids: string[]) =>
+      mutateBoxes(selectedFilePath, (anns) => anns.filter((box) => !ids.includes(box.id)));
+
    // Props fed into the single <ImageCanvas>, chosen by mode.
    const canvasProps = isSegmentation
       ? {
            annotations: segmentationMasks,
-           onAddition: (added: SegmentationAnnotation[]) => setSegmentationMasks((prev) => [...prev, ...added]),
+           onAddition: (added: SegmentationAnnotation[]) =>
+              mutateMasks(selectedFilePath, (masks) => [...masks, ...added]),
            selectedAnnotationId: selectedMaskId ?? null,
            selectedAnnotationIds: selectedMaskIds,
            onSelection: (id: string | null) => { setSelectedMaskId(id ?? undefined); setSelectedMaskIds([]); },
            onMultiSelection: (ids: string[]) => { setSelectedMaskIds(ids); if (ids.length > 0) setSelectedMaskId(undefined); },
-           onUpdate: (id: string, updates: Partial<SegmentationAnnotation>) =>
-              setSegmentationMasks((prev) => prev.map((m) => (m.id === id ? { ...m, ...updates } : m))),
-           deleteAnnotations: (ids: string[]) => setSegmentationMasks((prev) => prev.filter((m) => !ids.includes(m.id))),
+           onUpdate: handleMaskUpdate,
+           deleteAnnotations: deleteMasks,
         }
       : {
            annotations: boundingBoxes,
-           onAddition: (added: Annotation[]) => setBoundingBoxes((prev) => [...prev, ...added]),
+           onAddition: (added: Annotation[]) =>
+              mutateBoxes(selectedFilePath, (anns) => [...anns, ...added]),
            selectedAnnotationId: selectedBoxId ?? "",
            selectedAnnotationIds: selectedBoxIds,
            onSelection: (id: string | null) => { setSelectedBoxId(id ?? undefined); setSelectedBoxIds([]); },
            onMultiSelection: (ids: string[]) => { setSelectedBoxIds(ids); if (ids.length > 0) setSelectedBoxId(undefined); },
            onUpdate: handleBoundingBoxUpdate,
-           deleteAnnotations: (ids: string[]) => setBoundingBoxes((prev) => prev.filter((x) => !ids.includes(x.id))),
+           deleteAnnotations: deleteBoxes,
         };
 
    // Props fed into the injected <Details> panel, chosen by mode.
@@ -652,9 +760,8 @@ const ImageAnnotation = () => {
            selectedBoxIds: selectedMaskIds,
            onSelectedBoxChange: (id: string) => setSelectedMaskId(id),
            onSelectedBoxIdsChange: (ids: string[]) => { setSelectedMaskIds(ids); if (ids.length > 0) setSelectedMaskId(undefined); },
-           onAnnotationUpdate: (id: string, updates: Partial<SegmentationAnnotation>) =>
-              setSegmentationMasks((prev) => prev.map((m) => (m.id === id ? { ...m, ...updates } : m))),
-           deleteAnnotations: (ids: string[]) => setSegmentationMasks((prev) => prev.filter((m) => !ids.includes(m.id))),
+           onAnnotationUpdate: handleMaskUpdate,
+           deleteAnnotations: deleteMasks,
            handleFilterAnnotations,
         }
       : {
@@ -664,7 +771,7 @@ const ImageAnnotation = () => {
            onSelectedBoxChange: (id: string) => setSelectedBoxId(id),
            onSelectedBoxIdsChange: (ids: string[]) => { setSelectedBoxIds(ids); if (ids.length > 0) setSelectedBoxId(undefined); },
            onAnnotationUpdate: handleBoundingBoxUpdate,
-           deleteAnnotations: (ids: string[]) => setBoundingBoxes((prev) => prev.filter((box) => !ids.includes(box.id))),
+           deleteAnnotations: deleteBoxes,
            handleFilterAnnotations,
         };
 
@@ -721,25 +828,8 @@ const ImageAnnotation = () => {
             <FileExplorer
                onFileSelect={handleFileSelect}
                filesInDirectory={(newFiles, sys, isRootReset) => {
-                  // Flush live edits to the map before the folder view changes so
-                  // annotations are never lost if the auto-select fires before handleFileSelect.
-                  if (selectedFilePath !== null) {
-                     if (isSegmentation) {
-                        setFileToMasksMap((prev) => {
-                           const updated = new Map(prev);
-                           const fa = updated.get(selectedFilePath) ?? { name: selectedFilePath, width: 0, height: 0, masks: [] };
-                           updated.set(selectedFilePath, { ...fa, masks: segmentationMasks });
-                           return updated;
-                        });
-                     } else {
-                        setFileToAnnotationsMap((prev) => {
-                           const updated = new Map(prev);
-                           const fa = updated.get(selectedFilePath) ?? { name: selectedFilePath, width: 0, height: 0, annotations: [] };
-                           updated.set(selectedFilePath, { ...fa, annotations: boundingBoxes });
-                           return updated;
-                        });
-                     }
-                  }
+                  // Edits live directly in the per-file maps, so folder navigation
+                  // needs no flush step.
                   if (isRootReset) {
                      setFiles(newFiles);
                   } else {
@@ -755,11 +845,11 @@ const ImageAnnotation = () => {
                fileDir={annotatorConfig?.srcImgDir}
                parentSystem={annotatorConfig?.system}
                onDirectorySubmit={(!isDemo || isAdmin) ? (srcImgDir, sys) => {
-                  // Full reset: new root directory means stale annotation paths may be invalid.
+                  // Full reset: new root directory means stale annotation paths may
+                  // be invalid. Displayed annotations are derived from the maps, so
+                  // clearing the maps clears the canvas.
                   setFileToAnnotationsMap(new Map());
                   setFileToMasksMap(new Map());
-                  setBoundingBoxes([]);
-                  setSegmentationMasks([]);
                   setSelectedBoxId(undefined);
                   setSelectedMaskId(undefined);
                   setSelectedFile(null);
@@ -791,9 +881,14 @@ const ImageAnnotation = () => {
                : importDetectionAnnotationsFromJson(file, false)
             }
             filesUploaded={files.length > 0}
-            onAnnotationSaved={(filePath, isCoco) =>
-               upsertAnnotatorConfig({ annotationFilePath: filePath, fileType: isCoco ? "coco" : "default" })
-            }
+            onAnnotationSaved={(filePath, isCoco) => {
+               // Saving wrote the file from in-memory state, which is now the source
+               // of truth. Mark auto-load done so this config change doesn't re-trigger
+               // the auto-load effect (which would re-import and merge the just-saved
+               // file back in, duplicating or dropping annotations).
+               annotationsAutoLoaded.current = true;
+               upsertAnnotatorConfig({ annotationFilePath: filePath, fileType: isCoco ? "coco" : "default" });
+            }}
             annotationFilePath={annotatorConfig?.annotationFilePath}
             annotationSystem={annotatorConfig?.system}
             annotationIsCoco={annotatorConfig?.fileType === "coco"}

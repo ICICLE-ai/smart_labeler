@@ -1,7 +1,9 @@
 import json
 import requests
+import os
 
-TAPIS_JOBS_URL = "https://icicleai.tapis.io/v3/jobs/submit"
+TAPIS_BASE_URL = os.getenv("TAPIS_BASE_URL", "https://icicleai.tapis.io")
+TAPIS_JOBS_URL = f"{TAPIS_BASE_URL}/v3/jobs/submit"
 OSC_SYSTEMS = ["pitzer-tapis", "ascend-tapis", "cardinal-tapis"]
 
 _APP_CONFIGS = {

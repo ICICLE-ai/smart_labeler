@@ -241,7 +241,12 @@ export const segmentationEngine: CanvasEngine<SegmentationAnnotation> = {
                   label: ctx.labelValue || `Segment ${ctx.annotations.length + i + 1}`,
                   score: m.confidence,
                }));
-               ctx.setAnnotations((prev) => [...prev, ...newAnns]);
+               // No direct write into the canvas's internal state: this callback can
+               // resolve after the user navigated to another image, and a direct
+               // write would paint the result over whatever image is on screen.
+               // onAddition stores the masks in the originating file's map slot
+               // (captured in this closure at request time); if that file is still
+               // displayed, the canvas syncs back through props.
                ctx.onAddition?.(newAnns);
             })
             .catch((err) => { console.error("SAM3 segmentation failed:", err); alert("SAM3 failed. Please try again."); })

@@ -237,7 +237,12 @@ const sam3ClickHandler: CanvasActionHandler = {
                   label: ctx.labelValue,
                   score: p.confidence,
                }));
-               ctx.setAnnotations((prev) => [...prev, ...newAnnotations]);
+               // No direct write into the canvas's internal state: this callback can
+               // resolve after the user navigated to another image, and a direct
+               // write would paint the result over whatever image is on screen.
+               // onAddition stores the boxes in the originating file's map slot
+               // (captured in this closure at request time); if that file is still
+               // displayed, the canvas syncs back through props.
                ctx.onAddition?.(newAnnotations);
             }
          })
@@ -350,7 +355,12 @@ export const detectionEngine: CanvasEngine<Annotation> = {
                   label: p.label,
                   score: p.confidence,
                }));
-               ctx.setAnnotations((prev) => [...prev, ...newAnnotations]);
+               // No direct write into the canvas's internal state: this callback can
+               // resolve after the user navigated to another image, and a direct
+               // write would paint the result over whatever image is on screen.
+               // onAddition stores the boxes in the originating file's map slot
+               // (captured in this closure at request time); if that file is still
+               // displayed, the canvas syncs back through props.
                ctx.onAddition?.(newAnnotations);
             }
          })
