@@ -20,16 +20,37 @@ DB_POOL_MAX = int(os.getenv("DB_POOL_MAX", "20"))
 
 TAPIS_BASE_URL = os.getenv("TAPIS_BASE_URL", "https://icicleai.tapis.io")
 
-print("connecting to database")
-connection_pool = pool.ThreadedConnectionPool(
-    DB_POOL_MIN,
-    DB_POOL_MAX,
-    host=DB_HOST,
-    port=DB_PORT,
-    database=DB_NAME,
-    user=DB_USER,
-    password=DB_PASSWORD,
-)
+print(f"connecting to database at {DB_HOST}:{DB_PORT} (db={DB_NAME}, user={DB_USER})")
+
+# Retry with backoff: in containerized deployments (e.g. Tapis Pods) this
+# service may start before the database is reachable. A bounded retry avoids
+# an instant crash-loop; on final failure the error names the env vars to set.
+_DB_CONNECT_ATTEMPTS = int(os.getenv("DB_CONNECT_ATTEMPTS", "5"))
+connection_pool = None
+for _attempt in range(1, _DB_CONNECT_ATTEMPTS + 1):
+    try:
+        connection_pool = pool.ThreadedConnectionPool(
+            DB_POOL_MIN,
+            DB_POOL_MAX,
+            host=DB_HOST,
+            port=DB_PORT,
+            database=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+        )
+        break
+    except psycopg2.OperationalError as e:
+        if _attempt == _DB_CONNECT_ATTEMPTS:
+            raise RuntimeError(
+                f"Could not connect to Postgres at {DB_HOST}:{DB_PORT} after "
+                f"{_DB_CONNECT_ATTEMPTS} attempts. If this is running in a container/pod, "
+                "set DB_HOST, DB_PORT, DB_NAME, DB_USER and DB_PASSWORD environment "
+                "variables to point at the actual database (localhost only works when "
+                f"Postgres runs in the same host/container). Last error: {e}"
+            ) from e
+        wait = 2 ** (_attempt - 1)
+        print(f"database not reachable (attempt {_attempt}/{_DB_CONNECT_ATTEMPTS}), retrying in {wait}s: {e}")
+        time.sleep(wait)
 print("done connecting to database")
 
 
@@ -316,8 +337,9 @@ def update_pipeline(pipeline_id, user, data):
 
 def delete_pipeline(pipeline_id, user):
     try:
-        execute_query("DELETE FROM query_image_configuration WHERE parentpipelineid = %s", (pipeline_id,))
         execute_query("DELETE FROM object_detection WHERE parentpipeline = %s", (pipeline_id,))
+        execute_query("DELETE FROM query_image_configuration WHERE parentpipelineid = %s", (pipeline_id,))
+        execute_query("DELETE FROM annotator_configuration WHERE parentpipelineid = %s", (pipeline_id,))
         execute_query("DELETE FROM pipeline WHERE pipelineid = %s", (pipeline_id,))
     except Exception as e:
         print(f"Error deleting pipeline {pipeline_id}: {str(e)}")
