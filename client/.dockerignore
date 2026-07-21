@@ -1,0 +1,9 @@
+# Never ship host-installed dependencies into the image: they contain
+# platform-specific native binaries (esbuild, rollup, sass built for macOS)
+# that break `npm run build` inside the linux container. npm install in the
+# Dockerfile does a fresh, linux-native install instead.
+node_modules
+build
+.cache
+*.log
+.DS_Store
