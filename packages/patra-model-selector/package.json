@@ -1,0 +1,55 @@
+{
+  "name": "@icicle-ai/patra-model-selector",
+  "version": "0.1.0",
+  "description": "A Patra model card selector. Visualize and select a required model",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "@mantine/core": "^7.0.0",
+    "@tabler/icons-react": "^3.5.0"
+  },
+  "devDependencies": {
+    "react": "^18.2.1",
+    "react-dom": "^18.2.0",
+    "@mantine/core": "^7.10.0",
+    "@tabler/icons-react": "^3.5.0",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "typescript": "^5.6.3",
+    "tsup": "^8.3.5"
+  },
+  "keywords": [
+    "react",
+    "tapis",
+    "patra",
+    "patra-model-card",
+    "model-selector"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ICICLE-ai/smart_labeler.git",
+    "directory": "packages/patra-model-selector"
+  }
+}

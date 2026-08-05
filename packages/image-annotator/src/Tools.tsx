@@ -1,0 +1,470 @@
+import FileDownloadTwoToneIcon from "@mui/icons-material/FileDownloadTwoTone";
+import FileUploadTwoToneIcon from "@mui/icons-material/FileUploadTwoTone";
+import SaveIcon from "@mui/icons-material/Save";
+import SaveAsIcon from "@mui/icons-material/SaveAs";
+import ArrowForwardIcon from "@mui/icons-material/ArrowForward";
+import DataObjectIcon from "@mui/icons-material/DataObject";
+import ArticleIcon from "@mui/icons-material/Article";
+import {
+   AppBar,
+   Box,
+   Toolbar,
+   IconButton,
+   Typography,
+   Button,
+   Dialog,
+   DialogActions,
+   FormControl,
+   DialogTitle,
+   DialogContent,
+   TextField,
+   Select,
+   MenuItem,
+   Tooltip,
+   Menu,
+   ListItemIcon,
+   ListItemText,
+   Divider,
+   CircularProgress,
+} from "@mui/material";
+import React, { useEffect, useState } from "react";
+import { allowed_systems, DEFAULT_SYSTEM } from "@icicle-ai/tapis-file-explorer";
+import { fetchAnnotationFileText } from "./backendClient";
+import { AnnotationFileFormatSwitch } from "./AnnotationFileFormatSwitch";
+
+interface SaveModalProps {
+   open: boolean;
+   onClose: () => void;
+   onSave: (filePath: string, isCocoJson: boolean, system: string) => void | Promise<void>;
+   initialFilePath?: string;
+   initialSystem?: string;
+   initialIsCoco?: boolean;
+}
+
+const SaveModal: React.FC<SaveModalProps> = ({
+   open, onClose, onSave,
+   initialFilePath = "", initialSystem = DEFAULT_SYSTEM, initialIsCoco = false,
+}) => {
+   const [filePath, setFilePath] = useState(initialFilePath);
+   const [isCocoJson, setIsCocoJson] = useState(initialIsCoco);
+   const [system, setSystem] = useState<string>(initialSystem);
+   const [saving, setSaving] = useState(false);
+
+   useEffect(() => {
+      if (open) {
+         setFilePath(initialFilePath);
+         setIsCocoJson(initialIsCoco);
+         setSystem(initialSystem || DEFAULT_SYSTEM);
+         setSaving(false);
+      }
+   }, [open, initialFilePath, initialIsCoco, initialSystem]);
+
+   const handleSave = async () => {
+      if (!filePath.trim() || saving) return;
+      setSaving(true);
+      try {
+         // Wait for the save to actually finish so the dialog shows progress
+         // instead of closing before the success/error result is known.
+         await onSave(filePath, isCocoJson, system);
+      } finally {
+         setSaving(false);
+         onClose();
+      }
+   };
+
+   return (
+      <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
+         <DialogTitle>Save Annotations</DialogTitle>
+         <DialogContent>
+            <Select
+               value={system}
+               onChange={(e) => setSystem(e.target.value)}
+               fullWidth
+               sx={{ mb: 2 }}
+            >
+               {allowed_systems.map((sys) => (
+                  <MenuItem key={sys.value} value={sys.value}>
+                     {sys.label}
+                  </MenuItem>
+               ))}
+            </Select>
+            <TextField
+               autoFocus
+               margin="dense"
+               label="File Path"
+               type="text"
+               fullWidth
+               value={filePath}
+               onChange={(e) => setFilePath(e.target.value)}
+               placeholder="path/to/annotations.json"
+               sx={{ mb: 2 }}
+            />
+            <FormControl component="fieldset" sx={{ width: "100%" }}>
+               <AnnotationFileFormatSwitch
+                  coco={isCocoJson}
+                  onChange={setIsCocoJson}
+               />
+            </FormControl>
+         </DialogContent>
+         <DialogActions>
+            <Button onClick={onClose} color="primary" disabled={saving}>
+               Cancel
+            </Button>
+            <Button
+               onClick={handleSave}
+               color="primary"
+               disabled={!filePath.trim() || saving}
+               startIcon={saving ? <CircularProgress size={16} color="inherit" /> : undefined}
+            >
+               {saving ? "Saving…" : "Save"}
+            </Button>
+         </DialogActions>
+      </Dialog>
+   );
+};
+
+export interface ToolsProps {
+   onDownloadCocoJson: (save: boolean, dir: string, system: string) => void | Promise<void>;
+   onDownloadDefaultJson: (save: boolean, dir: string, system: string) => void | Promise<void>;
+   handleCocoJsonUpload: (file: File) => void;
+   handleDefaultJsonUpload: (file: File) => void;
+   pipeId: string;
+   /** Auth token forwarded to the backend file-fetch used by "upload by path". */
+   token: string;
+   filesUploaded: boolean;
+   onAnnotationSaved?: (filePath: string, isCoco: boolean) => void;
+   // Pre-populated from annotatorConfig – enables one-click Save
+   annotationFilePath?: string;
+   annotationSystem?: string;
+   annotationIsCoco?: boolean;
+   annotationSrcImgDir?: string;
+   hideNextStep?: boolean;
+   /** Called when "Next Step" is clicked. The button only renders if this is provided. */
+   onNextStep?: () => void;
+}
+
+export const Tools: React.FC<ToolsProps> = (props) => {
+   const [downloadAnchor, setDownloadAnchor] = useState<HTMLElement | null>(null);
+   const [showUploadOptions, setShowUploadOptions] = useState(false);
+   const [openSaveModal, setOpenSaveModal] = useState(false);
+   const [pipeId, setPipeId] = useState(props.pipeId);
+   const [isCoco, setIsCoco] = useState<boolean>(false);
+   const [filePath, setFilePath] = useState<string>("");
+   const [system, setSystem] = useState<string>(DEFAULT_SYSTEM);
+   const [isSaving, setIsSaving] = useState<boolean>(false);
+   const [fileUploaded, setFileUploaded] = useState<boolean>(
+      props.filesUploaded
+   );
+
+   useEffect(() => {
+      setPipeId(props.pipeId);
+   }, [props.pipeId]);
+
+   useEffect(() => {
+      setFileUploaded(props.filesUploaded);
+   }, [props.filesUploaded]);
+
+   function handleDownloadCocoJson(): void {
+      props.onDownloadCocoJson(false, "", system);
+      setDownloadAnchor(null);
+   }
+
+   function handleDownloadDefaultJson(): void {
+      props.onDownloadDefaultJson(false, "", system);
+      setDownloadAnchor(null);
+   }
+
+   async function handleDirectSave() {
+      const path = props.annotationFilePath?.trim();
+      if (!path) {
+         // No known path – fall back to Save As dialog
+         setOpenSaveModal(true);
+         return;
+      }
+      if (isSaving) return;
+      const savedSystem = props.annotationSystem ?? system;
+      setIsSaving(true);
+      try {
+         await (props.annotationIsCoco
+            ? props.onDownloadCocoJson(true, path, savedSystem)
+            : props.onDownloadDefaultJson(true, path, savedSystem));
+         props.onAnnotationSaved?.(path, props.annotationIsCoco ?? false);
+      } finally {
+         setIsSaving(false);
+      }
+   }
+
+   async function handleSaveModalConfirm(filePath: string, isCocoJson: boolean, system: string) {
+      setDownloadAnchor(null);
+      await (isCocoJson
+         ? props.onDownloadCocoJson(true, filePath, system)
+         : props.onDownloadDefaultJson(true, filePath, system));
+      props.onAnnotationSaved?.(filePath, isCocoJson);
+   }
+
+   async function handleUploadAnnotationFile() {
+      const resolvedPath = filePath;
+      let file: File | null = null;
+      try {
+         const text = await fetchAnnotationFileText(pipeId, system, resolvedPath, props.token);
+         file = new File([text], "annotations.json", {
+            type: "application/json",
+         });
+      } catch (error) {
+         console.error("Error fetching file:", error);
+         return;
+      }
+      if (isCoco) {
+         props.handleCocoJsonUpload(file);
+      } else {
+         props.handleDefaultJsonUpload(file);
+      }
+   }
+
+   return (
+      <>
+         <AppBar
+            position="static"
+            elevation={2}
+            sx={{ bgcolor: "grey.900", backgroundImage: "none" }}
+         >
+            <Toolbar sx={{ minHeight: 52, gap: 0.5, px: 2 }}>
+               {/* Title */}
+               <Typography
+                  variant="subtitle1"
+                  fontWeight={700}
+                  noWrap
+                  sx={{ letterSpacing: "0.04em", color: "white", mr: 1.5, flexShrink: 0 }}
+               >
+                  Image Annotator
+               </Typography>
+
+               <Divider
+                  orientation="vertical"
+                  flexItem
+                  sx={{ borderColor: "rgba(255,255,255,0.2)", mx: 1 }}
+               />
+
+               {/* Download */}
+               <Tooltip title="Download annotations">
+                  <IconButton
+                     size="small"
+                     onClick={(e) => setDownloadAnchor(e.currentTarget)}
+                     sx={{
+                        color: "rgba(255,255,255,0.85)",
+                        borderRadius: 1.5,
+                        "&:hover": { bgcolor: "rgba(255,255,255,0.1)", color: "white" },
+                     }}
+                  >
+                     <FileDownloadTwoToneIcon />
+                  </IconButton>
+               </Tooltip>
+               <Menu
+                  anchorEl={downloadAnchor}
+                  open={Boolean(downloadAnchor)}
+                  onClose={() => setDownloadAnchor(null)}
+                  slotProps={{
+                     paper: {
+                        elevation: 6,
+                        sx: { minWidth: 200, mt: 0.5, borderRadius: 2 },
+                     },
+                  }}
+               >
+                  <MenuItem onClick={handleDownloadCocoJson} dense>
+                     <ListItemIcon>
+                        <DataObjectIcon fontSize="small" color="primary" />
+                     </ListItemIcon>
+                     <ListItemText primary="COCO JSON" />
+                  </MenuItem>
+                  <MenuItem onClick={handleDownloadDefaultJson} dense>
+                     <ListItemIcon>
+                        <ArticleIcon fontSize="small" color="primary" />
+                     </ListItemIcon>
+                     <ListItemText primary="Default JSON" />
+                  </MenuItem>
+               </Menu>
+
+               {/* Upload */}
+               <Tooltip
+                  title={
+                     fileUploaded
+                        ? "Import annotations"
+                        : "Select image files first before importing"
+                  }
+               >
+                  <span>
+                     <IconButton
+                        size="small"
+                        disabled={!fileUploaded}
+                        onClick={() => setShowUploadOptions(true)}
+                        sx={{
+                           color: "rgba(255,255,255,0.85)",
+                           borderRadius: 1.5,
+                           "&:hover": { bgcolor: "rgba(255,255,255,0.1)", color: "white" },
+                           "&.Mui-disabled": { color: "rgba(255,255,255,0.3)" },
+                        }}
+                     >
+                        <FileUploadTwoToneIcon />
+                     </IconButton>
+                  </span>
+               </Tooltip>
+
+               {/* Save – direct if path already known, else opens modal */}
+               <Tooltip
+                  title={
+                     props.annotationFilePath
+                        ? `Save to: ${props.annotationFilePath}`
+                        : "Save annotations (choose path)"
+                  }
+               >
+                  <IconButton
+                     size="small"
+                     onClick={handleDirectSave}
+                     disabled={isSaving}
+                     sx={{
+                        color: props.annotationFilePath ? "#69f0ae" : "rgba(255,255,255,0.85)",
+                        borderRadius: 1.5,
+                        "&:hover": { bgcolor: "rgba(255,255,255,0.1)", color: props.annotationFilePath ? "#69f0ae" : "white" },
+                     }}
+                  >
+                     {isSaving ? <CircularProgress size={20} sx={{ color: "#fff" }} /> : <SaveIcon />}
+                  </IconButton>
+               </Tooltip>
+
+               {/* Save As – always opens the dialog */}
+               <Tooltip title="Save As – choose a new path">
+                  <IconButton
+                     size="small"
+                     onClick={() => setOpenSaveModal(true)}
+                     disabled={isSaving}
+                     sx={{
+                        color: "rgba(255,255,255,0.85)",
+                        borderRadius: 1.5,
+                        "&:hover": { bgcolor: "rgba(255,255,255,0.1)", color: "white" },
+                     }}
+                  >
+                     <SaveAsIcon />
+                  </IconButton>
+               </Tooltip>
+
+               {/* Spacer */}
+               <Box sx={{ flex: 1 }} />
+
+               {/* Next Step — only rendered when the consumer wires up onNextStep */}
+               {!props.hideNextStep && props.onNextStep && (
+                  <Button
+                     variant="contained"
+                     color="success"
+                     size="small"
+                     endIcon={<ArrowForwardIcon />}
+                     onClick={props.onNextStep}
+                     sx={{
+                        fontWeight: 700,
+                        borderRadius: "999px",
+                        px: 2,
+                        textTransform: "none",
+                        boxShadow: "none",
+                        "&:hover": { boxShadow: "none" },
+                     }}
+                  >
+                     Next Step
+                  </Button>
+               )}
+            </Toolbar>
+         </AppBar>
+
+         {/* Upload Dialog */}
+         <Dialog
+            open={showUploadOptions}
+            onClose={() => setShowUploadOptions(false)}
+            maxWidth="sm"
+            fullWidth
+         >
+            <DialogTitle>Import Annotations</DialogTitle>
+            <DialogContent>
+               <Select
+                  value={system}
+                  onChange={(e) => setSystem(e.target.value as string)}
+                  fullWidth
+                  size="small"
+                  sx={{ mb: 2, mt: 0.5 }}
+               >
+                  {allowed_systems.map((sys) => (
+                     <MenuItem key={sys.value} value={sys.value}>
+                        {sys.label}
+                     </MenuItem>
+                  ))}
+               </Select>
+               <FormControl fullWidth sx={{ mb: 2 }}>
+                  <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                     Upload File
+                  </Typography>
+                  <Button
+                     variant="outlined"
+                     component="label"
+                     size="small"
+                     sx={{ alignSelf: "flex-start" }}
+                  >
+                     Browse File
+                     <input
+                        type="file"
+                        hidden
+                        accept=".json,application/json"
+                        onChange={(e) => {
+                           const file = e.target.files?.[0];
+                           setShowUploadOptions(false);
+                           if (file) {
+                              if (isCoco) {
+                                 props.handleCocoJsonUpload(file);
+                              } else {
+                                 props.handleDefaultJsonUpload(file);
+                              }
+                           }
+                        }}
+                     />
+                  </Button>
+               </FormControl>
+               <FormControl fullWidth sx={{ mb: 2 }}>
+                  <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                     Or Enter File Path
+                  </Typography>
+                  <TextField
+                     placeholder="/path/to/annotations.json"
+                     fullWidth
+                     variant="outlined"
+                     size="small"
+                     value={filePath}
+                     onChange={(e) => setFilePath(e.target.value)}
+                  />
+               </FormControl>
+               <AnnotationFileFormatSwitch coco={isCoco} onChange={setIsCoco} />
+            </DialogContent>
+            <DialogActions>
+               <Button onClick={() => setShowUploadOptions(false)}>Cancel</Button>
+               <Button
+                  variant="contained"
+                  onClick={() => {
+                     setShowUploadOptions(false);
+                     if (filePath.trim()) {
+                        handleUploadAnnotationFile();
+                     }
+                  }}
+               >
+                  Upload
+               </Button>
+            </DialogActions>
+         </Dialog>
+
+         <SaveModal
+            open={openSaveModal}
+            onClose={() => setOpenSaveModal(false)}
+            onSave={handleSaveModalConfirm}
+            initialFilePath={props.annotationFilePath ?? ""}
+            initialSystem={props.annotationSystem ?? DEFAULT_SYSTEM}
+            initialIsCoco={props.annotationIsCoco ?? false}
+         />
+      </>
+   );
+};
+
+export default Tools;
