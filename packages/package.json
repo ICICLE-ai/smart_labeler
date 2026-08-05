@@ -1,0 +1,23 @@
+{
+  "name": "smart-labeler-packages",
+  "private": true,
+  "version": "0.0.0",
+  "workspaces": [
+    "image-annotation-canvas",
+    "annotation-details",
+    "tapis-file-explorer",
+    "patra-model-selector",
+    "image-annotator"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run typecheck --workspaces",
+    "clean": "npm run clean --workspaces"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "tsup": "^8.3.5",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1"
+  }
+}

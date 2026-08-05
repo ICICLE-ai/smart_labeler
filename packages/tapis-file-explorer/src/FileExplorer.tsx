@@ -22,20 +22,21 @@ import FolderOpenIcon from "@mui/icons-material/FolderOpen";
 import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
 import PhotoLibraryOutlinedIcon from "@mui/icons-material/PhotoLibraryOutlined";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
-import FormikTapisFileWrapper from "~/components/FileExplorer/FormikTapisFileWrapper";
 import { Formik } from "formik";
 import { Group, Select } from "@mantine/core";
-import { SubmitButton } from "../formik-mantine";
-import { allowed_systems, DEFAULT_SYSTEM, getDirContentsFromTapis, getImage, sanitizePath } from "~/utils/utils";
-import { useCookies } from "react-cookie";
-// import { systems } from "./utils";
+import { SubmitButton } from "./SubmitButton";
+import { TapisDirectoryField } from "./TapisDirectoryField";
+import { allowed_systems, DEFAULT_SYSTEM, getDirContentsFromTapis, getImage, sanitizePath } from "./tapisClient";
 
 const PAGE_SIZE: number = 15;
 
-interface FileExplorerProps {
+export interface FileExplorerProps {
    onFileSelect: (file: any, filePath: string) => void;
    filesInDirectory: (files: string[], system: string, isRootReset?: boolean) => void;
+   /** Identifies the pipeline/job this browsing session belongs to (used on the TIFF-conversion route). */
    pipeid: string;
+   /** Auth token forwarded to every Tapis request this component makes. */
+   token: string;
    fileDir?: string;
    parentSystem?: string;
    onDirectorySubmit?: (srcImgDir: string, system: string) => void;
@@ -45,6 +46,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
    onFileSelect,
    filesInDirectory,
    pipeid,
+   token,
    fileDir,
    parentSystem,
    onDirectorySubmit,
@@ -64,7 +66,6 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
    // Tapis form state
    const [system, setSystem] = useState<string | null>(parentSystem ?? DEFAULT_SYSTEM);
    const [srcImgDir, setSrcImgDir] = useState<string | null>(null);
-   const [cookie] = useCookies(["tapis-token"]);
 
    // Image cache keyed by file path → object URL — persists across directory navigation
    const pageCacheRef = useRef<Map<string, string>>(new Map());
@@ -80,8 +81,8 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
    const inflightPrefetchRef = useRef<Set<string>>(new Set());
    const currentPageRef = useRef<number>(0);
    const [pageLoading, setPageLoading] = useState<boolean>(false);
-   const cookieRef = useRef(cookie);
-   useEffect(() => { cookieRef.current = cookie; });
+   const tokenRef = useRef(token);
+   useEffect(() => { tokenRef.current = token; });
 
    // Refs that the keydown handler reads so it always sees the latest values
    // without needing to be re-attached on every selection change.
@@ -200,7 +201,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
       // Fire all fetches in parallel. Each image is written to the cache the moment
       // it arrives — callers don't have to wait for the slowest image in the batch.
       const perFile = toFetch.map((f) =>
-         getImage(f, pipeid, system, cookieRef.current, controller.signal)
+         getImage(f, pipeid, system, tokenRef.current, controller.signal)
             .then((url) => {
                if (currentPageRef.current !== thisPage) {
                   URL.revokeObjectURL(url);
@@ -251,7 +252,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
 
       toFetch.forEach((f) => inflightPrefetchRef.current.add(f));
       toFetch.forEach((f) =>
-         getImage(f, pipeid, system, cookieRef.current, signal)
+         getImage(f, pipeid, system, tokenRef.current, signal)
             .then((url) => { pageCacheRef.current.set(f, url); })
             .catch((e) => { if (e?.name !== "AbortError") console.error(`Prefetch failed for ${f}:`, e); })
             .finally(() => { inflightPrefetchRef.current.delete(f); })
@@ -298,7 +299,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
          const res = await getDirContentsFromTapis(
             sanitizePath(dirPath),
             sys,
-            cookie["tapis-token"]["access_token"],
+            tokenRef.current,
          );
          // Another navigation started while we were waiting — discard these results.
          if (navId !== navCounterRef.current) return;
@@ -371,7 +372,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
       selectAbortRef.current = controller;
 
       setLoadingPath(filePath);
-      getImage(filePath, pipeid, system ?? "", cookie, controller.signal)
+      getImage(filePath, pipeid, system ?? "", tokenRef.current, controller.signal)
          .then((url) => {
             pageCacheRef.current.set(filePath, url);
             onFileSelect(url, filePath);
@@ -460,19 +461,17 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                            defaultValue={DEFAULT_SYSTEM}
                            value={system}
                            name="system"
-                           onChange={(value, option) => setSystem(value ?? "")}
+                           onChange={(value) => setSystem(value ?? "")}
                         />
 
-                        <FormikTapisFileWrapper
+                        <TapisDirectoryField
                            name="srcImgDir"
                            label="Source Image Directory"
-                           required={false}
                            description="Enter full path to source image directory"
                            placeholder="path/to/source-directory"
                            systemId={system ?? ""}
+                           token={token}
                            disabled={!system}
-                           files={false}
-                           dirs={true}
                         />
 
                         <Group>
@@ -665,7 +664,6 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                                     </Typography>
                                  }
                               />
-                              
                               {isLoading && (
                                  <CircularProgress size={14} sx={{ ml: 1, flexShrink: 0 }} />
                               )}
@@ -708,3 +706,5 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
       </Paper>
    );
 };
+
+export default FileExplorer;

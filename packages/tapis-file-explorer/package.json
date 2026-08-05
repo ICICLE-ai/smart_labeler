@@ -1,0 +1,60 @@
+{
+  "name": "@icicle-ai/tapis-file-explorer",
+  "version": "0.1.0",
+  "description": "A paginated, prefetching file/directory browser for Tapis-hosted image datasets, plus a reusable directory-picker modal for Formik forms.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "@mui/material": "^5.0.0 || ^6.0.0 || ^7.0.0",
+    "@mui/icons-material": "^5.0.0 || ^6.0.0 || ^7.0.0",
+    "@mantine/core": "^7.0.0",
+    "formik": "^2.0.0"
+  },
+  "devDependencies": {
+    "react": "^18.2.1",
+    "react-dom": "^18.2.0",
+    "@mui/material": "^7.3.1",
+    "@mui/icons-material": "^7.3.1",
+    "@mantine/core": "^7.10.0",
+    "@mantine/hooks": "^7.10.0",
+    "formik": "^2.4.6",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "typescript": "^5.6.3",
+    "tsup": "^8.3.5"
+  },
+  "keywords": [
+    "react",
+    "tapis",
+    "file-explorer",
+    "file-browser",
+    "formik"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ICICLE-ai/smart_labeler.git",
+    "directory": "packages/tapis-file-explorer"
+  }
+}
