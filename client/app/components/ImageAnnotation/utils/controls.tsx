@@ -6,7 +6,7 @@ import CropSquareIcon from '@mui/icons-material/CropSquare';
 import SsidChartIcon from '@mui/icons-material/SsidChart';
 import ImageIcon from '@mui/icons-material/Image';
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
-import { Box, Button, ButtonGroup, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Divider, IconButton, TextField, Tooltip, Typography } from "@mui/material";
+import { Box, Button, ButtonGroup, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Divider, IconButton, Switch, TextField, Tooltip, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
 import { useControls } from "react-zoom-pan-pinch";
 import { SAM3_MODES } from "./utils";
@@ -24,6 +24,9 @@ const Controls = (props: {
    onResetAllControls?: () => void;
    lineWidth?: number;
    onLineWidthChange?: (width: number) => void;
+   /** Whether label badges/text render on the canvas. Boxes/masks always render regardless. Default: disabled. */
+   showLabels?: boolean;
+   onShowLabelsChange?: (show: boolean) => void;
 }) => {
    const { zoomIn, zoomOut, resetTransform } = useControls();
 
@@ -225,6 +228,16 @@ const Controls = (props: {
                      ))}
                   </Box>
                </IconButton>
+            </Tooltip>
+            <Divider orientation="vertical" flexItem />
+            <Tooltip title={props.showLabels ? "Labels shown – click to hide" : "Labels hidden – click to show"}>
+               <Box sx={{ display: "flex", alignItems: "center", px: 0.5 }}>
+                  <Switch
+                     size="small"
+                     checked={props.showLabels ?? false}
+                     onChange={(e) => props.onShowLabelsChange?.(e.target.checked)}
+                  />
+               </Box>
             </Tooltip>
             <Divider orientation="vertical" flexItem />
             <Tooltip

@@ -101,6 +101,8 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
    const [sam3Config, setSam3Config] = useState<Sam3Config>({ patchSize: 0, detectionConfidence: 0.3, maskPrecision: 0.3 });
    const [isSam3Loading, setIsSam3Loading] = useState<boolean>(false);
    const [lineWidth, setLineWidth] = useState<number>(8);
+   // Label badges/text default to hidden — only boxes/masks render until the user opts in.
+   const [showLabels, setShowLabels] = useState<boolean>(false);
 
    const sam3Client = useMemo<Sam3Client>(
       () => props.sam3Client ?? createFetchSam3Client(props.sam3Endpoint ?? ""),
@@ -285,8 +287,8 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
       if (!ctx) return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-      engine.draw(ctx, { annotations, generatedAnnotations, selectedId, selectedIds, engineState, activeMode, lineWidth });
-   }, [engine, image, annotations, generatedAnnotations, selectedId, selectedIds, engineState, activeMode, lineWidth]);
+      engine.draw(ctx, { annotations, generatedAnnotations, selectedId, selectedIds, engineState, activeMode, lineWidth, showLabels });
+   }, [engine, image, annotations, generatedAnnotations, selectedId, selectedIds, engineState, activeMode, lineWidth, showLabels]);
 
    useEffect(() => { draw(); }, [draw]);
 
@@ -388,6 +390,8 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
                         sam3loading={isSam3Loading}
                         lineWidth={lineWidth}
                         onLineWidthChange={(w) => setLineWidth(w)}
+                        showLabels={showLabels}
+                        onShowLabelsChange={(v) => setShowLabels(v)}
                      />
                      <TransformComponent
                         wrapperStyle={{ width: "100%", height: "auto" }}

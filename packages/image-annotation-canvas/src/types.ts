@@ -117,6 +117,8 @@ export interface DrawState<T extends BaseAnnotation> {
    engineState: any;
    activeMode: CanvasMode;
    lineWidth: number;
+   /** Whether engines should render label badges/text. Boxes/masks always render regardless. */
+   showLabels: boolean;
 }
 
 // ---------------------------------------------------------------------------

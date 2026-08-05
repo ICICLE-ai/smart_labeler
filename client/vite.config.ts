@@ -5,7 +5,16 @@ import tsconfigPaths from "vite-tsconfig-paths";
 
 // installGlobals();
 
+// Running multiple instances of this app on different ports (e.g. `--port 5174`
+// and `--port 5175`) at the same time means multiple Vite dep-optimizers writing
+// to node_modules/.vite/deps concurrently, which corrupts the cache and produces
+// "file does not exist in the optimize deps directory" errors. Giving each port
+// its own cache directory isolates them. No --port flag -> default cache dir.
+const portArgIndex = process.argv.indexOf("--port");
+const port = portArgIndex !== -1 ? process.argv[portArgIndex + 1] : undefined;
+
 export default defineConfig({
+  cacheDir: port ? `node_modules/.vite-${port}` : undefined,
   ssr: {
     noExternal: ["@tapis/tapisui-common","@tapis/tapisui-hooks","@tapis/tapisui-api","react-dropzone"],
   },
