@@ -6,7 +6,7 @@ import CropSquareIcon from '@mui/icons-material/CropSquare';
 import SsidChartIcon from '@mui/icons-material/SsidChart';
 import ImageIcon from '@mui/icons-material/Image';
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
-import { Box, Button, ButtonGroup, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Divider, IconButton, Switch, TextField, Tooltip, Typography } from "@mui/material";
+import { Box, Button, ButtonGroup, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Divider, IconButton, MenuItem, Switch, TextField, Tooltip, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
 import { useControls } from "react-zoom-pan-pinch";
 import { SAM3_MODES } from "./utils";
@@ -286,14 +286,16 @@ const Controls = (props: {
                      setMode(e.target.value == "SINGLE_CLICK" ? SAM3_MODES.SINGLE_CLICK : SAM3_MODES.TEXT_PROMPTS)
                   }
                   variant="filled"
-                  SelectProps={{
-                     native: true,
-                  }}
+                  // Deliberately non-native: the browser's native <select> popup is
+                  // positioned by the OS in screen coordinates, which is a known
+                  // Chromium bug on multi-monitor setups with mixed display scaling
+                  // — the dropdown can render on the wrong monitor entirely. MUI's
+                  // JS-rendered Menu positions itself from the DOM instead, so it
+                  // can't jump screens.
                   sx={{ mb: 2 }}
                >
-
-                  <option value={SAM3_MODES.SINGLE_CLICK}>Single Click</option>
-                  <option value={SAM3_MODES.TEXT_PROMPTS}>Text Prompt</option>
+                  <MenuItem value={SAM3_MODES.SINGLE_CLICK}>Single Click</MenuItem>
+                  <MenuItem value={SAM3_MODES.TEXT_PROMPTS}>Text Prompt</MenuItem>
                </TextField>
                   {mode === SAM3_MODES.SINGLE_CLICK ?
                     <TextField
