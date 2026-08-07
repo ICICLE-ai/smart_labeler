@@ -373,7 +373,7 @@ export const detectionEngine: CanvasEngine<Annotation> = {
    },
 
    draw(ctx2d, state) {
-      const { annotations, generatedAnnotations, selectedId, selectedIds, lineWidth } = state;
+      const { annotations, generatedAnnotations, selectedId, selectedIds, lineWidth, showLabels } = state;
       const interaction = (state.engineState as DetectionEngineState).interaction;
 
       annotations.forEach((box) => {
@@ -389,12 +389,14 @@ export const detectionEngine: CanvasEngine<Annotation> = {
          ctx2d.setLineDash([]);
 
          // Label badge
-         ctx2d.fillStyle = boxColor;
-         ctx2d.font = "14px Arial";
-         const textWidth = ctx2d.measureText(box.label).width;
-         ctx2d.fillRect(box.x, box.y - 20, textWidth + 8, 20);
-         ctx2d.fillStyle = "white";
-         ctx2d.fillText(box.label, box.x + 4, box.y - 5);
+         if (showLabels) {
+            ctx2d.fillStyle = boxColor;
+            ctx2d.font = "14px Arial";
+            const textWidth = ctx2d.measureText(box.label).width;
+            ctx2d.fillRect(box.x, box.y - 20, textWidth + 8, 20);
+            ctx2d.fillStyle = "white";
+            ctx2d.fillText(box.label, box.x + 4, box.y - 5);
+         }
 
          // Flag indicator – coloured dot in the top-right corner of the box
          if (box.flag) {
@@ -435,12 +437,14 @@ export const detectionEngine: CanvasEngine<Annotation> = {
          ctx2d.strokeStyle = "#e65100";
          ctx2d.lineWidth = LINE_WIDTH_BIG;
          ctx2d.strokeRect(box.x, box.y, box.width, box.height);
-         ctx2d.fillStyle = "#e65100";
-         ctx2d.font = "14px Arial";
-         const textWidth = ctx2d.measureText(box.label).width;
-         ctx2d.fillRect(box.x, box.y - 20, textWidth + 8, 20);
-         ctx2d.fillStyle = "white";
-         ctx2d.fillText(box.label, box.x + 4, box.y - 5);
+         if (showLabels) {
+            ctx2d.fillStyle = "#e65100";
+            ctx2d.font = "14px Arial";
+            const textWidth = ctx2d.measureText(box.label).width;
+            ctx2d.fillRect(box.x, box.y - 20, textWidth + 8, 20);
+            ctx2d.fillStyle = "white";
+            ctx2d.fillText(box.label, box.x + 4, box.y - 5);
+         }
       });
 
       if (interaction.type === "drawing") {

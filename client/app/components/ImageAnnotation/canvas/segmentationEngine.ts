@@ -304,7 +304,7 @@ export const segmentationEngine: CanvasEngine<SegmentationAnnotation> = {
    },
 
    draw(ctx2d, state) {
-      const { annotations, generatedAnnotations, selectedId, selectedIds, lineWidth, activeMode } = state;
+      const { annotations, generatedAnnotations, selectedId, selectedIds, lineWidth, activeMode, showLabels } = state;
       const { draftPoints, cursorPos, dragState } = state.engineState as SegmentationEngineState;
       const inEditMode = activeMode === CanvasMode.EDIT;
 
@@ -329,14 +329,17 @@ export const segmentationEngine: CanvasEngine<SegmentationAnnotation> = {
          ctx2d.stroke();
          ctx2d.setLineDash([]);
 
-         // Label badge at bounding-box top-left
+         // Label badge at bounding-box top-left — bbox/width always computed
+         // (the flag dot below is positioned relative to them regardless of showLabels)
          const anchor = polygonLabelAnchor(ann.points);
          ctx2d.font = "14px Arial";
          const tw = ctx2d.measureText(ann.label).width;
-         ctx2d.fillStyle = stroke;
-         ctx2d.fillRect(anchor.x, anchor.y - 20, tw + 8, 20);
-         ctx2d.fillStyle = "white";
-         ctx2d.fillText(ann.label, anchor.x + 4, anchor.y - 6);
+         if (showLabels) {
+            ctx2d.fillStyle = stroke;
+            ctx2d.fillRect(anchor.x, anchor.y - 20, tw + 8, 20);
+            ctx2d.fillStyle = "white";
+            ctx2d.fillText(ann.label, anchor.x + 4, anchor.y - 6);
+         }
 
          // Flag dot
          if (ann.flag) {
@@ -378,13 +381,15 @@ export const segmentationEngine: CanvasEngine<SegmentationAnnotation> = {
          ctx2d.strokeStyle = "#e65100";
          ctx2d.lineWidth = lineWidth;
          ctx2d.stroke();
-         const anchor = polygonLabelAnchor(ann.points);
-         ctx2d.font = "14px Arial";
-         const tw = ctx2d.measureText(ann.label).width;
-         ctx2d.fillStyle = "#e65100";
-         ctx2d.fillRect(anchor.x, anchor.y - 20, tw + 8, 20);
-         ctx2d.fillStyle = "white";
-         ctx2d.fillText(ann.label, anchor.x + 4, anchor.y - 6);
+         if (showLabels) {
+            const anchor = polygonLabelAnchor(ann.points);
+            ctx2d.font = "14px Arial";
+            const tw = ctx2d.measureText(ann.label).width;
+            ctx2d.fillStyle = "#e65100";
+            ctx2d.fillRect(anchor.x, anchor.y - 20, tw + 8, 20);
+            ctx2d.fillStyle = "white";
+            ctx2d.fillText(ann.label, anchor.x + 4, anchor.y - 6);
+         }
       });
 
       // ── Draft polygon (in-progress drawing) ──

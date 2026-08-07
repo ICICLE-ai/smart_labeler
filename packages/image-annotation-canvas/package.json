@@ -1,6 +1,6 @@
 {
   "name": "@icicle-ai/image-annotation-canvas",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A zoomable/pannable image canvas for bounding-box detection and polygon segmentation annotation, with optional SAM3-assisted labeling.",
   "license": "MIT",
   "type": "module",
