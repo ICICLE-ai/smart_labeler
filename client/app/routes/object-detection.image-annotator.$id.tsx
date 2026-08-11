@@ -156,9 +156,10 @@ const ImageAnnotation = () => {
    useEffect(() => {
       const data = pendingAnnotationDataRef.current;
       if (!data || files.length === 0) return;
+      const srcDir = annotatorConfig?.srcImgDir ?? "";
       const importedMap = data.isCoco
-         ? importFromCocoJsonUtil(data.json, files)
-         : importFromDefaultJsonUtil(data.json, files);
+         ? importFromCocoJsonUtil(data.json, files, srcDir)
+         : importFromDefaultJsonUtil(data.json, files, srcDir);
       setFileToAnnotationsMap((prev) => {
          const newEntries = [...importedMap.entries()].filter(([k]) => !prev.has(k));
          if (newEntries.length === 0) return prev;
@@ -166,7 +167,9 @@ const ImageAnnotation = () => {
          newEntries.forEach(([k, v]) => merged.set(k, v));
          return merged;
       });
-   }, [files]);
+      // srcImgDir participates in path matching, so a config arriving after the
+      // files must re-run this fill (it only adds missing entries, never overwrites).
+   }, [files, annotatorConfig?.srcImgDir]);
 
    const upsertAnnotatorConfig = async (updates: Partial<AnnotatorConfig>) => {
       const token = cookie["tapis-token"]?.["access_token"];
@@ -284,9 +287,10 @@ const ImageAnnotation = () => {
                const parsed = JSON.parse(json);
                // Keep a copy so the re-apply effect can match newly-discovered files later.
                pendingAnnotationDataRef.current = { json: parsed, isCoco: coco };
+               const srcDir = annotatorConfig?.srcImgDir ?? "";
                const importedMap = coco
-                  ? importFromCocoJsonUtil(parsed, files)
-                  : importFromDefaultJsonUtil(parsed, files);
+                  ? importFromCocoJsonUtil(parsed, files, srcDir)
+                  : importFromDefaultJsonUtil(parsed, files, srcDir);
 
                // Functional update: this runs long after the closure was created
                // (fetch + FileReader), so merging into `prev` — not the captured

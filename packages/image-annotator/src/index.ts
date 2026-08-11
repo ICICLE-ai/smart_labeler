@@ -20,6 +20,8 @@ export type { ImageAnnotatorConfig, AnnotatorConfig, PipelineInfo } from "./back
 
 export {
    toRelativeFilename,
+   normalizeRelKey,
+   buildFileIndexResolver,
    exportToCoco,
    exportToDefaultJson,
    joinUnderDir,
