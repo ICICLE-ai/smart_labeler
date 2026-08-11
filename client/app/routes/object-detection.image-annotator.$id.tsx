@@ -224,7 +224,7 @@ const ImageAnnotation = () => {
          if (f) liveRel.set(toRelativeFilename(f, srcImgDir), fa);
       });
       const baseline = pendingAnnotationDataRef.current;
-      const json = mergeDetectionForSave(liveRel, baseline?.json ?? null, baseline?.isCoco ?? false, srcImgDir, coco);
+      const json = mergeDetectionForSave(liveRel, baseline?.json ?? null, baseline?.isCoco ?? false, srcImgDir, coco, files);
       if (save && dir) {
          if (isDemo) {
             alert("Demo mode: Saving annotations is disabled for demo pipelines.");

@@ -377,14 +377,34 @@ export const joinUnderDir = (rel: string, srcImgDir: string): string => {
 // a baseline entry and a live entry for one image collapse onto one key instead of
 // both being written to the saved file. Preserves folder structure, so same-named
 // files in sibling folders don't collide.
-export function detectionJsonToRelMap(json: any, isCoco: boolean, srcImgDir: string = ""): Map<string, FileAnnotations> {
+//
+// `files` is the live file list. Passing it is what lets a baseline path resolve to
+// the file it actually refers to: the importer matches "a.jpg" to
+// "<srcImgDir>/sub/a.jpg" by basename, so the baseline has to key that entry
+// "sub/a.jpg" too — otherwise the user's edits land under a different key and the
+// original (pre-edit, pre-delete) annotations get written back out alongside them.
+export function detectionJsonToRelMap(
+   json: any,
+   isCoco: boolean,
+   srcImgDir: string = "",
+   files: string[] = [],
+): Map<string, FileAnnotations> {
+   const resolveFileIndex = buildFileIndexResolver(files, srcImgDir);
+   // Anchor to the real file when this path points at one we know about. Paths that
+   // resolve to nothing keep their own spelling — that's the unopened-folder data
+   // the baseline exists to preserve.
+   const keyFor = (rawPath: string): string => {
+      const idx = resolveFileIndex(rawPath);
+      return idx !== undefined ? toRelativeFilename(files[idx], srcImgDir) : normalizeRelKey(rawPath, srcImgDir);
+   };
+
    const map = new Map<string, FileAnnotations>();
    if (isCoco) {
       const catIdToName = new Map<number, string>();
       (json?.categories ?? []).forEach((c: any) => catIdToName.set(c.id, c.name));
       const imgIdToMeta = new Map<number, { rel: string; width: number; height: number }>();
       (json?.images ?? []).forEach((im: any) =>
-         imgIdToMeta.set(im.id, { rel: normalizeRelKey(im.file_name ?? "", srcImgDir), width: im.width ?? 0, height: im.height ?? 0 }));
+         imgIdToMeta.set(im.id, { rel: keyFor(im.file_name ?? ""), width: im.width ?? 0, height: im.height ?? 0 }));
       (json?.annotations ?? []).forEach((a: any) => {
          const meta = imgIdToMeta.get(a.image_id);
          if (!meta) return;
@@ -402,7 +422,7 @@ export function detectionJsonToRelMap(json: any, isCoco: boolean, srcImgDir: str
    } else {
       (json?.annotations ?? []).forEach((a: any) => {
          if (a.image_path === undefined) return;
-         const rel = normalizeRelKey(a.image_path, srcImgDir);
+         const rel = keyFor(a.image_path);
          const fa: FileAnnotations = map.get(rel) ?? { name: rel, width: 0, height: 0, annotations: [] };
          const [x0, y0, x1, y1] = a.bounding_box ?? [0, 0, 0, 0];
          fa.annotations.push({
@@ -429,18 +449,19 @@ export function mergeDetectionForSave(
    baselineIsCoco: boolean,
    srcImgDir: string,
    coco: boolean,
+   liveFiles: string[] = [],
 ): object {
    const complete = baselineJson
-      ? detectionJsonToRelMap(baselineJson, baselineIsCoco, srcImgDir)
+      ? detectionJsonToRelMap(baselineJson, baselineIsCoco, srcImgDir, liveFiles)
       : new Map<string, FileAnnotations>();
    liveRelMap.forEach((fa, rel) => complete.set(rel, fa)); // live edits win per file
    const rels = [...complete.keys()];
-   const files = rels.map((r) => joinUnderDir(r, srcImgDir));
+   const exportFiles = rels.map((r) => joinUnderDir(r, srcImgDir));
    const indexMap = new Map<number, FileAnnotations>();
    rels.forEach((r, i) => indexMap.set(i, complete.get(r)!));
    return coco
-      ? exportToCoco(indexMap, files, srcImgDir)
-      : exportToDefaultJson(indexMap, files, srcImgDir);
+      ? exportToCoco(indexMap, exportFiles, srcImgDir)
+      : exportToDefaultJson(indexMap, exportFiles, srcImgDir);
 }
 
 export function importFromCocoJsonUtil(

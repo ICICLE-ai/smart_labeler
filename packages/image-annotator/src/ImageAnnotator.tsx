@@ -310,7 +310,7 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
       updatedMap.forEach((fa, fullPath) => liveRel.set(toRelativeFilename(fullPath, srcDir), fa));
       const baseline = pendingAnnotationDataRef.current && !pendingAnnotationDataRef.current.isSegmentation
          ? pendingAnnotationDataRef.current : null;
-      const json = mergeDetectionForSave(liveRel, baseline?.json ?? null, baseline?.isCoco ?? false, srcDir, coco);
+      const json = mergeDetectionForSave(liveRel, baseline?.json ?? null, baseline?.isCoco ?? false, srcDir, coco, files);
       if (save && dir) {
          if (isDemo) { alert("Demo mode: Saving is disabled."); return; }
          return saveAnnotationFile(sys, dir, JSON.stringify(json, null, 2), tapisToken)
@@ -385,7 +385,7 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
       updatedMap.forEach((fa, fullPath) => liveRel.set(toRelativeFilename(fullPath, srcDir), fa));
       const baseline = pendingAnnotationDataRef.current && pendingAnnotationDataRef.current.isSegmentation
          ? pendingAnnotationDataRef.current : null;
-      const json = mergeSegmentationForSave(liveRel, baseline?.json ?? null, baseline?.isCoco ?? false, srcDir, coco);
+      const json = mergeSegmentationForSave(liveRel, baseline?.json ?? null, baseline?.isCoco ?? false, srcDir, coco, files);
       if (save && dir) {
          if (isDemo) { alert("Demo mode: Saving is disabled."); return; }
          return saveAnnotationFile(sys, dir, JSON.stringify(json, null, 2), tapisToken)

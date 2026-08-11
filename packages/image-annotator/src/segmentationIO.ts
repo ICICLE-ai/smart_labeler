@@ -111,14 +111,29 @@ export function exportSegmentationToCoco(
 // relative to srcImgDir (folder structure preserved, no basename collisions).
 // Keys are normalized so a baseline entry and a live entry for the same image
 // collapse onto one key instead of both being written to the saved file.
-export function segJsonToRelMap(json: any, isCoco: boolean, srcImgDir: string = ""): Map<string, SegmentationFileAnnotations> {
+//
+// `files` is the live file list — see detectionJsonToRelMap. Without it a path the
+// importer matched by basename keys differently here than in the live map, and the
+// user's edits and deletions get written back out alongside the originals.
+export function segJsonToRelMap(
+   json: any,
+   isCoco: boolean,
+   srcImgDir: string = "",
+   files: string[] = [],
+): Map<string, SegmentationFileAnnotations> {
+   const resolveFileIndex = buildFileIndexResolver(files, srcImgDir);
+   const keyFor = (rawPath: string): string => {
+      const idx = resolveFileIndex(rawPath);
+      return idx !== undefined ? toRelativeFilename(files[idx], srcImgDir) : normalizeRelKey(rawPath, srcImgDir);
+   };
+
    const map = new Map<string, SegmentationFileAnnotations>();
    if (isCoco) {
       const catIdToName = new Map<number, string>();
       (json?.categories ?? []).forEach((c: any) => catIdToName.set(c.id, c.name));
       const imgIdToMeta = new Map<number, { rel: string; width: number; height: number }>();
       (json?.images ?? []).forEach((im: any) =>
-         imgIdToMeta.set(im.id, { rel: normalizeRelKey(im.file_name ?? "", srcImgDir), width: im.width ?? 0, height: im.height ?? 0 }));
+         imgIdToMeta.set(im.id, { rel: keyFor(im.file_name ?? ""), width: im.width ?? 0, height: im.height ?? 0 }));
       (json?.annotations ?? []).forEach((a: any) => {
          const meta = imgIdToMeta.get(a.image_id);
          if (!meta) return;
@@ -137,7 +152,7 @@ export function segJsonToRelMap(json: any, isCoco: boolean, srcImgDir: string = 
       });
    } else {
       (json?.files ?? []).forEach((entry: any) => {
-         const rel = normalizeRelKey(entry.filename ?? "", srcImgDir);
+         const rel = keyFor(entry.filename ?? "");
          map.set(rel, {
             name: rel,
             width: entry.width ?? 0,
@@ -163,18 +178,19 @@ export function mergeSegmentationForSave(
    baselineIsCoco: boolean,
    srcImgDir: string,
    coco: boolean,
+   liveFiles: string[] = [],
 ): object {
    const complete = baselineJson
-      ? segJsonToRelMap(baselineJson, baselineIsCoco, srcImgDir)
+      ? segJsonToRelMap(baselineJson, baselineIsCoco, srcImgDir, liveFiles)
       : new Map<string, SegmentationFileAnnotations>();
    liveRelMap.forEach((fa, rel) => complete.set(rel, fa)); // live edits win per file
    const rels = [...complete.keys()];
-   const files = rels.map((r) => joinUnderDir(r, srcImgDir));
+   const exportFiles = rels.map((r) => joinUnderDir(r, srcImgDir));
    const fullMap = new Map<string, SegmentationFileAnnotations>();
-   rels.forEach((r, i) => fullMap.set(files[i], complete.get(r)!));
+   rels.forEach((r, i) => fullMap.set(exportFiles[i], complete.get(r)!));
    return coco
-      ? exportSegmentationToCoco(fullMap, files, srcImgDir)
-      : exportSegmentationJson(fullMap, files, srcImgDir);
+      ? exportSegmentationToCoco(fullMap, exportFiles, srcImgDir)
+      : exportSegmentationJson(fullMap, exportFiles, srcImgDir);
 }
 
 export function importSegmentationJson(
