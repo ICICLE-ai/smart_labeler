@@ -43,21 +43,21 @@ A complete walkthrough from raw images to labeled masks in 2 steps.
 
 Navigate to the home page and click **Get Started** or **Dashboard**.
 
-![Home Page](./doc/images_segmentation/home_segmentation.png)
+![Home Page](./docs/images_segmentation/home_segmentation.png)
 
 From the dashboard you can create a new segmentation pipeline or resume an existing one. Existing pipelines are listed with their unique ID and an **Open Pipeline** button. If no pipelines exist yet, a **New Pipeline** button appears in the center of the page.
 
-![Dashboard — Existing Pipeline](./doc/images_segmentation/dash_example_pipeline.png)
+![Dashboard — Existing Pipeline](./docs/images_segmentation/dash_example_pipeline.png)
 
-![Dashboard — Empty](./doc/images_segmentation/Dashboard_seg.png)
+![Dashboard — Empty](./docs/images_segmentation/Dashboard_seg.png)
 
 To upload images from your local machine to a Tapis storage system before starting, click **Upload Data** in the top-right corner of the dashboard.
 
-![Upload Data](./doc/images_segmentation/upload_data_seg.png)
+![Upload Data](./docs/images_segmentation/upload_data_seg.png)
 
 Click **+ New Pipeline** to open the creation modal. Provide a **Pipeline Name** and a **SLURM Account** (required). An optional **Description** field is also available. Click **Create & Open** to initialize the workspace.
 
-![New Pipeline Modal](./doc/images_segmentation/new_pipeline_seg.png)
+![New Pipeline Modal](./docs/images_segmentation/new_pipeline_seg.png)
 
 #### Step 1 — Project Setup & Data Upload
 
@@ -65,17 +65,17 @@ Click **+ New Pipeline** to open the creation modal. Provide a **Pipeline Name**
 
 If your images are not already on the cluster, upload them before launching the segmentation canvas. Click **Upload Data** from the dashboard to open the upload modal. Select a **Target System** (e.g. Pitzer (OSC)) and provide an absolute **Destination Path** on that system. Drag and drop files into the drop zone or use **Select Files** / **Select Directory** to browse locally, then click **Upload**.
 
-![Upload Data to Tapis](./doc/images_segmentation/upload_data_seg.png)
+![Upload Data to Tapis](./docs/images_segmentation/upload_data_seg.png)
 
 ##### Blank Pipeline & File Explorer
 
 After creating a new pipeline, the **Image Annotator** canvas opens in a blank state. Click **Open File Explorer** (or the **File Explorer** tab on the left edge) to open the slide-out panel.
 
-![Blank Pipeline](./doc/images_segmentation/image_annotator_blank6.png)
+![Blank Pipeline](./docs/images_segmentation/image_annotator_blank6.png)
 
 In the File Explorer, select a **System** from the dropdown and enter the full path to your source image directory in the **Source Image Directory** field. Click **Get Images** to load image previews. Click any filename in the list to open that image in the annotation canvas.
 
-![File Explorer](./doc/images_segmentation/file_explorer7.png)
+![File Explorer](./docs/images_segmentation/file_explorer7.png)
 
 #### Step 2 — Interactive Image Segmentation
 
@@ -91,7 +91,7 @@ The annotation canvas shifts away from traditional bounding-box layouts into a d
 
 The canvas toolbar (left to right): zoom in, zoom out, reset view, **Smart Click** (SAM3-assisted masking), bounding box draw mode, polygon draw mode, image mode, outline width selector, and clear all.
 
-![Segmentation Workspace — Masks Applied](./doc/images_segmentation/image_annotator_blank6.png)
+![Segmentation Workspace — Masks Applied](./docs/images_segmentation/image_annotator_blank6.png)
 
 ##### Drawing Masks Manually
 
