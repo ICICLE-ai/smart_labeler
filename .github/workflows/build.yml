@@ -1,0 +1,117 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The Dockerfiles still pin nodejs:18, which is end-of-life. CI builds on 20
+  # so a bump of the images has already been proven green here first.
+  NODE_VERSION: "20"
+
+jobs:
+  packages:
+    name: Build shared packages
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: packages/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build workspaces
+        run: npm run build
+
+      - name: Typecheck workspaces
+        # Must run after the build, not before it: image-annotator depends on
+        # its sibling workspaces, and it resolves their types through the
+        # dist/ output that `npm run build` produces. Typechecking a clean
+        # checkout first fails with unresolved @icicle-ai/* imports.
+        run: npm run typecheck
+
+  client:
+    name: Build client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Remix app
+        # `npm run typecheck` is deliberately not wired up here yet: the
+        # vendored app/components/formik-mantine tree fails tsc today against
+        # dependencies that are not installed (@storybook/react,
+        # @mantine/dates). Add the step once that tree is fixed or excluded.
+        run: npm run build
+
+  server:
+    name: Check server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Matches `python=3.12` in labeler_env.yaml.
+          python-version: "3.12"
+
+      - name: Byte-compile server sources
+        # A full `conda env create` from labeler_env.yaml takes many minutes
+        # per run (miniconda + opencv + psycopg2), so this checks that every
+        # module parses rather than that it imports.
+        run: python -m compileall -q server
+
+      - name: Install YAML parser
+        run: python -m pip install --disable-pip-version-check pyyaml
+
+      - name: Validate YAML manifests
+        # Covers the conda env specs, the k8s manifests and the component
+        # descriptors, all of which are hand-edited and only fail at deploy
+        # time otherwise. safe_load_all handles multi-document manifests.
+        run: |
+          set -euo pipefail
+          git ls-files '*.yml' '*.yaml' -z | xargs -0 python -c '
+          import sys, yaml
+          failed = False
+          for path in sys.argv[1:]:
+              try:
+                  with open(path) as handle:
+                      list(yaml.safe_load_all(handle))
+              except yaml.YAMLError as error:
+                  print(f"Invalid YAML in {path}: {error}")
+                  failed = True
+          sys.exit(1 if failed else 0)
+          '
+
+      - name: Check shell scripts parse
+        run: |
+          set -euo pipefail
+          git ls-files '*.sh' -z | xargs -0 -r -n1 bash -n
