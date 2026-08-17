@@ -42,43 +42,43 @@ A complete walkthrough from raw images to labeled detections in 7 steps.
 
 Navigate to the home page and click **Get Started** or **Dashboard**.
 
-![Home Page](./doc/images2/home_page_sl.png)
+![Home Page](./docs/images2/home_page_sl.png)
 
 From the dashboard you can create a new pipeline or resume an existing one.
 
-![Dashboard](./doc/images2/dashboard_sl.png)
+![Dashboard](./docs/images2/dashboard_sl.png)
 
 Click **Create New Pipeline**, enter a pipeline name, select the job type (*Object Detection*), and provide a Slurm account. Click **Create New Job**.
 
-![Create New Pipeline](./doc/images2/dashboard_new_pipeline_sl.png)
+![Create New Pipeline](./docs/images2/dashboard_new_pipeline_sl.png)
 
-![Create New Pipeline Form](./doc/images2/dashboard_create_new_sl.png)
+![Create New Pipeline Form](./docs/images2/dashboard_create_new_sl.png)
 
 In order to upload data from your system to HPC click on upload button.
 
-![Upload Files](./doc/images2/upload_files.png)
+![Upload Files](./docs/images2/upload_files.png)
 
 #### Step 1 — Annotate Images
 
 Open **Step 1 — Image Annotator** from the pipeline navigation bar.
 
-![Annotator Interface](./doc/images/annotator/Annotator-initial.png)
+![Annotator Interface](./docs/images/annotator/Annotator-initial.png)
 
 In the **File Explorer** panel, select a compute system and enter the path to your image directory. Click **Get Images**.
 
-![File Explorer](./doc/images/annotator/File-explorer.png)
+![File Explorer](./docs/images/annotator/File-explorer.png)
 
 Click any image thumbnail to open it in the canvas. Draw bounding boxes by clicking and dragging on the canvas, then assign a label to each box.
 
-![Annotation Canvas](./doc/images/annotator/annotator.png)
+![Annotation Canvas](./docs/images/annotator/annotator.png)
 
 To use SAM3 assisted annotation, select **Single Click** mode, enter a label, then click an object in the image to auto-generate a box.
 
-![SAM3 Single Click](./doc/images/annotator/SAM3-single-click.png)
+![SAM3 Single Click](./docs/images/annotator/SAM3-single-click.png)
 
 Or use **Text Prompt** mode to run prediction over the whole image from a comma-separated label list.
 
-![SAM3 Text Prompt](./doc/images/annotator/SAM3-text-prompt.png)
+![SAM3 Text Prompt](./docs/images/annotator/SAM3-text-prompt.png)
 
 When finished, click **Save Annotations** and choose a remote Tapis path to store the COCO JSON file.
 
@@ -86,7 +86,7 @@ When finished, click **Save Annotations** and choose a remote Tapis path to stor
 
 Open **Step 2 — Generate Class Supports**.
 
-![Generate Class Supports](./doc/images/class_supports/generate_class_support.png)
+![Generate Class Supports](./docs/images/class_supports/generate_class_support.png)
 
 Enter a job name, select Proposer and Embedder models from the Patra catalog, and set crop/patch sizes (e.g. `[2048, 1024, 512]`). Click **Submit** and monitor job progress in the pipeline status bar.
 
@@ -94,11 +94,11 @@ Enter a job name, select Proposer and Embedder models from the Patra catalog, an
 
 Open **Step 3 — Optimize Patch Size** once the Step 2 job finishes. Use the File Explorer to navigate your images. Click each result file in the right panel to compare ground-truth vs. predicted boxes for each crop size.
 
-![Optimize Patch Size](./doc/images/class_supports/optimize_patch_size.png)
+![Optimize Patch Size](./docs/images/class_supports/optimize_patch_size.png)
 
 Check the **IoU Graph** to identify which patch size produces the highest scores.
 
-![IoU Graph](./doc/images/class_supports/optimize_patch_size_graph.png)
+![IoU Graph](./docs/images/class_supports/optimize_patch_size_graph.png)
 
 Note the optimal patch size and proceed to the next step.
 
@@ -106,21 +106,21 @@ Note the optimal patch size and proceed to the next step.
 
 Open **Step 4 — Configure Detection Job**. Enter a configuration name, provide a query image path or directory, select models and thresholds, and optionally enable SAHI tiling. Click **Submit** to queue the detection job.
 
-![Configure Detection Job](./doc/images/proposals/configure_detection_job.png)
+![Configure Detection Job](./docs/images/proposals/configure_detection_job.png)
 
-![Configure Detection Job — Advanced](./doc/images/proposals/configure_detection_job_2.png)
+![Configure Detection Job — Advanced](./docs/images/proposals/configure_detection_job_2.png)
 
-![Configure Detection Job — HPC configuration](./doc/images2/proposal_config_3.png)
+![Configure Detection Job — HPC configuration](./docs/images2/proposal_config_3.png)
 
 #### Step 5 — Visualize Proposals
 
 Open **Step 5 — Visualize Proposals** once the detection job completes. Select a proposal file from the right panel. Drag the objectness threshold slider to filter boxes in real time.
 
-![Visualize Proposals](./doc/images/proposals/visualize_proposals.png)
+![Visualize Proposals](./docs/images/proposals/visualize_proposals.png)
 
 Use the **Objectness Score Graph** to find a natural cutoff point.
 
-![Objectness Score Graph](./doc/images/proposals/visualize_proposals_graph.png)
+![Objectness Score Graph](./docs/images/proposals/visualize_proposals_graph.png)
 
 Click **Save** to store the threshold for use in classification.
 
@@ -128,13 +128,13 @@ Click **Save** to store the threshold for use in classification.
 
 Open **Step 6 — Configure Classification Job**. Add one or more Proposal → Class Support tensor mappings using the **Add Mapping** button. Set a similarity threshold and click **Submit**.
 
-![Configure Classification Job](./doc/images/classification/configure_classification_job.png)
+![Configure Classification Job](./docs/images/classification/configure_classification_job.png)
 
 #### Step 7 — Review Results
 
 Open **Step 7 — Object Classification**. Select a result file from the right panel and navigate images using the File Explorer. Drag the similarity threshold slider to filter results in real time. Click **Download** to export as COCO JSON or pipeline-native JSON.
 
-![Classification Results](./doc/images/classification/visualize_classifications.png)
+![Classification Results](./docs/images/classification/visualize_classifications.png)
 
 ---
 
@@ -146,15 +146,15 @@ Open **Step 7 — Object Classification**. Select a result file from the right p
 2. Choose **Browse** to upload a local file, or enter a remote Tapis filesystem path.
 3. Select the file format (**COCO JSON** or **Default JSON**) using the Format Switch.
 
-![Import Annotations](./doc/images/annotator/import_annotations.png)
+![Import Annotations](./docs/images/annotator/import_annotations.png)
 
 ### How to Save and Download Annotations
 
 Click **Save Annotations** to write to a remote Tapis path, or **Download** to export to your local machine.
 
-![Save Annotations](./doc/images/annotator/save_annotations.png)
+![Save Annotations](./docs/images/annotator/save_annotations.png)
 
-![Download Annotations](./doc/images/annotator/download_annotations.png)
+![Download Annotations](./docs/images/annotator/download_annotations.png)
 
 Both options support **COCO JSON** and **Default JSON** formats via the Format Switch.
 
@@ -162,25 +162,25 @@ Both options support **COCO JSON** and **Default JSON** formats via the Format S
 
 From the **Dashboard**, use the search or filter controls to locate your pipeline. Click **Goto** to re-enter at the last completed step.
 
-![Existing Pipelines](./doc/images2/dashboard_existing_pipeline_sl.png)
+![Existing Pipelines](./docs/images2/dashboard_existing_pipeline_sl.png)
 
-![Search and Select Pipeline](./doc/images/create-select-job.png)
+![Search and Select Pipeline](./docs/images/create-select-job.png)
 
 ### How to Check Job Status and Logs
 
 The **pipeline status bar** appears at the top of every step. Right-click any step chip to open the context menu.
 
-![Status Bar](./doc/images/status_bar/status_bar.png)
+![Status Bar](./docs/images/status_bar/status_bar.png)
 
-![Status Bar Options](./doc/images/status_bar/status_bar_options.png)
+![Status Bar Options](./docs/images/status_bar/status_bar_options.png)
 
 - Select **Get Status** to poll the Tapis job and view status, condition, and last message.
 
-![Get Status Modal](./doc/images/status_bar/status_bar_get_status.png)
+![Get Status Modal](./docs/images/status_bar/status_bar_get_status.png)
 
 - Select **Get Tapis Logs** to fetch and display `tapisjob.out` from the HPC run.
 
-![Application Logs](./doc/images/status_bar/status_bar_application_logs.png)
+![Application Logs](./docs/images/status_bar/status_bar_application_logs.png)
 
 ### How to Use SAHI Tiling for Small Objects
 
@@ -237,11 +237,11 @@ With your token ready, add it to your ICICLE/Tapis credentials so it can be inje
 
 1. Log in to your ICICLE/Tapis account.
 2. Navigate to the **Settings** section indicated by 3 dots on the dashboard.
-![Settings](./doc/images2/hf/dashboard_settings.png)
+![Settings](./docs/images2/hf/dashboard_settings.png)
 3. Click on Access Key.
 4. Paste your token and save.
 5. Click on Revoke token to permanently delete the token.
-![Add or revoke token](./doc/images2/hf/add_or_revoke_hf.png)
+![Add or revoke token](./docs/images2/hf/add_or_revoke_hf.png)
 
 ---
 
@@ -249,7 +249,7 @@ With your token ready, add it to your ICICLE/Tapis credentials so it can be inje
 
 Some models (e.g. DinoV3, certain SAM variants) require a Hugging Face token.
 
-![Add token](./doc/images2/hf/gated_model_support.png)
+![Add token](./docs/images2/hf/gated_model_support.png)
 
 1. When selecting a model in the Patra catalog, a prompt appears asking for your HF token.
 2. Enter the token — it is stored securely in **Tapis Vault** and never exposed in logs.
