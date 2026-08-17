@@ -5,11 +5,11 @@ This document records the people or institutional roles responsible for the proj
 | Responsibility | Named person or institutional role | Backup | Decision authority |
 |---|---|---|---|
 | Product roadmap | Hari Subramoni (subramoni.1@osu.edu) | ICICLE-ai maintainers | Prioritizes scope and roadmap changes |
-| Repository administration | Hari Subramoni (subramoni.1@osu.edu) | ICICLE-ai maintainers | Manages repository access and settings |
-| Pull-request review | Hari Subramoni (subramoni.1@osu.edu) | ICICLE-ai maintainers | Approves or requests changes to contributions |
-| Release management | Hari Subramoni (subramoni.1@osu.edu) | ICICLE-ai maintainers | Creates and approves tagged releases |
-| Security response | Hari Subramoni (subramoni.1@osu.edu) | ICICLE-ai maintainers | Receives and coordinates vulnerability reports |
-| Documentation and onboarding | Hari Subramoni (subramoni.1@osu.edu) | ICICLE-ai maintainers | Maintains user and contributor documentation |
+| Repository administration | Brijesh Nanda (brundayogananda.1@osu.edu) | ICICLE-ai maintainers | Manages repository access and settings |
+| Pull-request review | Brijesh Nanda (brundayogananda.1@osu.edu) | ICICLE-ai maintainers | Approves or requests changes to contributions |
+| Release management | Brijesh Nanda (brundayogananda.1@osu.edu) | ICICLE-ai maintainers | Creates and approves tagged releases |
+| Security response | Brijesh Nanda (brundayogananda.1@osu.edu) | ICICLE-ai maintainers | Receives and coordinates vulnerability reports |
+| Documentation and onboarding | Brijesh Nanda (brundayogananda.1@osu.edu) | ICICLE-ai maintainers | Maintains user and contributor documentation |
 
 ## Decision process
 

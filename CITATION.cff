@@ -8,6 +8,12 @@ authors:
   - family-names: "Subramoni"
     given-names: "Hari"
     email: "subramoni.1@osu.edu"
+  - family-names: "Brunda Yogananda"
+    given-names: "Brijesh Nanda"
+    email: "brundayogananda.1@osu.edu"
+  - family-names: "Potlapally"
+    given-names: "Anirudh"
+    email: "potlapally.2@osu.edu"
 repository-code: "https://github.com/ICICLE-ai/smart_labeler"
 keywords:
   - "open source"

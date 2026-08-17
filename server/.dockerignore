@@ -1,0 +1,46 @@
+# Host-generated Python artifacts: bytecode is written for the host's Python
+# version and would shadow / conflict with what the container's conda env
+# compiles at runtime. The image builds from source, not from these.
+__pycache__/
+*.py[cod]
+*.so
+
+# Local virtual environments and conda envs. Dependencies come from
+# labeler_env.yaml inside the image; a host env has macOS/linux-native
+# binaries that will not run in the container.
+.venv/
+venv/
+env/
+ENV/
+.conda/
+
+# Secrets and local-only configuration. Never bake these into an image layer.
+.env
+.env.*
+*.pem
+*.key
+
+# Local databases, dumps, and uploaded/annotated data produced while running
+# the server on the host.
+*.db
+*.sqlite
+*.sqlite3
+uploads/
+outputs/
+
+# Test, lint, and type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editor, OS, and log noise
+.vscode/
+.idea/
+.DS_Store
+*.log
+
+# Build inputs that the image does not need at runtime
+Dockerfile
+.dockerignore

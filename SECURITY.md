@@ -8,6 +8,7 @@ Security fixes are evaluated for the most recent tagged release and the default 
 
 Do not open a public issue for a suspected vulnerability or exposure of credentials, restricted data, or sensitive configuration. Report it privately to:
 
+- Security contact: **Brijesh Nanda <brundayogananda.1@osu.edu>**
 - Security contact: **Hari Subramoni <subramoni.1@osu.edu>**
 - Backup contact: **[GitHub private security advisory](https://github.com/ICICLE-ai/smart_labeler/security/advisories/new)**
 
