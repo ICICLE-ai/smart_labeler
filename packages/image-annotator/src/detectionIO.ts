@@ -17,6 +17,85 @@ export function toRelativeFilename(fullPath: string, srcImgDir: string): string 
    return lastSlash >= 0 ? fullPath.slice(lastSlash + 1) : fullPath;
 }
 
+// Canonical identity for an image *as spelled inside an annotation file*.
+//
+// Annotation files in the wild write the same image three different ways — bare
+// basename, path relative to srcImgDir, or the full path — and the merge-on-save
+// baseline is keyed by whatever string the file happened to use. Without this
+// normalization a re-spelled path lands under a second key, so the save writes the
+// image twice and the next load reads both copies back onto one image.
+// Mirrors toRelativeFilename's output for paths that do sit under srcImgDir.
+export function normalizeRelKey(rawPath: string, srcImgDir: string): string {
+   const normDir = srcImgDir.replace(/^\/+/, "").replace(/\/+$/, "");
+   const norm = rawPath.replace(/^\/+/, "").replace(/\/{2,}/g, "/");
+   if (normDir && norm.startsWith(normDir + "/")) return norm.slice(normDir.length + 1);
+   return norm;
+}
+
+// Resolve a path written in an annotation file to an index in `files`.
+//
+// Matching walks from most specific to least. Basename matching is the last resort
+// and is skipped when that basename repeats across folders — collapsing
+// `train/img_001.jpg` and `val/img_001.jpg` onto one image is what silently piled
+// both files' annotations onto one image and dropped the other's.
+export function buildFileIndexResolver(files: string[], srcImgDir: string = "") {
+   const fullToIdx = new Map<string, number>();
+   const relToIdx = new Map<string, number>();
+   const baseToIdx = new Map<string, number>();
+   const ambiguousBases = new Set<string>();
+
+   files.forEach((file, idx) => {
+      if (typeof file !== "string") return;
+      fullToIdx.set(file.replace(/^\/+/, ""), idx);
+      const rel = toRelativeFilename(file, srcImgDir);
+      if (!relToIdx.has(rel)) relToIdx.set(rel, idx);
+      const base = file.substring(file.lastIndexOf("/") + 1);
+      if (baseToIdx.has(base)) ambiguousBases.add(base);
+      else baseToIdx.set(base, idx);
+   });
+
+   return (rawPath: string): number | undefined => {
+      if (typeof rawPath !== "string" || !rawPath) return undefined;
+
+      const stripped = rawPath.replace(/^\/+/, "").replace(/\/{2,}/g, "/");
+      const byFull = fullToIdx.get(stripped);
+      if (byFull !== undefined) return byFull;
+
+      const rel = normalizeRelKey(rawPath, srcImgDir);
+      const byRel = relToIdx.get(rel);
+      if (byRel !== undefined) return byRel;
+
+      // Either side may carry extra leading folders (an export made under a
+      // different root). Accept a suffix match only when exactly one file fits.
+      const suffixHits: number[] = [];
+      relToIdx.forEach((idx, r) => {
+         if (r.endsWith("/" + rel) || rel.endsWith("/" + r)) suffixHits.push(idx);
+      });
+      if (suffixHits.length === 1) return suffixHits[0];
+      if (suffixHits.length > 1) return undefined;
+
+      const base = rel.substring(rel.lastIndexOf("/") + 1);
+      if (ambiguousBases.has(base)) {
+         console.warn(`Ambiguous annotation path "${rawPath}": "${base}" exists in multiple folders — skipped.`);
+         return undefined;
+      }
+      return baseToIdx.get(base);
+   };
+}
+
+// Collapse identical annotations on the same image. Files written before the
+// path-identity fix carry the same box twice under two spellings of the image
+// path; both now resolve to one image, so drop the repeat on the way in.
+function dedupeAnnotations(annotations: Annotation[]): Annotation[] {
+   const seen = new Set<string>();
+   return annotations.filter((a) => {
+      const key = `${a.label}|${a.x}|${a.y}|${a.width}|${a.height}|${a.flag ?? ""}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+   });
+}
+
 export function exportToCoco(
    fileToAnnotationsMap: Map<number, FileAnnotations>,
    files: string[],
@@ -160,17 +239,38 @@ export const joinUnderDir = (rel: string, srcImgDir: string): string => {
 };
 
 // Parse an exported detection JSON back into a map keyed by each image's path
-// exactly as written in the JSON (relative to the export's srcImgDir). Unlike the
-// index-based importers, this preserves folder structure, so same-named files in
-// sibling folders don't collide.
-export function detectionJsonToRelMap(json: any, isCoco: boolean): Map<string, FileAnnotations> {
+// relative to srcImgDir — the same identity the live map and the exporters use, so
+// a baseline entry and a live entry for one image collapse onto one key instead of
+// both being written to the saved file. Preserves folder structure, so same-named
+// files in sibling folders don't collide.
+//
+// `files` is the live file list. Passing it is what lets a baseline path resolve to
+// the file it actually refers to: the importer matches "a.jpg" to
+// "<srcImgDir>/sub/a.jpg" by basename, so the baseline has to key that entry
+// "sub/a.jpg" too — otherwise the user's edits land under a different key and the
+// original (pre-edit, pre-delete) annotations get written back out alongside them.
+export function detectionJsonToRelMap(
+   json: any,
+   isCoco: boolean,
+   srcImgDir: string = "",
+   files: string[] = [],
+): Map<string, FileAnnotations> {
+   const resolveFileIndex = buildFileIndexResolver(files, srcImgDir);
+   // Anchor to the real file when this path points at one we know about. Paths that
+   // resolve to nothing keep their own spelling — that's the unopened-folder data
+   // the baseline exists to preserve.
+   const keyFor = (rawPath: string): string => {
+      const idx = resolveFileIndex(rawPath);
+      return idx !== undefined ? toRelativeFilename(files[idx], srcImgDir) : normalizeRelKey(rawPath, srcImgDir);
+   };
+
    const map = new Map<string, FileAnnotations>();
    if (isCoco) {
       const catIdToName = new Map<number, string>();
       (json?.categories ?? []).forEach((c: any) => catIdToName.set(c.id, c.name));
       const imgIdToMeta = new Map<number, { rel: string; width: number; height: number }>();
       (json?.images ?? []).forEach((im: any) =>
-         imgIdToMeta.set(im.id, { rel: im.file_name, width: im.width ?? 0, height: im.height ?? 0 }));
+         imgIdToMeta.set(im.id, { rel: keyFor(im.file_name ?? ""), width: im.width ?? 0, height: im.height ?? 0 }));
       (json?.annotations ?? []).forEach((a: any) => {
          const meta = imgIdToMeta.get(a.image_id);
          if (!meta) return;
@@ -187,8 +287,8 @@ export function detectionJsonToRelMap(json: any, isCoco: boolean): Map<string, F
       });
    } else {
       (json?.annotations ?? []).forEach((a: any) => {
-         const rel = a.image_path;
-         if (rel === undefined) return;
+         if (a.image_path === undefined) return;
+         const rel = keyFor(a.image_path);
          const fa: FileAnnotations = map.get(rel) ?? { name: rel, width: 0, height: 0, annotations: [] };
          const [x0, y0, x1, y1] = a.bounding_box ?? [0, 0, 0, 0];
          fa.annotations.push({
@@ -215,29 +315,27 @@ export function mergeDetectionForSave(
    baselineIsCoco: boolean,
    srcImgDir: string,
    coco: boolean,
+   liveFiles: string[] = [],
 ): object {
    const complete = baselineJson
-      ? detectionJsonToRelMap(baselineJson, baselineIsCoco)
+      ? detectionJsonToRelMap(baselineJson, baselineIsCoco, srcImgDir, liveFiles)
       : new Map<string, FileAnnotations>();
    liveRelMap.forEach((fa, rel) => complete.set(rel, fa)); // live edits win per file
    const rels = [...complete.keys()];
-   const files = rels.map((r) => joinUnderDir(r, srcImgDir));
+   const exportFiles = rels.map((r) => joinUnderDir(r, srcImgDir));
    const indexMap = new Map<number, FileAnnotations>();
    rels.forEach((r, i) => indexMap.set(i, complete.get(r)!));
    return coco
-      ? exportToCoco(indexMap, files, srcImgDir)
-      : exportToDefaultJson(indexMap, files, srcImgDir);
+      ? exportToCoco(indexMap, exportFiles, srcImgDir)
+      : exportToDefaultJson(indexMap, exportFiles, srcImgDir);
 }
 
 export function importFromCocoJsonUtil(
    cocoJson: any,
-   files: string[]
+   files: string[],
+   srcImgDir: string = ""
 ): Map<number, FileAnnotations> {
-   const fileNameToIndex = new Map<string, number>();
-   files.forEach((file, idx) => {
-      if (typeof file !== "string") return;
-      fileNameToIndex.set(file.substring(file.lastIndexOf("/") + 1), idx);
-   });
+   const resolveFileIndex = buildFileIndexResolver(files, srcImgDir);
 
    const categoryIdToLabel = new Map<number, string>();
    if (Array.isArray(cocoJson.categories)) {
@@ -246,16 +344,17 @@ export function importFromCocoJsonUtil(
       });
    }
 
-   // Try exact match first (handles bare basenames), then fall back to the
-   // basename of img.file_name so relative paths like "subdir/b.jpg" still resolve.
+   // imageId → file index + size. Two COCO images can resolve to the same file
+   // when an older file spelled one image's path two ways; dedupe below drops the
+   // repeated boxes rather than stacking them.
    const imageIdToFileIndex = new Map<number, number>();
+   const imageIdToSize = new Map<number, { width: number; height: number }>();
    if (Array.isArray(cocoJson.images)) {
       cocoJson.images.forEach((img: any) => {
-         const basename = img.file_name.substring(img.file_name.lastIndexOf("/") + 1);
-         const fileIdx = fileNameToIndex.get(img.file_name) ?? fileNameToIndex.get(basename);
-         if (fileIdx !== undefined) {
-            imageIdToFileIndex.set(img.id, fileIdx);
-         }
+         const fileIdx = resolveFileIndex(img.file_name);
+         if (fileIdx === undefined) return;
+         imageIdToFileIndex.set(img.id, fileIdx);
+         imageIdToSize.set(img.id, { width: img.width ?? 0, height: img.height ?? 0 });
       });
    }
 
@@ -276,10 +375,11 @@ export function importFromCocoJsonUtil(
             ...(ann.flag ? { flag: ann.flag } : {}),
          };
          if (!fileToAnnotationsMap.has(fileIdx)) {
+            const size = imageIdToSize.get(ann.image_id) ?? { width: 0, height: 0 };
             fileToAnnotationsMap.set(fileIdx, {
                name: files[fileIdx],
-               width: cocoJson.images.find((img: any) => img.id === ann.image_id)?.width || 0,
-               height: cocoJson.images.find((img: any) => img.id === ann.image_id)?.height || 0,
+               width: size.width,
+               height: size.height,
                annotations: [],
             });
          }
@@ -287,25 +387,21 @@ export function importFromCocoJsonUtil(
       });
    }
 
+   fileToAnnotationsMap.forEach((fa) => { fa.annotations = dedupeAnnotations(fa.annotations); });
    return fileToAnnotationsMap;
 }
 
 export function importFromDefaultJsonUtil(
    defaultJson: any,
-   files: string[]
+   files: string[],
+   srcImgDir: string = ""
 ): Map<number, FileAnnotations> {
-   const fileNameToIndex = new Map<string, number>();
-   files.forEach((file, idx) => {
-      if (typeof file !== "string") return;
-      fileNameToIndex.set(file.substring(file.lastIndexOf("/") + 1), idx);
-   });
+   const resolveFileIndex = buildFileIndexResolver(files, srcImgDir);
 
    const fileToAnnotationsMap = new Map<number, FileAnnotations>();
    if (Array.isArray(defaultJson.annotations)) {
       defaultJson.annotations.forEach((ann: any) => {
-         const fileIdx = fileNameToIndex.get(
-            ann.image_path.lastIndexOf("/") == -1 ? ann.image_path : ann.image_path.substring(ann.image_path.lastIndexOf("/") + 1)
-         );
+         const fileIdx = resolveFileIndex(ann.image_path);
          if (fileIdx === undefined) return;
          const annotation: Annotation = {
             id: `${Date.now()}-${Math.random()}`,
@@ -330,6 +426,7 @@ export function importFromDefaultJsonUtil(
       });
    }
 
+   fileToAnnotationsMap.forEach((fa) => { fa.annotations = dedupeAnnotations(fa.annotations); });
    return fileToAnnotationsMap;
 }
 

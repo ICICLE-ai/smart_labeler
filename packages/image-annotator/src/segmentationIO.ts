@@ -1,11 +1,26 @@
 import type { SegmentationAnnotation } from "@icicle-ai/image-annotation-canvas";
-import { toRelativeFilename, joinUnderDir } from "./detectionIO";
+// Path identity is shared with the detection side so both write and match images
+// the same way.
+import { toRelativeFilename, joinUnderDir, normalizeRelKey, buildFileIndexResolver } from "./detectionIO";
 
 export interface SegmentationFileAnnotations {
    name: string;
    width: number;
    height: number;
    masks: SegmentationAnnotation[];
+}
+
+// Collapse identical masks on the same image. Files written before the
+// path-identity fix carry the same mask twice under two spellings of the image
+// path; both now resolve to one image, so drop the repeat on the way in.
+function dedupeMasks(masks: SegmentationAnnotation[]): SegmentationAnnotation[] {
+   const seen = new Set<string>();
+   return masks.filter((m) => {
+      const key = `${m.label}|${m.flag ?? ""}|${m.points.map((p) => `${p.x},${p.y}`).join(";")}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+   });
 }
 
 export function exportSegmentationJson(
@@ -94,14 +109,31 @@ export function exportSegmentationToCoco(
 
 // Parse an exported segmentation JSON into a map keyed by each image's path
 // relative to srcImgDir (folder structure preserved, no basename collisions).
-export function segJsonToRelMap(json: any, isCoco: boolean): Map<string, SegmentationFileAnnotations> {
+// Keys are normalized so a baseline entry and a live entry for the same image
+// collapse onto one key instead of both being written to the saved file.
+//
+// `files` is the live file list — see detectionJsonToRelMap. Without it a path the
+// importer matched by basename keys differently here than in the live map, and the
+// user's edits and deletions get written back out alongside the originals.
+export function segJsonToRelMap(
+   json: any,
+   isCoco: boolean,
+   srcImgDir: string = "",
+   files: string[] = [],
+): Map<string, SegmentationFileAnnotations> {
+   const resolveFileIndex = buildFileIndexResolver(files, srcImgDir);
+   const keyFor = (rawPath: string): string => {
+      const idx = resolveFileIndex(rawPath);
+      return idx !== undefined ? toRelativeFilename(files[idx], srcImgDir) : normalizeRelKey(rawPath, srcImgDir);
+   };
+
    const map = new Map<string, SegmentationFileAnnotations>();
    if (isCoco) {
       const catIdToName = new Map<number, string>();
       (json?.categories ?? []).forEach((c: any) => catIdToName.set(c.id, c.name));
       const imgIdToMeta = new Map<number, { rel: string; width: number; height: number }>();
       (json?.images ?? []).forEach((im: any) =>
-         imgIdToMeta.set(im.id, { rel: im.file_name, width: im.width ?? 0, height: im.height ?? 0 }));
+         imgIdToMeta.set(im.id, { rel: keyFor(im.file_name ?? ""), width: im.width ?? 0, height: im.height ?? 0 }));
       (json?.annotations ?? []).forEach((a: any) => {
          const meta = imgIdToMeta.get(a.image_id);
          if (!meta) return;
@@ -120,8 +152,9 @@ export function segJsonToRelMap(json: any, isCoco: boolean): Map<string, Segment
       });
    } else {
       (json?.files ?? []).forEach((entry: any) => {
-         map.set(entry.filename, {
-            name: entry.filename,
+         const rel = keyFor(entry.filename ?? "");
+         map.set(rel, {
+            name: rel,
             width: entry.width ?? 0,
             height: entry.height ?? 0,
             masks: (entry.masks ?? []).map((m: any) => ({
@@ -145,41 +178,49 @@ export function mergeSegmentationForSave(
    baselineIsCoco: boolean,
    srcImgDir: string,
    coco: boolean,
+   liveFiles: string[] = [],
 ): object {
    const complete = baselineJson
-      ? segJsonToRelMap(baselineJson, baselineIsCoco)
+      ? segJsonToRelMap(baselineJson, baselineIsCoco, srcImgDir, liveFiles)
       : new Map<string, SegmentationFileAnnotations>();
    liveRelMap.forEach((fa, rel) => complete.set(rel, fa)); // live edits win per file
    const rels = [...complete.keys()];
-   const files = rels.map((r) => joinUnderDir(r, srcImgDir));
+   const exportFiles = rels.map((r) => joinUnderDir(r, srcImgDir));
    const fullMap = new Map<string, SegmentationFileAnnotations>();
-   rels.forEach((r, i) => fullMap.set(files[i], complete.get(r)!));
+   rels.forEach((r, i) => fullMap.set(exportFiles[i], complete.get(r)!));
    return coco
-      ? exportSegmentationToCoco(fullMap, files, srcImgDir)
-      : exportSegmentationJson(fullMap, files, srcImgDir);
+      ? exportSegmentationToCoco(fullMap, exportFiles, srcImgDir)
+      : exportSegmentationJson(fullMap, exportFiles, srcImgDir);
 }
 
 export function importSegmentationJson(
    json: any,
-   files: string[]
+   files: string[],
+   srcImgDir: string = ""
 ): Map<string, SegmentationFileAnnotations> {
    const map = new Map<string, SegmentationFileAnnotations>();
    if (!json?.files) return map;
+   const resolveFileIndex = buildFileIndexResolver(files, srcImgDir);
    (json.files as any[]).forEach((entry) => {
-      // Match by exact full path or by the relative filename stored in the JSON
-      const matchedPath = files.find((f) => f === entry.filename || f.endsWith("/" + entry.filename));
-      if (!matchedPath) return;
+      const fileIdx = resolveFileIndex(entry.filename);
+      if (fileIdx === undefined) return;
+      const matchedPath = files[fileIdx];
+      // Two entries can resolve to one image when an older file spelled that
+      // image's path two ways — append then dedupe rather than letting the second
+      // entry silently drop the first.
+      const existing = map.get(matchedPath);
+      const masks: SegmentationAnnotation[] = (entry.masks ?? []).map((m: any) => ({
+         id: m.id ?? Date.now().toString(),
+         label: m.label ?? "mask",
+         points: m.points ?? [],
+         ...(m.score !== undefined ? { score: m.score } : {}),
+         ...(m.flag ? { flag: m.flag } : {}),
+      }));
       map.set(matchedPath, {
          name: entry.filename,
-         width: entry.width ?? 0,
-         height: entry.height ?? 0,
-         masks: (entry.masks ?? []).map((m: any) => ({
-            id: m.id ?? Date.now().toString(),
-            label: m.label ?? "mask",
-            points: m.points ?? [],
-            ...(m.score !== undefined ? { score: m.score } : {}),
-            ...(m.flag ? { flag: m.flag } : {}),
-         })),
+         width: entry.width ?? existing?.width ?? 0,
+         height: entry.height ?? existing?.height ?? 0,
+         masks: dedupeMasks([...(existing?.masks ?? []), ...masks]),
       });
    });
    return map;
@@ -187,26 +228,21 @@ export function importSegmentationJson(
 
 export function importSegmentationFromCoco(
    json: any,
-   files: string[]
+   files: string[],
+   srcImgDir: string = ""
 ): Map<string, SegmentationFileAnnotations> {
    const map = new Map<string, SegmentationFileAnnotations>();
    if (!json?.images || !json?.annotations) return map;
 
-   // Build lookup: basename → full file path
-   const nameToPath = new Map<string, string>();
-   files.forEach((f) => {
-      nameToPath.set(f.split("/").at(-1) ?? f, f);
-      nameToPath.set(f, f);
-   });
+   const resolveFileIndex = buildFileIndexResolver(files, srcImgDir);
 
    // imageId → full path + size
    const imageIdToPath = new Map<number, string>();
    const imageIdToSize = new Map<number, { width: number; height: number }>();
    (json.images as any[]).forEach((img) => {
-      const basename = img.file_name.split("/").at(-1) ?? img.file_name;
-      const matched = nameToPath.get(basename) ?? nameToPath.get(img.file_name);
-      if (matched) {
-         imageIdToPath.set(img.id, matched);
+      const fileIdx = resolveFileIndex(img.file_name);
+      if (fileIdx !== undefined) {
+         imageIdToPath.set(img.id, files[fileIdx]);
          imageIdToSize.set(img.id, { width: img.width ?? 0, height: img.height ?? 0 });
       }
    });
@@ -243,5 +279,6 @@ export function importSegmentationFromCoco(
       }
    });
 
+   map.forEach((fa) => { fa.masks = dedupeMasks(fa.masks); });
    return map;
 }
