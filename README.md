@@ -15,6 +15,18 @@ A 7-step HPC-backed pipeline for few-shot object detection — from interactive 
 - [SAHI — Slicing Aided Hyper Inference for small-object detection](https://github.com/obss/sahi)
 - [COCO JSON format specification](https://cocodataset.org/#format-data)
 
+## Project documentation
+
+- [setup.md](./setup.md) — running the client and server locally
+- [CONTRIBUTING.md](./CONTRIBUTING.md) — how to contribute and what a pull request should contain
+- [docs/TESTING.md](./docs/TESTING.md) — how a change is verified before merge and before deployment
+- [docs/user-tests/](./docs/user-tests/) — the manual test record
+- [docs/RELEASE_CHECKLIST.md](./docs/RELEASE_CHECKLIST.md) — the checklist to complete before a public release
+- [docs/MAINTAINER_ROLES.md](./docs/MAINTAINER_ROLES.md) — maintainer responsibilities and decision rights
+- [SECURITY.md](./SECURITY.md) — reporting a vulnerability
+- [SEGMENTATION_README.md](./SEGMENTATION_README.md) — the semantic segmentation pipeline
+- [packages/README.md](./packages/README.md) — the five publishable npm packages
+
 ## Acknowledgements
 
 *National Science Foundation (NSF) funded AI institute for Intelligent Cyberinfrastructure with Computational Learning in the Environment (ICICLE) (OAC 2112606)*
