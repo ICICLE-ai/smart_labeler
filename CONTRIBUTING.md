@@ -34,6 +34,26 @@ A pull request should:
 
 Maintainers may request changes, defer a contribution, or decline it when the change lacks a clear maintenance owner, conflicts with project scope, introduces unacceptable security or data risks, or cannot be reviewed with available resources.
 
+## Testing
+
+This repository has no unit tests yet. That is deliberate and is explained in
+[docs/TESTING.md](docs/TESTING.md), which also defines what replaces them in the
+meantime. In short:
+
+1. Run the local pre-submit checks before you push — the same build and typecheck
+   commands CI runs, in the same order.
+2. Let CI run. The workflows in `.github/workflows/` build the packages and client, parse
+   the server, validate YAML and shell scripts, check the required project files, and
+   scan for secrets.
+3. Exercise the change by hand: happy path, an edge case, a failure case, and a
+   regression check on adjacent behaviour. Take screenshots for anything user-visible.
+4. Write that up as `docs/user-tests/YYYY-MM-DD-<slug>.md` from
+   [docs/user-tests/TEMPLATE.md](docs/user-tests/TEMPLATE.md) and commit it in the same
+   pull request.
+
+A pull request is not blocked for missing unit tests. It is blocked for a missing user
+test document when the change is behavioural.
+
 ## License and contributor rights
 
 By submitting a contribution, you represent that you have the right to submit it and that it may be distributed under this repository's license. If your employer, institution, funder, or data provider imposes restrictions, obtain authorization before contributing.
