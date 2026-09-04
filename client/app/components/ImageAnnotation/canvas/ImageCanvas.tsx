@@ -18,6 +18,7 @@ import {
    type BaseAnnotation,
    type CanvasEngine,
    type EngineContext,
+   type Insid3Config,
    type Sam3Config,
 } from "./types";
 
@@ -93,6 +94,7 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
    const [graphEnabled, setGraphEnabled] = useState<boolean>(props.isGraphMode || false);
    const [sam3Config, setSam3Config] = useState<Sam3Config>({ patchSize: 0, detectionConfidence: 0.3, maskPrecision: 0.3 });
    const [isSam3Loading, setIsSam3Loading] = useState<boolean>(false);
+   const [isInsid3Loading, setIsInsid3Loading] = useState<boolean>(false);
    const [lineWidth, setLineWidth] = useState<number>(8);
    const [cookie] = useCookies(["tapis-token"]);
 
@@ -176,6 +178,7 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
             setPendingAnnotation(null);
             setLabelValue("");
             setIsSam3Loading(false);
+            setIsInsid3Loading(false);
             props.onMultiSelection?.([]);
             props.onSelection(null);
             // Notify Controls to reset all tools
@@ -254,8 +257,10 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
       openLabelDialog,
       tapisToken: cookie["tapis-token"]?.["access_token"] ?? "",
       setIsSam3Loading,
+      setIsInsid3Loading,
       sam3Config,
       fileName: props.fileName,
+      imageSource: typeof file === "string" ? file : undefined,
       pipeId: props.pipeId,
       systemId: props.systemId,
       setCursor,
@@ -374,6 +379,16 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
                            }
                         }}
                         sam3loading={isSam3Loading}
+                        handleInsid3Prediction={
+                           engine.runInsid3
+                              ? (config: Insid3Config) => {
+                                   setActiveMode(CanvasMode.NONE);
+                                   setEngineState(engine.createInitialEngineState());
+                                   engine.runInsid3?.(config, buildContext());
+                                }
+                              : undefined
+                        }
+                        insid3loading={isInsid3Loading}
                         lineWidth={lineWidth}
                         onLineWidthChange={(w) => setLineWidth(w)}
                      />

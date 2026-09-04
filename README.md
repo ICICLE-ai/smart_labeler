@@ -1,6 +1,6 @@
 # Smart Labeling Service for Object Detection
 
-A 7-step HPC-backed pipeline for few-shot object detection — from interactive image annotation through class support generation, proposal visualization, and Tapis-powered job execution — built to work across any research domain. Also includes a dedicated **Semantic Segmentation** pipeline for polygon and pixel-mask annotation with SAM3-assisted labeling.
+A 7-step HPC-backed pipeline for few-shot object detection — from interactive image annotation through class support generation, proposal visualization, and Tapis-powered job execution — built to work across any research domain. Also includes a dedicated **Semantic Segmentation** pipeline for polygon and pixel-mask annotation with SAM3-assisted labeling, plus an optional, separately deployed **INSID3** reference-guided segmentation feature.
 
 ### License
 
@@ -12,6 +12,7 @@ A 7-step HPC-backed pipeline for few-shot object detection — from interactive 
 
 - [Tapis v3 — HPC job execution framework](https://tapis-project.org)
 - [Patra Model Registry — ICICLE AI model catalog](https://patra.pods.icicleai.tapis.io/)
+- [INSID3 integration and deployment guide](INSID3_INTEGRATION.md)
 - [SAHI — Slicing Aided Hyper Inference for small-object detection](https://github.com/obss/sahi)
 - [COCO JSON format specification](https://cocodataset.org/#format-data)
 

@@ -13,6 +13,7 @@ import { useAppConfig } from "~/context/AppConfigContext";
 const links = [
   { link: "/", label: "Home" },
   { link: "/dashboard", label: "Dashboard" },
+  { link: "/insid3", label: "INSID3 Lab" },
   { link: "/help", label: "Help" },
   { link: "/contact-us", label: "Contact Us" },
 ];

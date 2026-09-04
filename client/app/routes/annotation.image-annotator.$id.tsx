@@ -76,12 +76,13 @@ function exportSegmentationJson(
          filename: toRelativeFilename(filePath, srcImgDir),
          width: fa?.width ?? 0,
          height: fa?.height ?? 0,
-         masks: (fa?.masks ?? []).map(({ id, label, points, score, flag }) => ({
+         masks: (fa?.masks ?? []).map(({ id, label, points, score, flag, source }) => ({
             id,
             label,
             points,
             ...(score !== undefined ? { score } : {}),
             ...(flag ? { flag } : {}),
+            ...(source ? { source } : {}),
          })),
       };
    }).filter((e) => e.masks.length > 0);
@@ -141,6 +142,7 @@ function exportSegmentationToCoco(
             iscrowd: 0,
             ...(mask.score !== undefined ? { score: mask.score } : {}),
             ...(mask.flag ? { flag: mask.flag } : {}),
+            ...(mask.source ? { source: mask.source } : {}),
          });
       });
    });
@@ -172,6 +174,7 @@ function segJsonToRelMap(json: any, isCoco: boolean): Map<string, SegmentationFi
             points,
             ...(a.score !== undefined ? { score: a.score } : {}),
             ...(a.flag ? { flag: a.flag } : {}),
+            ...(a.source ? { source: a.source } : {}),
          });
          map.set(meta.rel, fa);
       });
@@ -187,6 +190,7 @@ function segJsonToRelMap(json: any, isCoco: boolean): Map<string, SegmentationFi
                points: m.points ?? [],
                ...(m.score !== undefined ? { score: m.score } : {}),
                ...(m.flag ? { flag: m.flag } : {}),
+               ...(m.source ? { source: m.source } : {}),
             })),
          });
       });
@@ -236,6 +240,7 @@ function importSegmentationJson(
             points: m.points ?? [],
             ...(m.score !== undefined ? { score: m.score } : {}),
             ...(m.flag ? { flag: m.flag } : {}),
+            ...(m.source ? { source: m.source } : {}),
          })),
       });
    });
@@ -290,6 +295,7 @@ function importSegmentationFromCoco(
          points,
          ...(ann.score !== undefined ? { score: ann.score } : {}),
          ...(ann.flag ? { flag: ann.flag } : {}),
+         ...(ann.source ? { source: ann.source } : {}),
       };
 
       const existing = map.get(filePath);

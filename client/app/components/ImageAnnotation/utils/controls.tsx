@@ -6,9 +6,11 @@ import CropSquareIcon from '@mui/icons-material/CropSquare';
 import SsidChartIcon from '@mui/icons-material/SsidChart';
 import ImageIcon from '@mui/icons-material/Image';
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
+import TravelExploreIcon from '@mui/icons-material/TravelExplore';
 import { Box, Button, ButtonGroup, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Divider, IconButton, TextField, Tooltip, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
 import { useControls } from "react-zoom-pan-pinch";
+import type { Insid3Config } from "../canvas/types";
 import { SAM3_MODES } from "./utils";
 
 const Controls = (props: {
@@ -21,6 +23,8 @@ const Controls = (props: {
    handleDisplayTypeSwitch?: (type: string) => void;
    handleSAM3BoxPrediction?: (mode: string, sam3Prediction: boolean, labelValue?: string, textPrompts?: string[], isSAHIenabled?: boolean, patchSize?: number, detectionConfidence?: number, maskPrecision?: number) => void;
    sam3loading?: boolean;
+   handleInsid3Prediction?: (config: Insid3Config) => void;
+   insid3loading?: boolean;
    onResetAllControls?: () => void;
    lineWidth?: number;
    onLineWidthChange?: (width: number) => void;
@@ -49,6 +53,12 @@ const Controls = (props: {
    const [isSAHIenabled, setIsSAHIenabled] = useState(false);
    const [detectionConfidence, setDetectionConfidence] = useState<number>(0.3);
    const [maskPrecision, setMaskPrecision] = useState<number>(0.3);
+   const [openInsid3Dialog, setOpenInsid3Dialog] = useState(false);
+   const [insid3ReferenceImage, setInsid3ReferenceImage] = useState<File | null>(null);
+   const [insid3ReferenceMask, setInsid3ReferenceMask] = useState<File | null>(null);
+   const [insid3Label, setInsid3Label] = useState("");
+   const [insid3MinArea, setInsid3MinArea] = useState(64);
+   const [insid3MaxObjects, setInsid3MaxObjects] = useState(100);
 
    useEffect(() => {
       props.handleDrawingStateChange(isDrawing);
@@ -75,6 +85,7 @@ const Controls = (props: {
       setPatchSize(640);
       setDetectionConfidence(0.3);
       setMaskPrecision(0.3);
+      setOpenInsid3Dialog(false);
       props.handleDrawingStateChange(false);
       props.handleEnableBoxEditChange(false);
       props.handleSAM3BoxPrediction?.("", false);
@@ -245,12 +256,34 @@ const Controls = (props: {
                   </IconButton>
                </>
             </Tooltip>
+            {props.handleInsid3Prediction && (
+               <Tooltip title="INSID3 reference-guided segmentation">
+                  <span>
+                     <IconButton
+                        disabled={!props.isEditable || props.insid3loading}
+                        onClick={() => setOpenInsid3Dialog(true)}
+                     >
+                        <TravelExploreIcon
+                           sx={{ color: props.insid3loading ? "orange" : "black" }}
+                        />
+                     </IconButton>
+                  </span>
+               </Tooltip>
+            )}
          </div>
          {props.sam3loading && (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                <CircularProgress size={20} />
                <Typography variant="body2" color="text.secondary" fontWeight={500}>
                   Prediction in progress...
+               </Typography>
+            </Box>
+         )}
+         {props.insid3loading && (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, ml: 1 }}>
+               <CircularProgress size={20} />
+               <Typography variant="body2" color="text.secondary" fontWeight={500}>
+                  INSID3 is matching the reference...
                </Typography>
             </Box>
          )}
@@ -373,6 +406,109 @@ const Controls = (props: {
                   setOpenDialog(false);
                }}>
                   Enter
+               </Button>
+            </DialogActions>
+         </Dialog>
+         <Dialog
+            open={openInsid3Dialog}
+            onClose={() => setOpenInsid3Dialog(false)}
+            maxWidth="sm"
+            fullWidth
+         >
+            <DialogTitle sx={{ fontFamily: "system-ui" }}>
+               INSID3 Reference-Guided Segmentation
+            </DialogTitle>
+            <DialogContent>
+               <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  Upload an example image and a same-sized binary mask. INSID3
+                  will find matching objects in the image currently open on the
+                  Smart Labeler canvas.
+               </Typography>
+               <Box sx={{ display: "grid", gap: 1.5 }}>
+                  <Button variant="outlined" component="label">
+                     {insid3ReferenceImage
+                        ? `Reference: ${insid3ReferenceImage.name}`
+                        : "Choose reference image"}
+                     <input
+                        hidden
+                        type="file"
+                        accept="image/*"
+                        onChange={(event) =>
+                           setInsid3ReferenceImage(event.target.files?.[0] ?? null)
+                        }
+                     />
+                  </Button>
+                  <Button variant="outlined" component="label">
+                     {insid3ReferenceMask
+                        ? `Mask: ${insid3ReferenceMask.name}`
+                        : "Choose reference mask"}
+                     <input
+                        hidden
+                        type="file"
+                        accept="image/*"
+                        onChange={(event) =>
+                           setInsid3ReferenceMask(event.target.files?.[0] ?? null)
+                        }
+                     />
+                  </Button>
+                  <TextField
+                     variant="filled"
+                     fullWidth
+                     label="Object label"
+                     value={insid3Label}
+                     onChange={(event) => setInsid3Label(event.target.value)}
+                     placeholder="e.g., cat, tree, vehicle"
+                  />
+                  <TextField
+                     variant="filled"
+                     fullWidth
+                     type="number"
+                     label="Minimum component area"
+                     value={insid3MinArea}
+                     inputProps={{ min: 1, step: 1 }}
+                     onChange={(event) =>
+                        setInsid3MinArea(Math.max(1, Number(event.target.value)))
+                     }
+                     helperText="Small predicted regions below this pixel area are discarded."
+                  />
+                  <TextField
+                     variant="filled"
+                     fullWidth
+                     type="number"
+                     label="Maximum objects"
+                     value={insid3MaxObjects}
+                     inputProps={{ min: 1, max: 1000, step: 1 }}
+                     onChange={(event) =>
+                        setInsid3MaxObjects(
+                           Math.min(1000, Math.max(1, Number(event.target.value))),
+                        )
+                     }
+                  />
+               </Box>
+            </DialogContent>
+            <DialogActions>
+               <Button onClick={() => setOpenInsid3Dialog(false)}>Cancel</Button>
+               <Button
+                  variant="contained"
+                  disabled={
+                     !insid3ReferenceImage ||
+                     !insid3ReferenceMask ||
+                     !insid3Label.trim() ||
+                     props.insid3loading
+                  }
+                  onClick={() => {
+                     if (!insid3ReferenceImage || !insid3ReferenceMask) return;
+                     props.handleInsid3Prediction?.({
+                        referenceImage: insid3ReferenceImage,
+                        referenceMask: insid3ReferenceMask,
+                        label: insid3Label.trim(),
+                        minArea: insid3MinArea,
+                        maxObjects: insid3MaxObjects,
+                     });
+                     setOpenInsid3Dialog(false);
+                  }}
+               >
+                  Find Similar Objects
                </Button>
             </DialogActions>
          </Dialog>

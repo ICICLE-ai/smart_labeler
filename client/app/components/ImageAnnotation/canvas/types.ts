@@ -23,6 +23,7 @@ export interface BaseAnnotation {
    score?: number;
    iou?: number;
    flag?: string;
+   source?: string;
 }
 
 /** Detection bounding box */
@@ -47,6 +48,14 @@ export interface Sam3Config {
    patchSize: number;
    detectionConfidence: number;
    maskPrecision: number;
+}
+
+export interface Insid3Config {
+   referenceImage: File;
+   referenceMask: File;
+   label: string;
+   minArea: number;
+   maxObjects: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -88,8 +97,10 @@ export interface EngineContext<T extends BaseAnnotation> {
    // SAM3
    tapisToken: string;
    setIsSam3Loading: Dispatch<SetStateAction<boolean>>;
+   setIsInsid3Loading: Dispatch<SetStateAction<boolean>>;
    sam3Config: Sam3Config;
    fileName?: string;
+   imageSource?: string;
    pipeId?: string;
    systemId?: string;
 
@@ -129,6 +140,9 @@ export interface CanvasEngine<T extends BaseAnnotation> {
 
    /** SAM3 text-prompt prediction (imperative, no mouse event). */
    runSam3Text?: (textPrompts: string[], ctx: EngineContext<T>) => void;
+
+   /** INSID3 reference-mask prediction against the currently displayed image. */
+   runInsid3?: (config: Insid3Config, ctx: EngineContext<T>) => void;
 
    /** Enter key while in DRAWING mode (e.g. close a polygon). */
    onDrawingEnterKey?: (ctx: EngineContext<T>) => void;

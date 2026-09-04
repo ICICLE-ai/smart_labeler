@@ -25,6 +25,10 @@ data:
   COOKIE_SECURE: "true"
 
   SAM3_ENDPOINT: "https://sam3-sailab.nrp-nautilus.io"
+  # Internal ClusterIP URL from k8s/insid3-deployment.yaml. Keep INSID3 private;
+  # browsers call it through the authenticated Smart Labeler backend proxy.
+  INSID3_ENDPOINT: "http://insid3-service"
+  INSID3_TIMEOUT_SECONDS: "300"
   TAPIS_BASE_URL: "https://icicleai.tapis.io"
   PATRA_BASE_NEW: "https://patrabackend.pods.icicleai.tapis.io"
 
@@ -83,6 +87,14 @@ spec:
             name: smart-labeler-config
         - secretRef:
             name: smart-labeler-secret
+        env:
+        # Optional shared key used only for backend-to-INSID3 requests.
+        - name: INSID3_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: insid3-secrets
+              key: INSID3_API_KEY
+              optional: true
         readinessProbe:
           httpGet:
             path: /
@@ -169,6 +181,7 @@ metadata:
   annotations:
     haproxy-ingress-proxy.timeout: "300s"
     haproxy.router.openshift.io/timeout: "300s"
+    haproxy-ingress.github.io/proxy-body-size: "160m"
 spec:
   ingressClassName: haproxy
   rules:

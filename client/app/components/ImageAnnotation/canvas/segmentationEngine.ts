@@ -1,4 +1,4 @@
-import { sam3Predictions } from "~/utils/utils";
+import { insid3Predictions, sam3Predictions } from "~/utils/utils";
 import { getLabelColor } from "../utils/utils";
 import { CanvasMode, type CanvasEngine, type Coords, type EngineContext, type SegmentationAnnotation } from "./types";
 
@@ -301,6 +301,65 @@ export const segmentationEngine: CanvasEngine<SegmentationAnnotation> = {
          })
          .catch((err) => { console.error("SAM3 text segmentation failed:", err); alert("SAM3 text prompt failed. Please try again."); })
          .finally(() => ctx.setIsSam3Loading(false));
+   },
+
+   runInsid3(config, ctx) {
+      if (!ctx.imageSource) {
+         alert("Select a target image in Smart Labeler before running INSID3.");
+         return;
+      }
+      if (!ctx.tapisToken) {
+         alert("Your Smart Labeler session has expired. Please log in again.");
+         return;
+      }
+
+      ctx.setIsInsid3Loading(true);
+      const targetName =
+         ctx.fileName?.split("/").pop() || "smart-labeler-target.png";
+
+      fetch(ctx.imageSource)
+         .then((response) => {
+            if (!response.ok) throw new Error("Could not read the current target image");
+            return response.blob();
+         })
+         .then((targetBlob) =>
+            insid3Predictions(
+               {
+                  referenceImage: config.referenceImage,
+                  referenceMask: config.referenceMask,
+                  targetImage: new File([targetBlob], targetName, {
+                     type: targetBlob.type || "application/octet-stream",
+                  }),
+                  label: config.label,
+                  minArea: config.minArea,
+                  maxObjects: config.maxObjects,
+               },
+               ctx.tapisToken,
+            )
+         )
+         .then((result) => {
+            const newAnnotations: SegmentationAnnotation[] = result.objects
+               .filter((object) => object.points.length >= 3)
+               .map((object) => ({
+                  id: object.id,
+                  points: simplifyPolygon(object.points),
+                  label: object.label,
+                  source: "INSID3",
+               }));
+            if (!newAnnotations.length) {
+               alert("INSID3 completed, but no matching objects were found.");
+               return;
+            }
+            // The callback is bound to the target image that was active when
+            // the request started, preventing delayed results from being added
+            // to a different image after navigation.
+            ctx.onAddition?.(newAnnotations);
+         })
+         .catch((error) => {
+            console.error("INSID3 prediction failed:", error);
+            alert(error instanceof Error ? error.message : "INSID3 prediction failed.");
+         })
+         .finally(() => ctx.setIsInsid3Loading(false));
    },
 
    draw(ctx2d, state) {

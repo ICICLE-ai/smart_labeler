@@ -367,6 +367,76 @@ export const sam3Predictions = async (
    return response.json();
 };
 
+export interface Insid3Point {
+   x: number;
+   y: number;
+}
+
+export interface Insid3Object {
+   id: string;
+   label: string;
+   area: number;
+   bbox: { x: number; y: number; width: number; height: number };
+   points: Insid3Point[];
+   source: "INSID3";
+   review_status: string;
+   reference_iou: number;
+}
+
+export interface Insid3Response {
+   mode: "same-image" | "cross-image";
+   width: number;
+   height: number;
+   label: string;
+   object_count: number;
+   objects: Insid3Object[];
+   mask_png_base64?: string;
+}
+
+export interface Insid3PredictionInput {
+   referenceImage: File;
+   referenceMask: File;
+   targetImage: File;
+   label: string;
+   minArea?: number;
+   maxObjects?: number;
+   maskThreshold?: number;
+}
+
+export const insid3Predictions = async (
+   input: Insid3PredictionInput,
+   token: string,
+): Promise<Insid3Response> => {
+   const form = new FormData();
+   form.append("image", input.referenceImage);
+   form.append("mask", input.referenceMask);
+   form.append("target_image", input.targetImage);
+   form.append("label", input.label.trim() || "object");
+   form.append("min_area", String(input.minArea ?? 64));
+   form.append("max_objects", String(input.maxObjects ?? 100));
+   form.append("mask_threshold", String(input.maskThreshold ?? 127));
+   form.append("include_mask", "true");
+
+   const response = await fetch(`${_baseUrl}/insid3/similar-objects`, {
+      method: "POST",
+      headers: {
+         "Tapis-Token": token,
+      },
+      body: form,
+   });
+   if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+      try {
+         const payload = await response.json();
+         detail = payload?.detail ?? payload?.message ?? detail;
+      } catch {
+         // Keep the status-only error when the proxy returned non-JSON.
+      }
+      throw new Error(`INSID3 prediction failed: ${detail}`);
+   }
+   return response.json();
+};
+
 export enum TYPE {
    DETECTION = "DETECTION",
    CLASSIFICATION = "CLASSIFICATION",

@@ -647,6 +647,15 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
                                                             }}
                                                          />
                                                       )}
+                                                      {b.source && (
+                                                         <Chip
+                                                            size="small"
+                                                            label={b.source}
+                                                            color={b.source === "INSID3" ? "success" : "default"}
+                                                            variant="outlined"
+                                                            sx={{ height: 18, fontSize: "0.68rem", fontWeight: 700 }}
+                                                         />
+                                                      )}
                                                    </Stack>
                                                 }
                                                 secondary={

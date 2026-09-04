@@ -1,0 +1,183 @@
+# Optional, private INSID3 add-on for Smart Labeler.
+#
+# This manifest mirrors the runtime contract in the sibling
+# INSID3-inference-service repository. It intentionally creates no public
+# ingress: authenticated browsers call the Smart Labeler Flask proxy, and only
+# that backend talks to the ClusterIP service below.
+#
+# Before applying:
+#   1. Confirm that ghcr.io/icicle-ai/insid3-inference-service:main is the image
+#      tag you want to deploy (pin a release/digest for production).
+#   2. Populate the insid3-models PVC with the gated DINOv3 checkpoint, or create
+#      insid3-secrets with an authorized INSID3_CHECKPOINT_URL.
+#   3. Optionally add INSID3_API_KEY to that same secret. Smart Labeler reads
+#      the same key, so it only needs to be configured once.
+#
+# Example shared secret:
+#   kubectl create secret generic insid3-secrets \
+#     --from-literal=INSID3_API_KEY='replace-with-a-long-random-value'
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: insid3-models
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args: ["--maxmemory", "8gb", "--maxmemory-policy", "allkeys-lru"]
+          ports:
+            - containerPort: 6379
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "8Gi"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+  type: ClusterIP
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: insid3-fastapi
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: insid3
+  template:
+    metadata:
+      labels:
+        app: insid3
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values: ["NVIDIA-A10"]
+      containers:
+        - name: api
+          image: ghcr.io/icicle-ai/insid3-inference-service:main
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 2128
+              name: http
+          env:
+            - name: INSID3_DEVICE
+              value: cuda
+            - name: INSID3_MODEL_SIZE
+              value: large
+            - name: INSID3_IMAGE_SIZE
+              value: "768"
+            - name: INSID3_CHECKPOINT
+              value: /models/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
+            - name: INSID3_CHECKPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: insid3-secrets
+                  key: INSID3_CHECKPOINT_URL
+                  optional: true
+            - name: INSID3_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: insid3-secrets
+                  key: INSID3_API_KEY
+                  optional: true
+            - name: REDIS_HOST
+              value: redis-service
+            - name: REDIS_PORT
+              value: "6379"
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: false
+            - name: torch-cache
+              mountPath: /app/data/cache/torch
+          startupProbe:
+            httpGet:
+              path: /health/ready
+              port: 2128
+            periodSeconds: 10
+            failureThreshold: 180
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 2128
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 2128
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "8"
+              memory: "32Gi"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "8"
+              memory: "32Gi"
+              nvidia.com/gpu: "1"
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: insid3-models
+        - name: torch-cache
+          emptyDir:
+            sizeLimit: 2Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: insid3-service
+spec:
+  selector:
+    app: insid3
+  ports:
+    - port: 80
+      targetPort: 2128
+  type: ClusterIP

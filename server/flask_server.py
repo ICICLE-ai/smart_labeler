@@ -8,6 +8,7 @@ import base64
 
 import numpy as np
 import cv2
+import requests
 
 from flask import send_file, abort, redirect, make_response, jsonify, request
 from flask_cors import CORS
@@ -44,6 +45,14 @@ COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
 PATRA_BASE_NEW = os.getenv("PATRA_BASE_NEW", "https://patrabackend.pods.icicleai.tapis.io")
 TAPIS_BASE_URL = os.getenv("TAPIS_BASE_URL", "https://icicleai.tapis.io")
 TENANT = os.getenv("TENANT", "icicleai")
+INSID3_ENDPOINT = os.getenv("INSID3_ENDPOINT", "http://127.0.0.1:2128").rstrip("/")
+INSID3_API_KEY = os.getenv("INSID3_API_KEY", "")
+INSID3_TIMEOUT_SECONDS = float(os.getenv("INSID3_TIMEOUT_SECONDS", "300"))
+INSID3_PROXY_MAX_CONTENT_BYTES = int(
+    # Three upstream files may each approach INSID3's 50 MiB per-file limit;
+    # leave room for multipart framing while retaining a bounded proxy request.
+    os.getenv("INSID3_PROXY_MAX_CONTENT_BYTES", str(160 * 1024 * 1024))
+)
 
 from iciflaskn import auth
 from iciflaskn.config import config
@@ -115,6 +124,113 @@ patra_blp = APIBlueprint("patra", __name__, url_prefix="/patra",
 vault_blp = APIBlueprint("vault", __name__, url_prefix="/api/vault",
                          abp_tags=[Tag(name="Vault", description="Tapis vault secrets")],
                          abp_security=_auth_sec)
+
+insid3_blp = APIBlueprint("insid3", __name__, url_prefix="/insid3",
+                          abp_tags=[Tag(name="INSID3", description="In-context segmentation proxy")],
+                          abp_security=_auth_sec)
+
+
+# ── INSID3 proxy ──────────────────────────────────────────────────────────────
+@insid3_blp.get("/health", summary="Check the configured INSID3 service")
+def insid3_health():
+    getAuth(request)
+    try:
+        upstream = requests.get(
+            f"{INSID3_ENDPOINT}/health/ready",
+            timeout=min(30.0, INSID3_TIMEOUT_SECONDS),
+        )
+    except requests.RequestException as exc:
+        abort(502, description=f"INSID3 service is unreachable: {exc}")
+
+    try:
+        payload = upstream.json()
+    except ValueError:
+        payload = {"status": "unavailable", "detail": upstream.text[:500]}
+    return jsonify(payload), upstream.status_code
+
+
+@insid3_blp.post(
+    "/similar-objects",
+    summary="Find target objects matching an uploaded reference mask",
+)
+def insid3_similar_objects():
+    """Authenticate the Smart Labeler user and proxy a multipart INSID3 query."""
+    getAuth(request)
+    if (
+        request.content_length is not None
+        and request.content_length > INSID3_PROXY_MAX_CONTENT_BYTES
+    ):
+        abort(413, description="INSID3 multipart request is too large")
+
+    required_files = ("image", "mask", "target_image")
+    missing = [name for name in required_files if name not in request.files]
+    if missing:
+        abort(
+            400,
+            description=(
+                "Missing required multipart file field(s): " + ", ".join(missing)
+            ),
+        )
+
+    upstream_files = {}
+    for field_name in required_files:
+        upload = request.files[field_name]
+        if not upload.filename:
+            abort(400, description=f"{field_name} must have a filename")
+        upstream_files[field_name] = (
+            upload.filename,
+            upload.stream,
+            upload.mimetype or "application/octet-stream",
+        )
+
+    allowed_fields = {
+        "label",
+        "mask_threshold",
+        "min_area",
+        "max_objects",
+        "polygon_epsilon_ratio",
+        "reference_padding_ratio",
+        "exclude_reference",
+        "exclude_reference_iou",
+        "include_mask",
+    }
+    upstream_form = {
+        key: value
+        for key, value in request.form.items()
+        if key in allowed_fields
+    }
+    upstream_form.setdefault("label", "object")
+    upstream_form.setdefault("min_area", "64")
+    upstream_form.setdefault("max_objects", "100")
+    upstream_form.setdefault("include_mask", "true")
+
+    headers = {}
+    if INSID3_API_KEY:
+        headers["X-INSID3-Key"] = INSID3_API_KEY
+
+    try:
+        upstream = requests.post(
+            f"{INSID3_ENDPOINT}/v1/similar-objects",
+            headers=headers,
+            data=upstream_form,
+            files=upstream_files,
+            timeout=(10.0, INSID3_TIMEOUT_SECONDS),
+        )
+    except requests.Timeout:
+        abort(504, description="INSID3 prediction timed out")
+    except requests.RequestException as exc:
+        abort(502, description=f"INSID3 service request failed: {exc}")
+
+    try:
+        payload = upstream.json()
+    except ValueError:
+        abort(
+            502,
+            description=(
+                f"INSID3 returned a non-JSON response (HTTP {upstream.status_code})"
+            ),
+        )
+    return jsonify(payload), upstream.status_code
 
 
 # ── Auth endpoints ────────────────────────────────────────────────────────────
@@ -877,6 +993,7 @@ app.register_api(jobs_blp)
 app.register_api(admin_blp)
 app.register_api(patra_blp)
 app.register_api(vault_blp)
+app.register_api(insid3_blp)
 
 
 if __name__ == "__main__":

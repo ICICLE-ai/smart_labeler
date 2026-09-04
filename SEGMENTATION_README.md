@@ -14,6 +14,7 @@ A streamlined, HPC-backed pipeline dedicated exclusively to semantic and instanc
 - [Patra Model Registry — ICICLE AI model catalog](https://patra.pods.icicleai.tapis.io/)
 - [SAM3 (Segment Anything Model 3) — Meta AI](https://github.com/facebookresearch/sam3)
 - [SAHI — Slicing Aided Hyper Inference for small-object detection](https://github.com/obss/sahi)
+- [INSID3 — reference-mask-guided in-context segmentation](INSID3_INTEGRATION.md)
 - [COCO JSON format specification](https://cocodataset.org/#format-data)
 
 ## Acknowledgements
