@@ -68,14 +68,22 @@ CORS(
 
 # ── Auth helper ───────────────────────────────────────────────────────────────
 def getAuth(req):
+    token = req.headers.get("Tapis-Token")
+    if not token:
+        abort(401, description="Missing Tapis-Token header")
     try:
-        token = req.headers.get("Tapis-Token")
-        if not token:
-            abort(401, description="Missing Tapis-Token header")
         username = auth.get_username(token)
-        return token, username
-    except Exception:
-        abort(403, description="Tapis authentication failed — please log back in")
+    except Exception as e:
+        # First call after a cold pod start occasionally hits a transient
+        # network/DNS error reaching Tapis's userinfo endpoint; one retry
+        # clears it without masking a genuinely invalid token below.
+        print(f"getAuth: get_username failed, retrying once: {e}")
+        try:
+            username = auth.get_username(token)
+        except Exception as e2:
+            print(f"getAuth: get_username failed on retry: {e2}")
+            abort(403, description="Tapis authentication failed — please log back in")
+    return token, username
 
 
 # ── Blueprints ────────────────────────────────────────────────────────────────
