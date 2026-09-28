@@ -112,6 +112,17 @@ interface AnnotationDetailsProps {
    onAnnotationUpdate: (id: string, updates: Partial<BaseAnnotation>) => void;
    deleteAnnotations: (id: string[]) => void;
    handleFilterAnnotations?: (score: number, activeLabels: string[], activeFlags: string[]) => void;
+   /**
+    * Label currently armed for new annotations. `null` means "no label chosen",
+    * and the canvas keeps prompting per annotation.
+    */
+   activeDrawLabel?: string | null;
+   /**
+    * Enables the "label for new annotations" section. Supply it to let the user
+    * pick (or type) a label up front; pass the value back in as `activeDrawLabel`
+    * and on to the canvas's `defaultLabel`. Omit to hide the section entirely.
+    */
+   onActiveDrawLabelChange?: (label: string | null) => void;
 }
 
 export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
@@ -124,6 +135,8 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
    onAnnotationUpdate,
    deleteAnnotations,
    handleFilterAnnotations,
+   activeDrawLabel = null,
+   onActiveDrawLabelChange,
 }) => {
    const config = VARIANT_CONFIG[variant];
 
@@ -145,6 +158,9 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
    // Flag options – starts with defaults, user can add more at runtime
    const [flagOptions, setFlagOptions] = useState(DEFAULT_FLAGS);
    const [newFlagInput, setNewFlagInput] = useState<string>("");
+
+   // Free-text entry for a label that does not exist on any annotation yet.
+   const [newLabelInput, setNewLabelInput] = useState<string>("");
 
    // Flag menu state
    const [flagMenuAnchor, setFlagMenuAnchor] = useState<null | HTMLElement>(null);
@@ -254,6 +270,30 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
       setFlagTargetId(null);
    };
 
+   /**
+    * Arms a label for new annotations. Clicking the armed label again disarms it,
+    * which puts the canvas back to prompting for a label per annotation.
+    */
+   const armLabel = (label: string | null) => {
+      onActiveDrawLabelChange?.(activeDrawLabel === label ? null : label);
+   };
+
+   /**
+    * Registers a label the dataset does not contain yet and arms it, so a brand
+    * new class can be drawn without first having to label one annotation by hand.
+    */
+   const addLabel = () => {
+      const trimmed = newLabelInput.trim();
+      if (!trimmed) return;
+      // Match case-insensitively so "Person" doesn't become a second class
+      // alongside an existing "person".
+      const existing = availableLabels.find((l) => l.toLowerCase() === trimmed.toLowerCase());
+      const label = existing ?? trimmed;
+      if (!existing) setAvailableLabels((prev) => [...prev, label]);
+      onActiveDrawLabelChange?.(label);
+      setNewLabelInput("");
+   };
+
    const addFlag = () => {
       const trimmed = newFlagInput.trim();
       if (!trimmed) return;
@@ -287,6 +327,96 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
       >
          {/* ── Filters (label, flag, confidence) – scrollable so annotations are never hidden ── */}
          <Box sx={{ flexShrink: 1, overflow: "auto", minHeight: 0 }}>
+
+         {/* ── Label to assign to new annotations ── */}
+         {onActiveDrawLabelChange && (
+            <>
+               <Box>
+                  <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+                     <Typography variant="subtitle1" fontWeight={700} sx={{ letterSpacing: 0.5, textTransform: "uppercase", fontSize: "0.78rem", color: "text.secondary" }}>
+                        Label for new {config.itemNoun}s
+                     </Typography>
+                     {activeDrawLabel && (
+                        <Tooltip title="Stop auto-labelling — you will be asked for a label each time">
+                           <Chip
+                              label="Auto"
+                              size="small"
+                              onDelete={() => onActiveDrawLabelChange(null)}
+                              sx={{
+                                 height: 20,
+                                 fontSize: "0.68rem",
+                                 fontWeight: 700,
+                                 backgroundColor: getLabelColor(activeDrawLabel),
+                                 color: "#fff",
+                                 "& .MuiChip-deleteIcon": { color: "rgba(255,255,255,0.8)" },
+                              }}
+                           />
+                        </Tooltip>
+                     )}
+                  </Stack>
+
+                  {availableLabels.length > 0 && (
+                     <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
+                        {availableLabels.map((label) => {
+                           const color = getLabelColor(label);
+                           const armed = activeDrawLabel === label;
+                           return (
+                              <Tooltip
+                                 key={label}
+                                 title={armed
+                                    ? `New ${config.itemNoun}s are labelled "${label}" — click to turn off`
+                                    : `Label new ${config.itemNoun}s "${label}" automatically`}
+                              >
+                                 <Chip
+                                    label={label}
+                                    size="medium"
+                                    onClick={() => armLabel(label)}
+                                    sx={{
+                                       fontWeight: 600,
+                                       fontSize: "0.82rem",
+                                       borderRadius: "8px",
+                                       border: `2px ${armed ? "solid" : "dashed"} ${color}`,
+                                       backgroundColor: armed ? color : "transparent",
+                                       color: armed ? "#fff" : color,
+                                       transition: "all 0.15s ease",
+                                       "&:hover": { backgroundColor: color, color: "#fff", opacity: 0.9 },
+                                    }}
+                                 />
+                              </Tooltip>
+                           );
+                        })}
+                     </Box>
+                  )}
+
+                  {/* ── Add a label the dataset doesn't have yet ── */}
+                  <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.75 }}>
+                     <TextField
+                        size="small"
+                        placeholder="New label name…"
+                        value={newLabelInput}
+                        onChange={(e) => setNewLabelInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") addLabel(); }}
+                        sx={{ flex: 1, "& .MuiInputBase-input": { fontSize: "0.82rem", py: 0.5 } }}
+                     />
+                     <Tooltip title="Add this label and use it for new annotations">
+                        <span>
+                           <IconButton size="small" onClick={addLabel} disabled={!newLabelInput.trim()} color="primary">
+                              <AddIcon fontSize="small" />
+                           </IconButton>
+                        </span>
+                     </Tooltip>
+                  </Stack>
+
+                  <Typography variant="caption" sx={{ display: "block", mt: 0.5, color: "text.disabled" }}>
+                     {activeDrawLabel
+                        ? `New ${config.itemNoun}s will be labelled "${activeDrawLabel}" without prompting.`
+                        : `Pick a label to skip the prompt when you add a new ${config.itemNoun}.`}
+                  </Typography>
+               </Box>
+
+               <Divider />
+            </>
+         )}
 
          {/* ── Label filter section ── */}
          <Box>

@@ -18,6 +18,17 @@ logic (COCO and a simpler default format, both directions, with folder-scoped
 merge-on-save so annotations for folders you never opened this session
 aren't dropped).
 
+It also wires up the features the three underlying packages expose but cannot
+drive on their own:
+
+- **Per-file annotation badges and filters.** It derives the explorer's
+  `fileStats` map from its own per-file annotation/mask maps, so counts and flag
+  indicators next to each filename stay current as you annotate, and the
+  "Annotated" / "Flagged" filters work without any extra wiring.
+- **A label armed for new annotations.** The details panel's label picker is
+  connected to the canvas's `defaultLabel`, so choosing (or typing) a label up
+  front makes every new box or mask take it without a prompt.
+
 ## Why this package exists
 
 The four packages above are each independently usable, but this route was

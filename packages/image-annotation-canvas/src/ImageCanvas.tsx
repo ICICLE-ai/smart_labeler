@@ -62,6 +62,13 @@ interface ImageCanvasProps<T extends BaseAnnotation> {
    sam3Endpoint?: string;
    /** Custom SAM3 prediction backend. Overrides `sam3Endpoint` when provided. */
    sam3Client?: Sam3Client;
+   /**
+    * Label pre-selected by the consumer for anything drawn from now on. When set,
+    * new annotations take it immediately and the "New annotation" label prompt is
+    * skipped — draw a box and it is already labelled. Leave unset (or blank) to
+    * keep prompting for a label per annotation.
+    */
+   defaultLabel?: string;
 }
 
 function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) {
@@ -238,7 +245,24 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
       return { x: (event.clientX - rect.left) * scaleX, y: (event.clientY - rect.top) * scaleY };
    };
 
+   // `defaultLabel` is read through a ref so the engine's mouse handlers — which
+   // capture a context built earlier in the same gesture — always see the label
+   // that is selected right now.
+   const defaultLabelRef = useRef<string>(props.defaultLabel ?? "");
+   defaultLabelRef.current = props.defaultLabel ?? "";
+
    const openLabelDialog = (pending: any) => {
+      // A pre-selected label means the user has already answered the question the
+      // dialog would ask: create the annotation straight away.
+      const preset = defaultLabelRef.current.trim();
+      if (preset) {
+         const created = engine.createFromDialog(pending, preset, annotations);
+         if (created) {
+            setAnnotations((prev) => [...prev, created]);
+            props.onAddition?.([created]);
+         }
+         return;
+      }
       setPendingAnnotation(pending);
       setLabelValue("");
       setLabelDialogOpen(true);

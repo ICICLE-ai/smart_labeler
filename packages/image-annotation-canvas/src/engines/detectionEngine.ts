@@ -8,6 +8,13 @@ const HANDLE_SIZE = 16;
 const LINE_WIDTH_BIG = 4;
 const LINE_WIDTH_SMALL = 2;
 const FLAG_PALETTE = ["#f57c00", "#1976d2", "#388e3c", "#7b1fa2", "#00838f", "#ad1457", "#6d4c41"];
+// Minimum box side (natural px) below which a completed box is discarded as a stray click.
+const MIN_BOX_SIDE = 5;
+// How far the pointer must travel between mousedown and mouseup for the gesture to
+// count as a drag. Anything shorter is a click, which starts/finishes a two-click box.
+const DRAG_SLOP = 4;
+// Radius of the marker drawn at the first corner while waiting for the second click.
+const ANCHOR_MARKER_R = 6;
 
 // ---------------------------------------------------------------------------
 // Engine-private interaction state
@@ -24,6 +31,12 @@ interface Interaction {
    currentY?: number;
    startWidth?: number;
    startHeight?: number;
+   /**
+    * Set while a box is being placed by two clicks: the first corner is anchored
+    * at (startX, startY) and the next click supplies the opposite corner. Stays
+    * false for a click-drag, which finishes on mouseup instead.
+    */
+   awaitingSecondPoint?: boolean;
 }
 
 interface DetectionEngineState {
@@ -86,14 +99,69 @@ interface CanvasActionHandler {
    onMouseUp?: (coords: Coords, ctx: Ctx) => void;
 }
 
-/** Free-hand bounding-box drawing */
+/** Clears any in-progress draw without creating a box. */
+function abandonDraw(ctx: Ctx) {
+   ctx.setEngineState((prev: DetectionEngineState) => ({
+      ...prev,
+      isAnnotationMode: false,
+      interaction: { type: "none", targetId: prev.interaction.targetId },
+   }));
+}
+
+/**
+ * Turns an anchored corner plus an opposite corner into a box and hands it to
+ * the label step. Corners may be given in any order. Returns false (and creates
+ * nothing) if the result is too small to be a deliberate box.
+ */
+function completeBox(ctx: Ctx, startX: number, startY: number, endX: number, endY: number): boolean {
+   const width = Math.abs(endX - startX);
+   const height = Math.abs(endY - startY);
+   if (width < MIN_BOX_SIDE || height < MIN_BOX_SIDE) return false;
+   ctx.openLabelDialog({
+      id: Date.now().toString(),
+      x: Math.min(startX, endX),
+      y: Math.min(startY, endY),
+      width,
+      height,
+      label: `Box ${ctx.annotations.length + 1}`,
+   } as Annotation);
+   return true;
+}
+
+/**
+ * Bounding-box drawing. Two interchangeable gestures:
+ *   • two clicks — click one corner, then click the opposite corner (the box
+ *     previews under the cursor in between). This is the primary gesture.
+ *   • click-drag — press, drag, release, as before.
+ * Which one happened is decided on mouseup by how far the pointer travelled, so
+ * the user never has to choose a mode.
+ */
 const drawingHandler: CanvasActionHandler = {
    cursor: "crosshair",
    onMouseDown({ x, y }, ctx) {
+      const s = ctx.engineState as DetectionEngineState;
+
+      // Second click of a two-click box. Handled before the hit test below so the
+      // closing corner can land inside an existing box instead of selecting it.
+      if (s.isAnnotationMode && s.interaction.awaitingSecondPoint) {
+         const { startX, startY } = s.interaction;
+         if (!completeBox(ctx, startX!, startY!, x, y)) {
+            // Too small to be a box — treat this click as a fresh first corner
+            // rather than silently dropping the gesture.
+            ctx.setEngineState({
+               isAnnotationMode: true,
+               interaction: { type: "drawing", awaitingSecondPoint: true, startX: x, startY: y, currentX: x, currentY: y },
+            });
+            return;
+         }
+         abandonDraw(ctx);
+         return;
+      }
+
       // Click on existing box → select it (control or command = toggle multi-select)
       for (const box of ctx.annotations) {
          if (x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height) {
-            ctx.setEngineState((s: DetectionEngineState) => ({ ...s, isAnnotationMode: false }));
+            ctx.setEngineState((prev: DetectionEngineState) => ({ ...prev, isAnnotationMode: false }));
             if (ctx.isControlHeld) {
                const next = ctx.selectedIds.includes(box.id)
                   ? ctx.selectedIds.filter((id) => id !== box.id)
@@ -108,36 +176,34 @@ const drawingHandler: CanvasActionHandler = {
             return;
          }
       }
-      // Click on empty area – clear multi-selection and start drawing
+
+      // Click on empty area – clear multi-selection and anchor the first corner.
+      // `awaitingSecondPoint` is optimistic: mouseup downgrades it to a finished
+      // drag if the pointer actually travelled.
       ctx.setSelectedIds([]);
       ctx.onMultiSelection?.([]);
-      ctx.setEngineState({ isAnnotationMode: true, interaction: { type: "drawing", startX: x, startY: y, currentX: x, currentY: y } });
+      ctx.setEngineState({
+         isAnnotationMode: true,
+         interaction: { type: "drawing", awaitingSecondPoint: true, startX: x, startY: y, currentX: x, currentY: y },
+      });
    },
    onMouseMove({ x, y }, ctx) {
       const s = ctx.engineState as DetectionEngineState;
       if (!s.isAnnotationMode) return;
       ctx.setEngineState((prev: DetectionEngineState) => ({ ...prev, interaction: { ...prev.interaction, currentX: x, currentY: y } }));
    },
-   onMouseUp(_coords, ctx) {
+   onMouseUp({ x, y }, ctx) {
       const s = ctx.engineState as DetectionEngineState;
-      if (!s.isAnnotationMode) return;
-      const { startX, startY, currentX, currentY } = s.interaction;
-      const width = Math.abs(currentX! - startX!);
-      const height = Math.abs(currentY! - startY!);
-      if (width < 5 || height < 5) {
-         ctx.setEngineState((prev: DetectionEngineState) => ({ ...prev, isAnnotationMode: false, interaction: { type: "none", targetId: prev.interaction.targetId } }));
-         return;
-      }
-      const newBox: Annotation = {
-         id: Date.now().toString(),
-         x: Math.min(startX!, currentX!),
-         y: Math.min(startY!, currentY!),
-         width,
-         height,
-         label: `Box ${ctx.annotations.length + 1}`,
-      };
-      ctx.openLabelDialog(newBox);
-      ctx.setEngineState((prev: DetectionEngineState) => ({ ...prev, isAnnotationMode: false, interaction: { type: "none", targetId: prev.interaction.targetId } }));
+      if (!s.isAnnotationMode || s.interaction.type !== "drawing") return;
+      const { startX, startY, awaitingSecondPoint } = s.interaction;
+
+      // The pointer barely moved, so this was a click, not a drag: keep the
+      // anchor and wait for the closing click.
+      const travelled = Math.max(Math.abs(x - startX!), Math.abs(y - startY!));
+      if (awaitingSecondPoint && travelled <= DRAG_SLOP) return;
+
+      completeBox(ctx, startX!, startY!, x, y);
+      abandonDraw(ctx);
    },
 };
 
@@ -329,10 +395,23 @@ export const detectionEngine: CanvasEngine<Annotation> = {
    },
 
    onMouseLeave(coords, ctx) {
-      // Commit any in-progress drag/draw when cursor leaves canvas
-      if ((ctx.engineState as DetectionEngineState).interaction.type !== "none") {
-         ACTION_HANDLERS[ctx.activeMode]?.onMouseUp?.(coords, ctx);
-      }
+      const { interaction } = ctx.engineState as DetectionEngineState;
+      if (interaction.type === "none") return;
+      // A two-click box is still mid-gesture: the cursor leaving the canvas is not
+      // the closing click, so keep the anchor rather than committing a box whose
+      // far corner is wherever the pointer happened to exit.
+      if (interaction.type === "drawing" && interaction.awaitingSecondPoint) return;
+      // Commit any in-progress drag when the cursor leaves the canvas.
+      ACTION_HANDLERS[ctx.activeMode]?.onMouseUp?.(coords, ctx);
+   },
+
+   // Enter closes a two-click box at the previewed corner, for users who would
+   // rather not click twice on a crowded image.
+   onDrawingEnterKey(ctx) {
+      const { interaction, isAnnotationMode } = ctx.engineState as DetectionEngineState;
+      if (!isAnnotationMode || !interaction.awaitingSecondPoint) return;
+      completeBox(ctx, interaction.startX!, interaction.startY!, interaction.currentX!, interaction.currentY!);
+      abandonDraw(ctx);
    },
 
    createFromDialog(pending: Annotation, label: string) {
@@ -448,12 +527,25 @@ export const detectionEngine: CanvasEngine<Annotation> = {
       });
 
       if (interaction.type === "drawing") {
+         const { startX, startY, currentX, currentY } = interaction;
          ctx2d.strokeStyle = "rgba(255, 0, 0, 0.7)";
          ctx2d.lineWidth = lineWidth;
          ctx2d.setLineDash([5, 5]);
-         const { startX, startY, currentX, currentY } = interaction;
          ctx2d.strokeRect(startX!, startY!, currentX! - startX!, currentY! - startY!);
          ctx2d.setLineDash([]);
+
+         // Mark the anchored corner while the closing click is outstanding —
+         // without it a two-click box in progress looks identical to no box at all
+         // until the pointer has moved far enough to show the rubber band.
+         if (interaction.awaitingSecondPoint) {
+            ctx2d.beginPath();
+            ctx2d.arc(startX!, startY!, ANCHOR_MARKER_R, 0, Math.PI * 2);
+            ctx2d.fillStyle = "rgba(255, 0, 0, 0.7)";
+            ctx2d.fill();
+            ctx2d.strokeStyle = "#ffffff";
+            ctx2d.lineWidth = LINE_WIDTH_SMALL;
+            ctx2d.stroke();
+         }
       }
    },
 };

@@ -22,6 +22,8 @@ import FolderOpenIcon from "@mui/icons-material/FolderOpen";
 import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
 import PhotoLibraryOutlinedIcon from "@mui/icons-material/PhotoLibraryOutlined";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import FlagIcon from "@mui/icons-material/Flag";
+import FilterAltOutlinedIcon from "@mui/icons-material/FilterAltOutlined";
 import { Formik } from "formik";
 import { Group, Select } from "@mantine/core";
 import { SubmitButton } from "./SubmitButton";
@@ -29,6 +31,20 @@ import { TapisDirectoryField } from "./TapisDirectoryField";
 import { allowed_systems, DEFAULT_SYSTEM, getDirContentsFromTapis, getImage, sanitizePath } from "./tapisClient";
 
 const PAGE_SIZE: number = 15;
+
+/**
+ * Per-file annotation summary the explorer shows next to each filename, and
+ * filters on. Supplied by the consumer, which owns the annotations.
+ */
+export interface FileAnnotationStat {
+   /** How many annotations this file currently has. */
+   count: number;
+   /** Whether any of them carries a flag. */
+   flagged: boolean;
+}
+
+/** The file-list filters, in the order they appear in the UI. */
+type FileFilter = "annotated" | "flagged";
 
 export interface FileExplorerProps {
    onFileSelect: (file: any, filePath: string) => void;
@@ -40,6 +56,13 @@ export interface FileExplorerProps {
    fileDir?: string;
    parentSystem?: string;
    onDirectorySubmit?: (srcImgDir: string, system: string) => void;
+   /**
+    * Annotation summary per file path, keyed by the same paths this component
+    * reports through `filesInDirectory` / `onFileSelect`. Drives the count and
+    * flag badges beside each filename and the "Annotated"/"Flagged" filters.
+    * Files missing from the map are treated as having no annotations.
+    */
+   fileStats?: Map<string, FileAnnotationStat>;
 }
 
 export const FileExplorer: React.FC<FileExplorerProps> = ({
@@ -50,6 +73,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
    fileDir,
    parentSystem,
    onDirectorySubmit,
+   fileStats,
 }) => {
    // current directory's image files (display/pagination only)
    const [files, setFiles] = useState<string[]>([]);
@@ -88,12 +112,13 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
    // without needing to be re-attached on every selection change.
    const selectedPathRef = useRef<string | null>(selectedPath);
    const loadingPathRef = useRef<string | null>(loadingPath);
+   // Holds the *visible* (filtered) list, so arrow keys skip filtered-out files.
+   // Assigned further down, once `visibleFiles` has been derived.
    const filesRef = useRef<string[]>(files);
    const onSelectFileRef = useRef<((filePath: string) => void) | null>(null);
    // Sync on every render (plain assignment, not a hook)
    selectedPathRef.current = selectedPath;
    loadingPathRef.current = loadingPath;
-   filesRef.current = files;
 
    useEffect(() => {
       if (parentSystem) setSystem(parentSystem);
@@ -143,36 +168,70 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
    // eslint-disable-next-line react-hooks/exhaustive-deps
    }, []);
 
+   // Active file-list filters. Both on = only files that are annotated *and*
+   // flagged (a flagged file is necessarily annotated, so that's just "flagged").
+   const [filters, setFilters] = useState<FileFilter[]>([]);
+
+   const statFor = (filePath: string): FileAnnotationStat | undefined => fileStats?.get(filePath);
+
+   /**
+    * The file list the user actually sees: `files` narrowed by the active
+    * filters. Everything below — pagination, prefetch windows, arrow-key
+    * navigation, the footer counts — works off this, so a filtered-out file is
+    * never selected or prefetched. `files` itself stays whole, because it is
+    * what the parent was told about and what annotations are keyed by.
+    */
+   const visibleFiles = useMemo(() => {
+      if (filters.length === 0) return files;
+      return files.filter((f) => {
+         const stat = statFor(f);
+         if (filters.includes("annotated") && !(stat && stat.count > 0)) return false;
+         if (filters.includes("flagged") && !stat?.flagged) return false;
+         return true;
+      });
+      // fileStats is replaced (not mutated) by the consumer whenever annotations
+      // change, so its identity is a correct dependency.
+   }, [files, filters, fileStats]);
+
+   const toggleFilter = (filter: FileFilter) =>
+      setFilters((prev) => (prev.includes(filter) ? prev.filter((f) => f !== filter) : [...prev, filter]));
+
+   // A filter change shrinks the list, so an out-of-range page would show nothing.
+   useEffect(() => { setPage(1); }, [filters]);
+
    const pagedFiles = useMemo(() => {
       const start = (page - 1) * PAGE_SIZE;
-      return files.slice(start, start + PAGE_SIZE);
-   }, [files, page]);
+      return visibleFiles.slice(start, start + PAGE_SIZE);
+   }, [visibleFiles, page]);
 
-   const pageCount = Math.max(1, Math.ceil(files.length / PAGE_SIZE));
+   const pageCount = Math.max(1, Math.ceil(visibleFiles.length / PAGE_SIZE));
+
+   filesRef.current = visibleFiles;
 
    const isImageFile = (filename: string): boolean =>
       [".jpg", ".jpeg", ".png", ".tiff", ".tif", ".gif", ".bmp", ".webp"].some(
          (ext) => filename.toLowerCase().endsWith(ext)
       );
 
-   // Prefetch when directory changes — image cache is preserved across directories.
+   // Prefetch when the visible list changes — image cache is preserved across
+   // directories, and a filter change is a new set of images to warm.
    useEffect(() => {
       currentPageRef.current = 1;
       triggerPagePrefetch(null);
       prefetchPageInBackground(2, null);
-   }, [files]);
+   }, [visibleFiles]);
 
    // Auto-select the first image when navigating into a new directory.
    useEffect(() => {
-      if (files.length > 0 && selectedPath === null) {
-         onSelectFile(files[0]);
+      if (visibleFiles.length > 0 && selectedPath === null) {
+         onSelectFile(visibleFiles[0]);
       }
-   }, [files]);
+   }, [visibleFiles]);
 
    // Background-prefetch uncached images on the current page.
    // excludePath = the file currently being fetched by onSelectFile (skip it).
    const triggerPagePrefetch = (excludePath: string | null) => {
-      if (!system || files.length === 0) return;
+      if (!system || visibleFiles.length === 0) return;
 
       currentPageRef.current = page;
 
@@ -182,7 +241,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
 
       const thisPage = page;
       const start = (thisPage - 1) * PAGE_SIZE;
-      const pageFiles = files.slice(start, start + PAGE_SIZE);
+      const pageFiles = visibleFiles.slice(start, start + PAGE_SIZE);
 
       const toFetch = pageFiles.filter(
          (f) =>
@@ -223,7 +282,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
       const windowStartIdx = (Math.max(1, centerPage - 1) - 1) * PAGE_SIZE;
       const windowEndIdx = (centerPage + 1) * PAGE_SIZE;
       for (const [filePath, url] of pageCacheRef.current.entries()) {
-         const idx = files.indexOf(filePath);
+         const idx = visibleFiles.indexOf(filePath);
          if (idx === -1 || idx < windowStartIdx || idx >= windowEndIdx) {
             URL.revokeObjectURL(url);
             pageCacheRef.current.delete(filePath);
@@ -233,15 +292,15 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
 
    // Prefetch a specific page in the background (no loading indicator).
    const prefetchPageInBackground = (targetPage: number, excludePath: string | null) => {
-      if (!system || files.length === 0) return;
-      const maxPage = Math.ceil(files.length / PAGE_SIZE);
+      if (!system || visibleFiles.length === 0) return;
+      const maxPage = Math.ceil(visibleFiles.length / PAGE_SIZE);
       if (targetPage < 1 || targetPage > maxPage) return;
 
       if (!prefetchAbortRef.current) prefetchAbortRef.current = new AbortController();
       const { signal } = prefetchAbortRef.current;
 
       const start = (targetPage - 1) * PAGE_SIZE;
-      const toFetch = files.slice(start, start + PAGE_SIZE).filter(
+      const toFetch = visibleFiles.slice(start, start + PAGE_SIZE).filter(
          (f) =>
             f !== excludePath &&
             isImageFile(f) &&
@@ -353,7 +412,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
       onFileSelect(null, filePath);
 
       // Sliding window: keep [clickedPage-1, clickedPage, clickedPage+1] in cache.
-      const fileIdx = files.indexOf(filePath);
+      const fileIdx = visibleFiles.indexOf(filePath);
       if (fileIdx !== -1) {
          const clickedPage = Math.floor(fileIdx / PAGE_SIZE) + 1;
          evictPagesOutsideWindow(clickedPage);
@@ -499,6 +558,55 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
             />
          )}
 
+         {/* Annotation filters — only meaningful when the consumer supplies stats */}
+         {fileStats && files.length > 0 && (
+            <Box
+               sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: 0.5,
+                  px: 1,
+                  py: 0.5,
+                  borderBottom: "1px solid",
+                  borderColor: "divider",
+                  bgcolor: "background.paper",
+               }}
+            >
+               <FilterAltOutlinedIcon fontSize="small" sx={{ color: "action.active", mr: 0.25 }} />
+               <Tooltip title="Show only images that have at least one annotation">
+                  <Chip
+                     label="Annotated"
+                     size="small"
+                     variant={filters.includes("annotated") ? "filled" : "outlined"}
+                     color={filters.includes("annotated") ? "primary" : "default"}
+                     onClick={() => toggleFilter("annotated")}
+                     sx={{ fontSize: "0.7rem", height: 22 }}
+                  />
+               </Tooltip>
+               <Tooltip title="Show only images with a flagged annotation">
+                  <Chip
+                     icon={<FlagIcon sx={{ fontSize: "0.8rem !important" }} />}
+                     label="Flagged"
+                     size="small"
+                     variant={filters.includes("flagged") ? "filled" : "outlined"}
+                     color={filters.includes("flagged") ? "warning" : "default"}
+                     onClick={() => toggleFilter("flagged")}
+                     sx={{ fontSize: "0.7rem", height: 22 }}
+                  />
+               </Tooltip>
+               {filters.length > 0 && (
+                  <Chip
+                     label="Clear"
+                     size="small"
+                     variant="outlined"
+                     onClick={() => setFilters([])}
+                     sx={{ fontSize: "0.68rem", height: 22, color: "text.secondary" }}
+                  />
+               )}
+            </Box>
+         )}
+
          {/* Breadcrumb / back navigation */}
          {currentPath && (
             <Box
@@ -559,7 +667,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
 
          {/* File list */}
          <Box sx={{ flex: 1, overflow: "auto", px: 1, py: 0.5 }}>
-            {dirs.length === 0 && files.length === 0 ? (
+            {dirs.length === 0 && visibleFiles.length === 0 ? (
                <Stack
                   alignItems="center"
                   justifyContent="center"
@@ -567,15 +675,24 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                   sx={{ height: "100%", py: 4, color: "text.disabled" }}
                >
                   <PhotoLibraryOutlinedIcon sx={{ fontSize: 40, opacity: 0.4 }} />
-                  <Typography variant="body2" align="center" color="text.disabled">
-                     No files loaded.
-                     {!fileDir && (
-                        <>
-                           {" "}Select a system and directory above,
-                           <br />then click <strong>Get Images</strong>.
-                        </>
-                     )}
-                  </Typography>
+                  {files.length > 0 ? (
+                     <>
+                        <Typography variant="body2" align="center" color="text.disabled">
+                           None of the {files.length} image{files.length !== 1 ? "s" : ""} here match the active filter.
+                        </Typography>
+                        <Chip label="Clear filters" size="small" variant="outlined" onClick={() => setFilters([])} />
+                     </>
+                  ) : (
+                     <Typography variant="body2" align="center" color="text.disabled">
+                        No files loaded.
+                        {!fileDir && (
+                           <>
+                              {" "}Select a system and directory above,
+                              <br />then click <strong>Get Images</strong>.
+                           </>
+                        )}
+                     </Typography>
+                  )}
                </Stack>
             ) : (
                <List dense disablePadding>
@@ -606,6 +723,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                      const isImg = isImageFile(file);
                      const isLoading = loadingPath === file;
                      const filename = file.split("/").at(-1) ?? file;
+                     const stat = statFor(file);
 
                      return (
                         <Tooltip
@@ -664,6 +782,34 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                                     </Typography>
                                  }
                               />
+                              {/* Annotation count + flag state, so progress through a
+                                  directory is visible without opening each image. */}
+                              {stat && stat.count > 0 && (
+                                 <Tooltip
+                                    title={`${stat.count} annotation${stat.count !== 1 ? "s" : ""}${stat.flagged ? " · has a flagged annotation" : ""}`}
+                                 >
+                                    <Chip
+                                       label={stat.count}
+                                       size="small"
+                                       icon={stat.flagged
+                                          ? <FlagIcon sx={{ fontSize: "0.75rem !important", color: "#f57c00 !important" }} />
+                                          : undefined}
+                                       sx={{
+                                          ml: 0.5,
+                                          flexShrink: 0,
+                                          height: 18,
+                                          fontSize: "0.68rem",
+                                          fontWeight: 700,
+                                          bgcolor: stat.flagged ? "#f57c0022" : "action.hover",
+                                          color: stat.flagged ? "#e65100" : "text.secondary",
+                                          border: "1px solid",
+                                          borderColor: stat.flagged ? "#f57c0066" : "divider",
+                                          "& .MuiChip-label": { px: 0.6 },
+                                          "& .MuiChip-icon": { ml: 0.4, mr: -0.2 },
+                                       }}
+                                    />
+                                 </Tooltip>
+                              )}
                               {isLoading && (
                                  <CircularProgress size={14} sx={{ ml: 1, flexShrink: 0 }} />
                               )}
@@ -676,7 +822,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
          </Box>
 
          {/* Pagination footer */}
-         {files.length > 0 && (
+         {visibleFiles.length > 0 && (
             <Box
                sx={{
                   display: "flex",
@@ -691,7 +837,8 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
             >
                <Typography variant="caption" color="text.disabled">
                   {(page - 1) * PAGE_SIZE + 1}–
-                  {Math.min(page * PAGE_SIZE, files.length)} of {files.length}
+                  {Math.min(page * PAGE_SIZE, visibleFiles.length)} of {visibleFiles.length}
+                  {filters.length > 0 && ` (of ${files.length})`}
                </Typography>
                <Pagination
                   count={pageCount}

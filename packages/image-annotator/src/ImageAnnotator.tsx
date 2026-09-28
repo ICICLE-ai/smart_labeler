@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { FileExplorer } from "@icicle-ai/tapis-file-explorer";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { FileExplorer, type FileAnnotationStat } from "@icicle-ai/tapis-file-explorer";
 import {
    ImageCanvas,
    detectionEngine,
@@ -105,6 +105,8 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
    const [activeLabels, setActiveLabels] = useState<string[]>([]);
    const [activeFlags, setActiveFlags] = useState<string[]>([]);
    const [annotatorConfig, setAnnotatorConfig] = useState<AnnotatorConfig | null>(null);
+   // Label armed in the details panel: new annotations take it without prompting.
+   const [activeDrawLabel, setActiveDrawLabel] = useState<string | null>(null);
    const [isDemo, setIsDemo] = useState(false);
    const [isAdmin, setIsAdmin] = useState(false);
    const [isConfigLoading, setIsConfigLoading] = useState(true);
@@ -138,6 +140,23 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
    const segmentationMasks = selectedFilePath
       ? fileToMasksMap.get(selectedFilePath)?.masks ?? NO_MASKS
       : NO_MASKS;
+
+   // Per-file annotation summary for the explorer's badges and filters. Derived
+   // from the same maps the canvas reads, so a box added or flagged right now is
+   // reflected beside the filename immediately.
+   const fileStats = useMemo(() => {
+      const stats = new Map<string, FileAnnotationStat>();
+      const record = (path: string, items: Array<{ flag?: string }>) => {
+         if (items.length === 0) return;
+         stats.set(path, { count: items.length, flagged: items.some((i) => Boolean(i.flag)) });
+      };
+      if (isSegmentation) {
+         fileToMasksMap.forEach((fa, path) => record(path, fa.masks));
+      } else {
+         fileToAnnotationsMap.forEach((fa, path) => record(path, fa.annotations));
+      }
+      return stats;
+   }, [isSegmentation, fileToAnnotationsMap, fileToMasksMap]);
 
    // All edits write straight into the map slot of the file they belong to.
    const mutateBoxes = (path: string | null, fn: (anns: Annotation[]) => Annotation[]) => {
@@ -524,6 +543,8 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
            onAnnotationUpdate: handleMaskUpdate,
            deleteAnnotations: deleteMasks,
            handleFilterAnnotations,
+           activeDrawLabel,
+           onActiveDrawLabelChange: setActiveDrawLabel,
         }
       : {
            annotations: boundingBoxes,
@@ -534,6 +555,8 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
            onAnnotationUpdate: handleBoundingBoxUpdate,
            deleteAnnotations: deleteBoxes,
            handleFilterAnnotations,
+           activeDrawLabel,
+           onActiveDrawLabelChange: setActiveDrawLabel,
         };
 
    // ────────────────────────────────────────────────────────────────────────
@@ -604,6 +627,7 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
                   setSystem(sys);
                }}
                pipeid={pipeid}
+               fileStats={fileStats}
                fileDir={annotatorConfig?.srcImgDir}
                parentSystem={annotatorConfig?.system}
                onDirectorySubmit={(!isDemo || isAdmin) ? (srcImgDir, sys) => {
@@ -703,6 +727,7 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
                      onImageLoaded={handleImageLoaded}
                      tapisToken={tapisToken}
                      sam3Endpoint={sam3Endpoint}
+                     defaultLabel={activeDrawLabel ?? undefined}
                   />
                ) : isConfigLoading ? (
                   <Box sx={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center", mt: 10, gap: 2 }}>

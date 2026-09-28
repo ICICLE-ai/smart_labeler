@@ -102,6 +102,25 @@ If neither `sam3Endpoint` nor `sam3Client` is provided, every other tool
 (draw/edit/select) works normally — only the SAM3 button throws a clear
 error when clicked.
 
+## Drawing gestures and pre-assigned labels
+
+With `detectionEngine`, a bounding box can be placed two interchangeable ways:
+
+- **Two clicks** — click one corner, then click the opposite corner. The box
+  previews under the cursor in between, and the anchored corner is marked so an
+  unfinished box is visible. `Enter` closes it at the previewed corner; `Escape`
+  abandons it.
+- **Click-drag** — press, drag, release, as before.
+
+Which gesture happened is decided on mouse-up by how far the pointer travelled,
+so there is no mode to choose. Leaving the canvas mid-gesture abandons a pending
+two-click box rather than committing one at the exit point.
+
+By default a new annotation opens a prompt asking for its label. Pass a
+`defaultLabel` and that prompt is skipped — the annotation is created with that
+label immediately. Pair it with `@icicle-ai/annotation-details`, whose
+`onActiveDrawLabelChange` is designed to feed it.
+
 ## Writing a custom engine
 
 An engine is a plain object implementing `CanvasEngine<T>` — it owns mouse
@@ -120,6 +139,7 @@ for reference implementations.
 | `CanvasMode` | `NONE \| DRAWING \| EDIT \| SAM3_CLICK \| SAM3_TEXT` |
 | `BaseAnnotation`, `Annotation`, `SegmentationAnnotation` | Annotation shapes |
 | `getLabelColor`, `LABEL_PALETTE` | Deterministic per-label color assignment |
+| `ImageCanvasProps` | Props type, including `defaultLabel` |
 
 ## Local development (inside this monorepo)
 

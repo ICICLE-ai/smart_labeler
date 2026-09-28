@@ -1,4 +1,7 @@
 import type { RuntimeEnv } from "~/context/AppConfigContext";
+import { configureTapisFileExplorer } from "@icicle-ai/tapis-file-explorer";
+import { configureImageAnnotator } from "@icicle-ai/image-annotator";
+import { configurePatraModelSelector, configureTapisVault } from "@icicle-ai/patra-model-selector";
 
 // Defaults overridden at runtime by initConfig() (called from root.tsx loader data).
 // Never use import.meta.env here — these values must be injectable at container
@@ -38,9 +41,26 @@ export const initConfig = (env: RuntimeEnv) => {
    if (env.embedders) EMBEDDERS = env.embedders.split(",");
    if (env.proposers) PROPOSERS = env.proposers.split(",");
    _annotatorType = env.annotatorType ? env.annotatorType.toUpperCase() : null;
+
+   // The @icicle-ai/* packages are deployment-agnostic: they hold the same
+   // endpoints in their own module-level config so they can be reused outside
+   // this app. Point them at whatever this container was started with.
+   configureTapisFileExplorer({
+      apiBaseUrl: _baseUrl,
+      tapisBaseUrl: _tapisBase,
+      allowedSystems: allowed_systems,
+      defaultSystem: DEFAULT_SYSTEM,
+   });
+   configureImageAnnotator({ apiBaseUrl: _baseUrl });
+   // Patra and the Tapis vault are reached through this app's own backend rather
+   // than directly: a direct browser call is cross-origin and neither upstream
+   // sends CORS headers for it.
+   configurePatraModelSelector({ proxy: { baseUrl: _baseUrl } });
+   configureTapisVault({ proxy: { baseUrl: _baseUrl } });
 };
 
 export const getBaseURL = () => _baseUrl;
+export const getSam3Endpoint = () => _sam3Endpoint;
 export const getAnnotatorType = () => _annotatorType;
 
 // Full application title per annotator type. Falls back to the bare product

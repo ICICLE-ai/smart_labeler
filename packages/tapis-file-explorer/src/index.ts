@@ -1,5 +1,5 @@
 export { FileExplorer } from "./FileExplorer";
-export type { FileExplorerProps } from "./FileExplorer";
+export type { FileExplorerProps, FileAnnotationStat } from "./FileExplorer";
 
 export { FileExplorerWrapper } from "./FileExplorerWrapper";
 export type { FileExplorerWrapperProps, TapisFileEntry, TapisSelectMode } from "./FileExplorerWrapper";
