@@ -25,6 +25,10 @@ drive on their own:
   `fileStats` map from its own per-file annotation/mask maps, so counts and flag
   indicators next to each filename stay current as you annotate, and the
   "Annotated" / "Flagged" filters work without any extra wiring.
+- **Selection kept in sync both ways.** Clicking an annotation in the details
+  panel pans the canvas until it is centred; selecting one on the canvas scrolls
+  the matching row into view in the panel. Only the list-to-canvas direction
+  moves the view, so clicking on the canvas never shifts what you are looking at.
 - **A label armed for new annotations.** The details panel's label picker is
   connected to the canvas's `defaultLabel`, so choosing (or typing) a label up
   front makes every new box or mask take it without a prompt.

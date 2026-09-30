@@ -121,6 +121,30 @@ By default a new annotation opens a prompt asking for its label. Pass a
 label immediately. Pair it with `@icicle-ai/annotation-details`, whose
 `onActiveDrawLabelChange` is designed to feed it.
 
+## Bringing an annotation into view
+
+`focusRequest={{ id, nonce }}` pans the canvas until that annotation sits in the
+middle of the viewport. The zoom level is left alone. `nonce` is what triggers
+the pan — pass a new one on every request, so selecting the same annotation again
+after panning away recentres it:
+
+```tsx
+const [focusRequest, setFocusRequest] = useState(null);
+const nonce = useRef(0);
+
+// ...from your annotation list's onClick, not from the canvas's own onSelection:
+setFocusRequest({ id: annotationId, nonce: ++nonce.current });
+```
+
+Raise it only for selections made *outside* the canvas. Recentring after a click
+on the canvas would move the view out from under the user, who is already looking
+at the thing they clicked.
+
+The canvas asks the engine where an annotation is via the optional
+`getCenter(annotation)` method; both bundled engines implement it (box centre for
+detection, bounding-box centre for segmentation). A custom engine that omits it
+simply won't recentre.
+
 ## Writing a custom engine
 
 An engine is a plain object implementing `CanvasEngine<T>` — it owns mouse
@@ -139,7 +163,7 @@ for reference implementations.
 | `CanvasMode` | `NONE \| DRAWING \| EDIT \| SAM3_CLICK \| SAM3_TEXT` |
 | `BaseAnnotation`, `Annotation`, `SegmentationAnnotation` | Annotation shapes |
 | `getLabelColor`, `LABEL_PALETTE` | Deterministic per-label color assignment |
-| `ImageCanvasProps` | Props type, including `defaultLabel` |
+| `ImageCanvasProps` | Props type, including `defaultLabel` and `focusRequest` |
 
 ## Local development (inside this monorepo)
 

@@ -418,6 +418,10 @@ export const detectionEngine: CanvasEngine<Annotation> = {
       return { ...pending, label };
    },
 
+   getCenter(box) {
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+   },
+
    runSam3Text(textPrompts, ctx) {
       ctx.setIsSam3Loading(true);
       ctx.sam3Client

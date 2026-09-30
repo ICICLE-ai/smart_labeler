@@ -107,6 +107,16 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
    const [annotatorConfig, setAnnotatorConfig] = useState<AnnotatorConfig | null>(null);
    // Label armed in the details panel: new annotations take it without prompting.
    const [activeDrawLabel, setActiveDrawLabel] = useState<string | null>(null);
+   // Asks the canvas to pan an annotation into the middle of the view. Only raised
+   // for selections made in the details panel — selecting on the canvas already
+   // has the user looking at the right place, and moving the view then would be
+   // disorienting. The reverse direction (canvas -> list) is handled by the
+   // details panel, which scrolls its own selected row into view.
+   const [focusRequest, setFocusRequest] = useState<{ id: string; nonce: number } | null>(null);
+   const focusNonce = useRef(0);
+   const requestCanvasFocus = (id?: string) => {
+      if (id) setFocusRequest({ id, nonce: ++focusNonce.current });
+   };
    const [isDemo, setIsDemo] = useState(false);
    const [isAdmin, setIsAdmin] = useState(false);
    const [isConfigLoading, setIsConfigLoading] = useState(true);
@@ -538,7 +548,7 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
            annotations: segmentationMasks,
            selectedBoxId: selectedMaskId,
            selectedBoxIds: selectedMaskIds,
-           onSelectedBoxChange: (id: string) => setSelectedMaskId(id),
+           onSelectedBoxChange: (id: string) => { setSelectedMaskId(id); requestCanvasFocus(id); },
            onSelectedBoxIdsChange: (ids: string[]) => { setSelectedMaskIds(ids); if (ids.length > 0) setSelectedMaskId(undefined); },
            onAnnotationUpdate: handleMaskUpdate,
            deleteAnnotations: deleteMasks,
@@ -550,7 +560,7 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
            annotations: boundingBoxes,
            selectedBoxId,
            selectedBoxIds,
-           onSelectedBoxChange: (id: string) => setSelectedBoxId(id),
+           onSelectedBoxChange: (id: string) => { setSelectedBoxId(id); requestCanvasFocus(id); },
            onSelectedBoxIdsChange: (ids: string[]) => { setSelectedBoxIds(ids); if (ids.length > 0) setSelectedBoxId(undefined); },
            onAnnotationUpdate: handleBoundingBoxUpdate,
            deleteAnnotations: deleteBoxes,
@@ -728,6 +738,7 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
                      tapisToken={tapisToken}
                      sam3Endpoint={sam3Endpoint}
                      defaultLabel={activeDrawLabel ?? undefined}
+                     focusRequest={focusRequest}
                   />
                ) : isConfigLoading ? (
                   <Box sx={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center", mt: 10, gap: 2 }}>

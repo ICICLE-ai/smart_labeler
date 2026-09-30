@@ -8,7 +8,7 @@ import {
    Paper,
    TextField,
 } from "@mui/material";
-import { TransformComponent, TransformWrapper } from "react-zoom-pan-pinch";
+import { TransformComponent, TransformWrapper, type ReactZoomPanPinchRef } from "react-zoom-pan-pinch";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Controls from "./Controls";
 import { MAX_SCALE, SAM3_MODES } from "./utils";
@@ -28,7 +28,15 @@ export type { Annotation, SegmentationAnnotation, BaseAnnotation, CanvasEngine, 
 export { detectionEngine } from "./engines/detectionEngine";
 export { segmentationEngine } from "./engines/segmentationEngine";
 
-const SCROLL_STEP = 100;
+// Wheel zoom increment. react-zoom-pan-pinch only consults this when its `smooth`
+// option is off; by default it scales by `smoothStep * |deltaY|` instead, so this
+// value is currently unused. It is kept at a sane magnitude regardless — the
+// previous 100 would have jumped straight from minScale to maxScale on a single
+// wheel notch the moment anything turned `smooth` off.
+const SCROLL_STEP = 0.2;
+
+/** How long the pan takes when recentring on an annotation, in ms. */
+const CENTER_ANIMATION_MS = 250;
 
 interface ImageCanvasProps<T extends BaseAnnotation> {
    /** Strategy that makes the canvas detection- or segmentation-aware. */
@@ -69,6 +77,15 @@ interface ImageCanvasProps<T extends BaseAnnotation> {
     * keep prompting for a label per annotation.
     */
    defaultLabel?: string;
+   /**
+    * Asks the canvas to bring one annotation into the middle of the view, without
+    * changing the zoom level. `nonce` is what triggers it, so selecting the same
+    * annotation again after panning away recentres it; pass a new nonce each time.
+    * Meant for selections made outside the canvas (e.g. an annotation list) —
+    * recentring on a selection the user made *on* the canvas would yank the view
+    * out from under them.
+    */
+   focusRequest?: { id: string; nonce: number } | null;
 }
 
 function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) {
@@ -317,6 +334,51 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
    useEffect(() => { draw(); }, [draw]);
 
    // ---------------------------------------------------------------------------
+   // Bring a requested annotation to the middle of the viewport
+   // ---------------------------------------------------------------------------
+   const centerOnAnnotation = useCallback((id: string) => {
+      const api = transformContainerRef.current as ReactZoomPanPinchRef | null;
+      const canvas = canvasRef.current;
+      const target = annotations.find((a) => a.id === id);
+      const center = target && engine.getCenter?.(target);
+      const wrapper = api?.instance.wrapperComponent;
+      if (!api || !canvas || !center || !wrapper) return;
+
+      // Work in screen coordinates and apply the difference, so this stays correct
+      // whatever the current zoom, pan and layout are.
+      const canvasRect = canvas.getBoundingClientRect();
+      const wrapperRect = wrapper.getBoundingClientRect();
+      const annScreenX = canvasRect.left + (center.x / canvas.width) * canvasRect.width;
+      const annScreenY = canvasRect.top + (center.y / canvas.height) * canvasRect.height;
+      const dx = wrapperRect.left + wrapperRect.width / 2 - annScreenX;
+      const dy = wrapperRect.top + wrapperRect.height / 2 - annScreenY;
+      if (dx === 0 && dy === 0) return;
+
+      const { positionX, positionY, scale } = api.instance.transformState;
+      api.setTransform(positionX + dx, positionY + dy, scale, CENTER_ANIMATION_MS);
+
+      // The wrapper clips the content, so the above is enough to put the
+      // annotation in the middle of it. A tall image can still leave the wrapper
+      // itself scrolled out of the surrounding pane, so bring that into view too.
+      const pane = parentRef.current;
+      if (pane && wrapper.offsetHeight > pane.clientHeight) {
+         pane.scrollTo({
+            top: wrapper.offsetTop + wrapper.offsetHeight / 2 - pane.clientHeight / 2,
+            behavior: "smooth",
+         });
+      }
+   }, [annotations, engine]);
+
+   const focusNonce = props.focusRequest?.nonce;
+   useEffect(() => {
+      const id = props.focusRequest?.id;
+      if (id) centerOnAnnotation(id);
+      // Keyed on the nonce alone: re-selecting the same annotation must recentre,
+      // and an unrelated re-render must not.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, [focusNonce]);
+
+   // ---------------------------------------------------------------------------
    // Mouse dispatch – delegates to the engine
    // ---------------------------------------------------------------------------
    const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => engine.onMouseDown?.(getCanvasCoordinates(e), buildContext());
@@ -418,8 +480,17 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
                         onShowLabelsChange={(v) => setShowLabels(v)}
                      />
                      <TransformComponent
-                        wrapperStyle={{ width: "100%", height: "auto" }}
-                        contentStyle={{ width: "100%", height: "auto", display: "block" }}
+                        // react-zoom-pan-pinch ships the layout rules its own maths
+                        // depends on in a stylesheet it injects at import time, and
+                        // anything that drops that stylesheet silently breaks zooming
+                        // rather than erroring. Most importantly `transform-origin`
+                        // falls back to the CSS default of 50% 50%, while the library
+                        // positions the content as if the origin were the top-left —
+                        // so a wheel-zoom anchors on the middle of the image instead
+                        // of the pointer. Pinning both values inline keeps the canvas
+                        // correct regardless of whether that stylesheet is present.
+                        wrapperStyle={{ width: "100%", height: "auto", overflow: "hidden", position: "relative" }}
+                        contentStyle={{ width: "100%", height: "auto", display: "block", transformOrigin: "0% 0%" }}
                      >
                         {(graphEnabled && props.graph) ? props.graph : (
                            <canvas
