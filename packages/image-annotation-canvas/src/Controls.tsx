@@ -7,16 +7,27 @@ import SsidChartIcon from '@mui/icons-material/SsidChart';
 import ImageIcon from '@mui/icons-material/Image';
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 import { Box, Button, ButtonGroup, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Divider, IconButton, MenuItem, Switch, TextField, Tooltip, Typography } from "@mui/material";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useControls } from "react-zoom-pan-pinch";
 import { SAM3_MODES } from "./utils";
+
+/**
+ * The mutually exclusive canvas tools this toolbar owns.
+ *
+ * Deliberately one value rather than a boolean per tool. Each tool used to report
+ * through its own callback, so switching between two of them fired both — and
+ * whichever effect React happened to run last decided the canvas mode. Going from
+ * Edit to Draw therefore lit the Draw icon while leaving the canvas in NONE, and
+ * the only way out was to click twice. One value cannot disagree with itself.
+ */
+export type CanvasTool = "none" | "draw" | "edit" | "sam3";
 
 const Controls = (props: {
    isEditable: boolean;
    isDrawing: boolean;
-   handleDrawingStateChange: (isDrawing: boolean) => void;
    isEnableBoxEdit: boolean;
-   handleEnableBoxEditChange: (isEnableBoxEdit: boolean) => void;
+   /** Fired once per tool change, with the single tool now active. */
+   onToolChange: (tool: CanvasTool) => void;
    isGraphEnabled?: boolean;
    handleDisplayTypeSwitch?: (type: string) => void;
    handleSAM3BoxPrediction?: (mode: string, sam3Prediction: boolean, labelValue?: string, textPrompts?: string[], isSAHIenabled?: boolean, patchSize?: number, detectionConfidence?: number, maskPrecision?: number) => void;
@@ -39,10 +50,13 @@ const Controls = (props: {
    };
    const lineWidthLabel = currentLineWidth === 2 ? "Thin" : currentLineWidth === 4 ? "Normal" : "Thick";
 
-   const [isDrawing, setIsDrawing] = useState(props.isDrawing);
-   const [isEnableBoxEdit, setIsEnableBoxEdit] = useState(props.isEnableBoxEdit);
+   const [tool, setTool] = useState<CanvasTool>(
+      props.isDrawing ? "draw" : props.isEnableBoxEdit ? "edit" : "none"
+   );
+   const isDrawing = tool === "draw";
+   const isEnableBoxEdit = tool === "edit";
+   const isSAM3 = tool === "sam3";
    const [inGraphMode, setInGraphMode] = useState(false);
-   const [isSAM3, setIsSAM3] = useState(false);
    const [openDialog, setOpenDialog] = useState(false);
    const [labelValue, setLabelValue] = useState("");
    const [mode, setMode] = useState<SAM3_MODES>(SAM3_MODES.SINGLE_CLICK);
@@ -52,13 +66,14 @@ const Controls = (props: {
    const [detectionConfidence, setDetectionConfidence] = useState<number>(0.3);
    const [maskPrecision, setMaskPrecision] = useState<number>(0.3);
 
+   // Skips the very first run so mounting does not re-assert a mode the parent
+   // already holds.
+   const reportedTool = useRef(tool);
    useEffect(() => {
-      props.handleDrawingStateChange(isDrawing);
-   }, [isDrawing]);
-
-   useEffect(() => {
-      props.handleEnableBoxEditChange(isEnableBoxEdit);
-   }, [isEnableBoxEdit]);
+      if (reportedTool.current === tool) return;
+      reportedTool.current = tool;
+      props.onToolChange(tool);
+   }, [tool]);
 
    useEffect(() => {
       if (props.onResetAllControls) {
@@ -67,18 +82,14 @@ const Controls = (props: {
    }, [props.onResetAllControls]);
 
    const resetAllControls = () => {
-      setIsDrawing(false);
-      setIsEnableBoxEdit(false);
+      setTool("none");
       setInGraphMode(false);
-      setIsSAM3(false);
       setOpenDialog(false);
       setLabelValue("");
       setTextPrompts([]);
       setPatchSize(640);
       setDetectionConfidence(0.3);
       setMaskPrecision(0.3);
-      props.handleDrawingStateChange(false);
-      props.handleEnableBoxEditChange(false);
       props.handleSAM3BoxPrediction?.("", false);
    };
 
@@ -145,10 +156,10 @@ const Controls = (props: {
             <Tooltip
                title="Draw"
                onClick={() => {
-                  setIsDrawing(!isDrawing);
-                  setIsEnableBoxEdit(false);
-                  setIsSAM3(false);
-                  props.handleSAM3BoxPrediction && props.handleSAM3BoxPrediction("", false);
+                  // Leaving SAM3 has to be announced separately: it carries config
+                  // the tool channel does not.
+                  if (isSAM3) props.handleSAM3BoxPrediction?.("", false);
+                  setTool((prev) => (prev === "draw" ? "none" : "draw"));
                }}
             >
                <IconButton
@@ -165,10 +176,8 @@ const Controls = (props: {
             <Tooltip
                title="Edit Box"
                onClick={() => {
-                  setIsEnableBoxEdit(prev => !prev);
-                  setIsDrawing(false);
-                  setIsSAM3(false);
-                  props.handleSAM3BoxPrediction && props.handleSAM3BoxPrediction("", false);
+                  if (isSAM3) props.handleSAM3BoxPrediction?.("", false);
+                  setTool((prev) => (prev === "edit" ? "none" : "edit"));
                }}
             >
                <IconButton
@@ -187,8 +196,7 @@ const Controls = (props: {
                onClick={() => {
                   resetTransform();
                   setInGraphMode(true);
-                  setIsDrawing(false);
-                  setIsEnableBoxEdit(false);
+                  setTool("none");
                   props.handleDisplayTypeSwitch && props.handleDisplayTypeSwitch('GRAPH');
                }}
             >
@@ -370,7 +378,7 @@ const Controls = (props: {
                <Button
                   onClick={() => {
                      setOpenDialog(false);
-                     setIsSAM3(false);
+                     setTool((prev) => (prev === "sam3" ? "none" : prev));
                      props.handleSAM3BoxPrediction && props.handleSAM3BoxPrediction(mode, false, "", [], false, 640, 0.3, 0.3);
                      setLabelValue("");
                      setTextPrompts([]);
@@ -379,9 +387,7 @@ const Controls = (props: {
                   Exit
                </Button>
                <Button variant="contained" onClick={() => {
-                  setIsSAM3(true);
-                  setIsDrawing(false);
-                  setIsEnableBoxEdit(false);
+                  setTool("sam3");
                   props.handleSAM3BoxPrediction && props.handleSAM3BoxPrediction(mode, true, labelValue, textPrompts, isSAHIenabled, patchSize, detectionConfidence, maskPrecision);
                   setOpenDialog(false);
                }}>

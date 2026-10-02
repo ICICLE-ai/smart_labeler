@@ -153,7 +153,7 @@ import { TapisDirectoryField } from "@icicle-ai/tapis-file-explorer";
 |---|---|
 | `FileExplorer` | The main paginated browser panel |
 | `FileExplorerWrapper` | Lower-level Tapis directory listing UI (used inside the modal) |
-| `FileSelectModalWrapper` | Modal wrapping `FileExplorerWrapper` with a Select button |
+| `FileSelectModalWrapper` | Modal wrapping `FileExplorerWrapper` with a Select button. Pass `zIndex` to stack it above a host dialog — Mantine's default (200) sits below a MUI Dialog (1300) |
 | `TapisDirectoryField` | Formik text field + Browse button, opens the modal |
 | `SubmitButton` | Tiny Mantine button that calls `formik.submitForm()` |
 | `FileAnnotationStat` | `{ count: number; flagged: boolean }` — one entry of the `fileStats` map |

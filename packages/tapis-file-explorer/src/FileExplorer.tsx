@@ -28,7 +28,10 @@ import { Formik } from "formik";
 import { Group, Select } from "@mantine/core";
 import { SubmitButton } from "./SubmitButton";
 import { TapisDirectoryField } from "./TapisDirectoryField";
-import { allowed_systems, DEFAULT_SYSTEM, getDirContentsFromTapis, getImage, sanitizePath } from "./tapisClient";
+import { allowed_systems, DEFAULT_SYSTEM, getDirContentsFromTapis, getImage, sanitizePath, describeTapisFailure, TapisError } from "./tapisClient";
+import Alert from "@mui/material/Alert";
+import AlertTitle from "@mui/material/AlertTitle";
+import Collapse from "@mui/material/Collapse";
 
 const PAGE_SIZE: number = 15;
 
@@ -41,6 +44,10 @@ export interface FileAnnotationStat {
    count: number;
    /** Whether any of them carries a flag. */
    flagged: boolean;
+   /** Distinct labels present on this file, for the label filter. */
+   labels?: string[];
+   /** Distinct flags present on this file, for the flag filter. */
+   flags?: string[];
 }
 
 /** The file-list filters, in the order they appear in the UI. */
@@ -171,6 +178,12 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
    // Active file-list filters. Both on = only files that are annotated *and*
    // flagged (a flagged file is necessarily annotated, so that's just "flagged").
    const [filters, setFilters] = useState<FileFilter[]>([]);
+   // Narrow further to files carrying particular labels / flags. Empty = no narrowing.
+   const [labelFilter, setLabelFilter] = useState<string[]>([]);
+   const [flagFilter, setFlagFilter] = useState<string[]>([]);
+   const [showMoreFilters, setShowMoreFilters] = useState(false);
+   // Why the last directory load failed, shown in place of a silently empty list.
+   const [loadError, setLoadError] = useState<string | null>(null);
 
    const statFor = (filePath: string): FileAnnotationStat | undefined => fileStats?.get(filePath);
 
@@ -182,22 +195,46 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
     * what the parent was told about and what annotations are keyed by.
     */
    const visibleFiles = useMemo(() => {
-      if (filters.length === 0) return files;
+      const narrowing = filters.length > 0 || labelFilter.length > 0 || flagFilter.length > 0;
+      if (!narrowing) return files;
       return files.filter((f) => {
          const stat = statFor(f);
          if (filters.includes("annotated") && !(stat && stat.count > 0)) return false;
          if (filters.includes("flagged") && !stat?.flagged) return false;
+         // Label / flag filters are "any of", so picking two labels widens rather
+         // than narrows — which is what a set of chips reads as.
+         if (labelFilter.length > 0 && !labelFilter.some((l) => stat?.labels?.includes(l))) return false;
+         if (flagFilter.length > 0 && !flagFilter.some((fl) => stat?.flags?.includes(fl))) return false;
          return true;
       });
       // fileStats is replaced (not mutated) by the consumer whenever annotations
       // change, so its identity is a correct dependency.
-   }, [files, filters, fileStats]);
+   }, [files, filters, labelFilter, flagFilter, fileStats]);
+
+   // Every label / flag present somewhere in the directory currently listed.
+   const { allLabels, allFlags } = useMemo(() => {
+      const labels = new Set<string>();
+      const flags = new Set<string>();
+      for (const f of files) {
+         const stat = statFor(f);
+         stat?.labels?.forEach((l) => labels.add(l));
+         stat?.flags?.forEach((fl) => flags.add(fl));
+      }
+      return { allLabels: [...labels].sort(), allFlags: [...flags].sort() };
+   }, [files, fileStats]);
+
+   const toggleIn = (setter: React.Dispatch<React.SetStateAction<string[]>>) => (value: string) =>
+      setter((prev) => (prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value]));
+   const toggleLabel = toggleIn(setLabelFilter);
+   const toggleFlag = toggleIn(setFlagFilter);
+   const clearAllFilters = () => { setFilters([]); setLabelFilter([]); setFlagFilter([]); };
+   const anyFilterActive = filters.length > 0 || labelFilter.length > 0 || flagFilter.length > 0;
 
    const toggleFilter = (filter: FileFilter) =>
       setFilters((prev) => (prev.includes(filter) ? prev.filter((f) => f !== filter) : [...prev, filter]));
 
    // A filter change shrinks the list, so an out-of-range page would show nothing.
-   useEffect(() => { setPage(1); }, [filters]);
+   useEffect(() => { setPage(1); }, [filters, labelFilter, flagFilter]);
 
    const pagedFiles = useMemo(() => {
       const start = (page - 1) * PAGE_SIZE;
@@ -343,6 +380,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
       const cached = dirCacheRef.current.get(dirPath);
       if (cached) {
          if (navId !== navCounterRef.current) return; // superseded while we checked the cache
+         setLoadError(null);
          setFiles(cached.files);
          setDirs(cached.dirs);
          filesInDirectory(cached.files, sys, isRootReset);
@@ -354,6 +392,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
       }
 
       setPageLoading(true);
+      setLoadError(null);
       try {
          const res = await getDirContentsFromTapis(
             sanitizePath(dirPath),
@@ -373,7 +412,18 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
          setCurrentPath(dirPath);
          onDone?.();
       } catch (err) {
-         if (navId === navCounterRef.current) console.error("Error fetching directory contents:", err);
+         if (navId === navCounterRef.current) {
+            console.error("Error fetching directory contents:", err);
+            setLoadError(
+               err instanceof TapisError
+                  ? err.message
+                  : describeTapisFailure({ system: sys, path: dirPath, action: "list this folder", raw: String(err) })
+            );
+            // Leave the previous listing in place rather than blanking the panel:
+            // the message says what failed, and the user keeps their context.
+            setFiles([]);
+            setDirs([]);
+         }
       } finally {
          if (navId === navCounterRef.current) setPageLoading(false);
       }
@@ -550,6 +600,21 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
             </Box>
          )}
 
+         {/* Why the last load failed. Sits above the list so it reads as a reply to
+             the Get Images / navigation action that just happened. */}
+         {loadError && (
+            <Alert
+               severity="error"
+               onClose={() => setLoadError(null)}
+               sx={{ m: 1, alignItems: "flex-start", "& .MuiAlert-message": { minWidth: 0 } }}
+            >
+               <AlertTitle sx={{ fontSize: "0.82rem", fontWeight: 700 }}>Could not load this folder</AlertTitle>
+               <Box sx={{ fontSize: "0.78rem", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                  {loadError}
+               </Box>
+            </Alert>
+         )}
+
          {/* Floating load indicator — sits above the scrollable list */}
          {pageLoading && (
             <LinearProgress
@@ -595,15 +660,81 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                      sx={{ fontSize: "0.7rem", height: 22 }}
                   />
                </Tooltip>
-               {filters.length > 0 && (
+               {(allLabels.length > 0 || allFlags.length > 0) && (
+                  <Chip
+                     label={showMoreFilters ? "Fewer ▲" : "By label / flag ▾"}
+                     size="small"
+                     variant={labelFilter.length || flagFilter.length ? "filled" : "outlined"}
+                     color={labelFilter.length || flagFilter.length ? "primary" : "default"}
+                     onClick={() => setShowMoreFilters((v) => !v)}
+                     sx={{ fontSize: "0.68rem", height: 22 }}
+                  />
+               )}
+               {anyFilterActive && (
                   <Chip
                      label="Clear"
                      size="small"
                      variant="outlined"
-                     onClick={() => setFilters([])}
+                     onClick={clearAllFilters}
                      sx={{ fontSize: "0.68rem", height: 22, color: "text.secondary" }}
                   />
                )}
+
+               <Collapse in={showMoreFilters} sx={{ width: "100%" }}>
+                  <Box sx={{ pt: 0.75 }}>
+                     {allLabels.length > 0 && (
+                        <>
+                           <Typography variant="caption" sx={{ display: "block", color: "text.secondary", fontWeight: 700 }}>
+                              Labels
+                           </Typography>
+                           <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, mb: 0.75 }}>
+                              {allLabels.map((label) => {
+                                 const active = labelFilter.includes(label);
+                                 const count = files.filter((f) => statFor(f)?.labels?.includes(label)).length;
+                                 return (
+                                    <Tooltip key={label} title={`${count} image${count !== 1 ? "s" : ""} with "${label}"`}>
+                                       <Chip
+                                          label={label}
+                                          size="small"
+                                          variant={active ? "filled" : "outlined"}
+                                          color={active ? "primary" : "default"}
+                                          onClick={() => toggleLabel(label)}
+                                          sx={{ fontSize: "0.68rem", height: 22 }}
+                                       />
+                                    </Tooltip>
+                                 );
+                              })}
+                           </Box>
+                        </>
+                     )}
+                     {allFlags.length > 0 && (
+                        <>
+                           <Typography variant="caption" sx={{ display: "block", color: "text.secondary", fontWeight: 700 }}>
+                              Flags
+                           </Typography>
+                           <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
+                              {allFlags.map((flag) => {
+                                 const active = flagFilter.includes(flag);
+                                 const count = files.filter((f) => statFor(f)?.flags?.includes(flag)).length;
+                                 return (
+                                    <Tooltip key={flag} title={`${count} image${count !== 1 ? "s" : ""} flagged "${flag}"`}>
+                                       <Chip
+                                          icon={<FlagIcon sx={{ fontSize: "0.75rem !important" }} />}
+                                          label={flag.replace(/_/g, " ")}
+                                          size="small"
+                                          variant={active ? "filled" : "outlined"}
+                                          color={active ? "warning" : "default"}
+                                          onClick={() => toggleFlag(flag)}
+                                          sx={{ fontSize: "0.68rem", height: 22 }}
+                                       />
+                                    </Tooltip>
+                                 );
+                              })}
+                           </Box>
+                        </>
+                     )}
+                  </Box>
+               </Collapse>
             </Box>
          )}
 
@@ -678,9 +809,9 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                   {files.length > 0 ? (
                      <>
                         <Typography variant="body2" align="center" color="text.disabled">
-                           None of the {files.length} image{files.length !== 1 ? "s" : ""} here match the active filter.
+                           None of the {files.length} image{files.length !== 1 ? "s" : ""} here match the active filters.
                         </Typography>
-                        <Chip label="Clear filters" size="small" variant="outlined" onClick={() => setFilters([])} />
+                        <Chip label="Clear filters" size="small" variant="outlined" onClick={clearAllFilters} />
                      </>
                   ) : (
                      <Typography variant="body2" align="center" color="text.disabled">
@@ -838,7 +969,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                <Typography variant="caption" color="text.disabled">
                   {(page - 1) * PAGE_SIZE + 1}–
                   {Math.min(page * PAGE_SIZE, visibleFiles.length)} of {visibleFiles.length}
-                  {filters.length > 0 && ` (of ${files.length})`}
+                  {anyFilterActive && ` (of ${files.length})`}
                </Typography>
                <Pagination
                   count={pageCount}

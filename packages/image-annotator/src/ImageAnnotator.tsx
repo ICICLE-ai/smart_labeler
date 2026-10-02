@@ -9,7 +9,14 @@ import {
    type CanvasEngine,
 } from "@icicle-ai/image-annotation-canvas";
 import { AnnotationDetails, type DetailsVariant } from "@icicle-ai/annotation-details";
-import { CircularProgress, Drawer, Grid, Box, Button, LinearProgress, Typography } from "@mui/material";
+import {
+   CircularProgress, Drawer, Grid, Box, Button, LinearProgress, Typography,
+   Dialog, DialogTitle, DialogContent, DialogActions, Chip, Alert, Divider,
+} from "@mui/material";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
+import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
+import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import { Tools } from "./Tools";
 import {
    downloadFile,
@@ -17,6 +24,7 @@ import {
    importFromCocoJsonUtil,
    importFromDefaultJsonUtil,
    joinUnderDir,
+   buildFileIndexResolver,
    mergeDetectionForSave,
    toRelativeFilename,
 } from "./detectionIO";
@@ -26,6 +34,7 @@ import {
    importSegmentationJson,
    importSegmentationFromCoco,
 } from "./segmentationIO";
+import { humanizeServerText } from "@icicle-ai/tapis-file-explorer";
 import {
    type AnnotatorConfig,
    fetchAnnotatorConfigs,
@@ -35,7 +44,179 @@ import {
    updateAnnotatorConfig,
    fetchAnnotationFileText,
    saveAnnotationFile,
+   type SaveAnnotationResult,
 } from "./backendClient";
+
+/**
+ * Turns a failed save into something the user can act on. The common case is a
+ * 403: Tapis accepted the request but the user has no write access to that
+ * directory, which no amount of retrying will fix — they need to be told to pick
+ * somewhere else. Saying only "failed to save" sends people back to re-check a
+ * path that was never the problem.
+ */
+function describeSaveFailure(result: SaveAnnotationResult, dir: string, system: string): string {
+   // The backend forwards Tapis's raw error body, which is a JSON envelope around
+   // a Java stack trace. Shown as-is it is unreadable; reduce it to its sentence,
+   // or drop it entirely when there is nothing human in there.
+   const detail = humanizeServerText(result.detail);
+   const suffix = detail ? `\n\nServer said: ${detail}` : "";
+
+   switch (result.status) {
+      case 403:
+         return (
+            `You do not have permission to save here:\n\n` +
+            `    ${dir}\n    on ${system}\n\n` +
+            `Your account can read this system but cannot write to that folder. ` +
+            `Use "Save As" to browse to a folder you own, or ask the system's ` +
+            `owner for write access.${suffix}`
+         );
+      case 401:
+         return (
+            `Your session is no longer valid, so the annotations were not saved. ` +
+            `Sign in again and retry — your work is still here in the browser.${suffix}`
+         );
+      case 404:
+         return (
+            `That folder does not exist on ${system}:\n\n    ${dir}\n\n` +
+            `Check the path, or use "Save As" to browse to an existing folder.${suffix}`
+         );
+      case 507:
+         return `There is not enough space left on ${system} to save the annotations.${suffix}`;
+      default:
+         return (
+            `Could not save the annotations to ${dir} on ${system}` +
+            (result.status ? ` (HTTP ${result.status})` : " — the server could not be reached") +
+            `.${suffix}`
+         );
+   }
+}
+
+/** What an import produced, for the summary shown afterwards. */
+interface ImportOutcome {
+   ok: boolean;
+   /**
+    * Totals read from the FILE, not from what happened to match. An import is not
+    * smaller because some of its images live in folders that are not open yet —
+    * reporting zeroes there made a perfectly good file look like it had failed.
+    */
+   images: number;
+   annotations: number;
+   labels: string[];
+   /** How much of the above is live on the images currently loaded. */
+   appliedImages: number;
+   appliedAnnotations: number;
+   /** Set when nothing could be imported at all. */
+   error?: string;
+   /** Set when the file looks like the other format. */
+   formatHint?: string;
+   /** A couple of image paths as written in the file, for diagnosing a non-match. */
+   samplePathsInFile?: string[];
+   /** A couple of image paths the explorer has actually loaded. */
+   sampleLoadedPaths?: string[];
+   /**
+    * Full paths of the folders holding the images that did not match. Opening
+    * these in the File Explorer is the action that resolves an unmatched import,
+    * and without naming them the user has no way to know which of a deep tree of
+    * folders to go and open.
+    */
+   foldersToOpen?: string[];
+}
+
+/** First few image paths as spelled inside an annotation document. */
+function samplePaths(json: any, isCoco: boolean, limit = 3): string[] {
+   const raw: string[] = isCoco
+      ? (json?.images ?? []).map((i: any) => i?.file_name)
+      : Array.isArray(json?.files)
+         ? json.files.map((f: any) => f?.filename)                  // segmentation
+         : (json?.annotations ?? []).map((a: any) => a?.image_path); // detection
+   return [...new Set(raw.filter((p): p is string => typeof p === "string"))].slice(0, limit);
+}
+
+/**
+ * Folders the user still needs to open, derived from the entries that matched no
+ * loaded image. Returned as full paths so they can be pasted straight into the
+ * Source Image Directory field.
+ */
+function foldersAwaitingLoad(
+   json: any,
+   isCoco: boolean,
+   files: string[],
+   srcImgDir: string,
+   limit = 5,
+): string[] {
+   const resolve = buildFileIndexResolver(files, srcImgDir);
+   const folders = new Set<string>();
+   for (const rel of samplePaths(json, isCoco, Number.MAX_SAFE_INTEGER)) {
+      if (resolve(rel) !== undefined) continue;
+      const full = joinUnderDir(rel, srcImgDir);
+      const slash = full.lastIndexOf("/");
+      folders.add(slash > 0 ? full.slice(0, slash) : full);
+      if (folders.size >= limit) break;
+   }
+   return [...folders];
+}
+
+const readFileText = (file: Blob): Promise<string> =>
+   new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+         const text = e.target?.result;
+         typeof text === "string" ? resolve(text) : reject(new Error("file could not be read as text"));
+      };
+      reader.onerror = () => reject(reader.error ?? new Error("file could not be read"));
+      reader.readAsText(file);
+   });
+
+/** True when the document carries COCO's distinctive top-level arrays. */
+const looksLikeCoco = (json: any): boolean =>
+   Array.isArray(json?.images) && Array.isArray(json?.annotations) && Array.isArray(json?.categories);
+
+/** True when the document is the simpler flat-annotation format. */
+const looksLikeDefaultJson = (json: any): boolean =>
+   Array.isArray(json?.annotations) && json.annotations.some((a: any) => a?.image_path !== undefined);
+
+/** Everything the file contains, independent of which folders happen to be open. */
+function fileTotals(json: any, isCoco: boolean, isSegmentation: boolean) {
+   const labels = new Set<string>();
+   let images = 0;
+   let annotations = 0;
+
+   if (isCoco) {
+      images = new Set((json?.images ?? []).map((i: any) => i?.file_name).filter(Boolean)).size;
+      const categoryName = new Map((json?.categories ?? []).map((c: any) => [c?.id, c?.name]));
+      for (const a of json?.annotations ?? []) {
+         annotations++;
+         const name = categoryName.get(a?.category_id);
+         if (typeof name === "string") labels.add(name);
+      }
+   } else if (isSegmentation) {
+      const entries = json?.files ?? [];
+      images = new Set(entries.map((f: any) => f?.filename).filter(Boolean)).size;
+      for (const f of entries) {
+         for (const m of f?.masks ?? []) {
+            annotations++;
+            if (m?.label) labels.add(m.label);
+         }
+      }
+   } else {
+      const entries = json?.annotations ?? [];
+      images = new Set(entries.map((a: any) => a?.image_path).filter(Boolean)).size;
+      for (const a of entries) {
+         annotations++;
+         if (a?.class) labels.add(a.class);
+      }
+   }
+   return { images, annotations, labels: [...labels].sort() };
+}
+
+/** How much of the file is live on the images currently loaded. */
+function appliedTotals(
+   applied: Map<string, { annotations?: Array<unknown>; masks?: Array<unknown> }>,
+): { appliedImages: number; appliedAnnotations: number } {
+   let appliedAnnotations = 0;
+   applied.forEach((fa) => { appliedAnnotations += (fa.annotations ?? fa.masks ?? []).length; });
+   return { appliedImages: applied.size, appliedAnnotations };
+}
 
 // Pipeline "type" value that switches the whole component into segmentation
 // mode. Any other value (including unset) falls back to detection.
@@ -122,7 +303,23 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
    const [isConfigLoading, setIsConfigLoading] = useState(true);
    const [isAnnotationsLoading, setIsAnnotationsLoading] = useState(false);
    const [isImageLoading, setIsImageLoading] = useState(false);
+   // True between the explorer telling us which file was picked and the image
+   // bytes arriving. The previous image stays on screen during that gap, so
+   // without this there is nothing to say a new one is coming.
+   const [isImageFetching, setIsImageFetching] = useState(false);
+   // Result of the most recent import, shown until dismissed.
+   const [importSummary, setImportSummary] = useState<ImportOutcome | null>(null);
    const annotationsAutoLoaded = useRef(false);
+   /**
+    * Set as soon as the user starts an import of their own.
+    *
+    * The automatic load of the configured annotation file retries with backoff, so
+    * it can still be in flight several seconds after the page settles. Its
+    * continuation replaces annotations per image path, so a file imported during
+    * that window was silently overwritten the moment the slow fetch landed — the
+    * import appeared to work and then simply undid itself.
+    */
+   const userImportedRef = useRef(false);
    const firstImageLoadedRef = useRef(false);
    // Stores the parsed annotation JSON after auto-load so we can apply it to
    // files that arrive later (subfolder navigation grows the file list after
@@ -156,9 +353,14 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
    // reflected beside the filename immediately.
    const fileStats = useMemo(() => {
       const stats = new Map<string, FileAnnotationStat>();
-      const record = (path: string, items: Array<{ flag?: string }>) => {
+      const record = (path: string, items: Array<{ label?: string; flag?: string }>) => {
          if (items.length === 0) return;
-         stats.set(path, { count: items.length, flagged: items.some((i) => Boolean(i.flag)) });
+         stats.set(path, {
+            count: items.length,
+            flagged: items.some((i) => Boolean(i.flag)),
+            labels: [...new Set(items.map((i) => i.label).filter(Boolean) as string[])],
+            flags: [...new Set(items.map((i) => i.flag).filter(Boolean) as string[])],
+         });
       };
       if (isSegmentation) {
          fileToMasksMap.forEach((fa, path) => record(path, fa.masks));
@@ -211,38 +413,61 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
 
    // ── Auto-load annotations once files + config are ready ──
    useEffect(() => {
+      // Older configs have no annotationSystem; those files sit on the image system.
+      const annotationSystem = annotatorConfig?.annotationSystem || annotatorConfig?.system;
       if (
          annotationsAutoLoaded.current ||
          files.length === 0 ||
          !annotatorConfig?.annotationFilePath ||
-         !annotatorConfig?.system ||
+         !annotationSystem ||
          !tapisToken
       ) return;
       annotationsAutoLoaded.current = true;
       setIsAnnotationsLoading(true);
       // Retry with backoff — the first /get_file hit regularly fails while the
       // backend/Tapis is cold and image prefetches saturate the connection pool.
-      fetchAnnotationFileText(pipeid, annotatorConfig.system, annotatorConfig.annotationFilePath, tapisToken)
+      fetchAnnotationFileText(pipeid, annotationSystem, annotatorConfig.annotationFilePath, tapisToken)
          .then((text) => {
+            // The user imported their own file while this was in flight. Theirs wins.
+            if (userImportedRef.current) {
+               console.info("Skipping the configured annotation file: a file was imported manually.");
+               return;
+            }
             let parsed: any;
             try { parsed = JSON.parse(text); } catch { throw new Error("annotation file is not valid JSON"); }
-            const isCoco = isSegmentation
-               ? (Array.isArray(parsed?.images) && Array.isArray(parsed?.annotations))
-               : annotatorConfig.fileType === "coco";
+            // The file's own shape decides the format. The stored fileType is only a
+            // hint, and when the two disagreed the import bailed out silently and
+            // every annotation vanished with nothing said — which is what happens
+            // after saving in a new format if the config write does not land.
+            const isCoco = looksLikeCoco(parsed)
+               ? true
+               : looksLikeDefaultJson(parsed) || (isSegmentation && Array.isArray(parsed?.files))
+                  ? false
+                  : annotatorConfig.fileType === "coco";
+            if (!isSegmentation && isCoco !== (annotatorConfig.fileType === "coco")) {
+               console.warn(
+                  `Annotation file at ${annotatorConfig.annotationFilePath} is ${isCoco ? "COCO" : "default"} JSON, ` +
+                  `but the pipeline has it recorded as ${annotatorConfig.fileType}. Using the file's actual format.`
+               );
+            }
             pendingAnnotationDataRef.current = { json: parsed, isCoco, isSegmentation };
             const file = new File([text], "annotations.json", { type: "application/json" });
             if (isSegmentation) {
-               importSegmentationAnnotationsFromJson(file);
+               importSegmentationAnnotationsFromJson(file, false);
             } else {
-               importDetectionAnnotationsFromJson(file, annotatorConfig.fileType === "coco");
+               // `isCoco` above was detected from the file itself, not the stored
+               // fileType, so a config that disagrees with the file no longer
+               // silently discards every annotation.
+               importDetectionAnnotationsFromJson(file, isCoco, false);
             }
          })
          .catch((e) => {
+            console.error("Failed to auto-load annotations:", e);
+            if (userImportedRef.current) return;   // the user supplied their own
             // Un-burn the one-shot flag so a later files/config change retries,
             // instead of a transient failure silently skipping the saved
             // annotations for the whole session.
             annotationsAutoLoaded.current = false;
-            console.error("Failed to auto-load annotations:", e);
             alert("Failed to load saved annotations. Reload the page to retry.");
          })
          .finally(() => setIsAnnotationsLoading(false));
@@ -286,13 +511,24 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
    // Config upsert
    // ────────────────────────────────────────────────────────────────────────
 
+   /**
+    * Records which annotation format is in play, so the Save As dialog opens on it.
+    * Only updates an existing config — importing a file is not a reason to create
+    * one, and a half-populated config would confuse the auto-load on next visit.
+    */
+   const rememberFileType = (coco: boolean) => {
+      const fileType = coco ? "coco" : "default";
+      if (!annotatorConfig?.id || annotatorConfig.fileType === fileType) return;
+      upsertAnnotatorConfig({ fileType });
+   };
+
    const upsertAnnotatorConfig = async (updates: Partial<AnnotatorConfig>) => {
       if (!tapisToken || (isDemo && !isAdmin)) return;
       if (annotatorConfig?.id) {
          await updateAnnotatorConfig(annotatorConfig.id, updates, tapisToken);
          setAnnotatorConfig((prev) => prev ? { ...prev, ...updates } : null);
       } else {
-         const payload = { system: "", srcImgDir: "", annotationFilePath: "", fileType: "default", ...updates };
+         const payload = { system: "", srcImgDir: "", annotationFilePath: "", fileType: "default", annotationSystem: "", ...updates };
          const created = await createAnnotatorConfig(pipeid, payload, tapisToken);
          if (created) setAnnotatorConfig(created);
       }
@@ -311,6 +547,10 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
       if (file) {
          if (!firstImageLoadedRef.current) setIsImageLoading(true);
          setSelectedFile(file);
+         setIsImageFetching(false);
+      } else {
+         // Path-only notification: the explorer has started fetching the image.
+         setIsImageFetching(true);
       }
       setSelectedMaskId(undefined);
    };
@@ -329,7 +569,10 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
    // so exporting needs no flush step.
    const updateDetectionMapForCurrentFile = () => fileToAnnotationsMap;
 
-   const generateDetectionJson = (coco: boolean, save: boolean, dir: string, sys: string) => {
+   // Resolves to true when the file was actually written (or downloaded), so the
+   // toolbar can tell a real save from a refused one and not repoint the
+   // annotator config at a file that was never created.
+   const generateDetectionJson = async (coco: boolean, save: boolean, dir: string, sys: string): Promise<boolean> => {
       const updatedMap = updateDetectionMapForCurrentFile();
       const srcDir = annotatorConfig?.srcImgDir ?? "";
       // Key live annotations by path relative to srcImgDir, then overlay them on
@@ -341,60 +584,121 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
          ? pendingAnnotationDataRef.current : null;
       const json = mergeDetectionForSave(liveRel, baseline?.json ?? null, baseline?.isCoco ?? false, srcDir, coco, files);
       if (save && dir) {
-         if (isDemo) { alert("Demo mode: Saving is disabled."); return; }
+         if (isDemo) { alert("Demo mode: Saving is disabled."); return false; }
          return saveAnnotationFile(sys, dir, JSON.stringify(json, null, 2), tapisToken)
-            .then((ok) => {
-               alert(ok
-                  ? `Annotations saved successfully to ${dir}`
-                  : `Failed to save annotations to ${dir}. Please check the path and try again.`);
-            })
-            .catch((err) => {
-               console.error("Error saving annotations:", err);
-               alert("Error saving annotations. Please try again.");
+            .then((result) => {
+               if (result.ok) {
+                  alert(`Annotations saved successfully to ${dir}`);
+                  return true;
+               }
+               console.error("Failed to save annotations:", result);
+               alert(describeSaveFailure(result, dir, sys));
+               return false;
             });
       } else {
          downloadFile(JSON.stringify(json, null, 2), coco ? "annotations.coco.json" : "annotations.json");
       }
+      return true;
    };
 
-   const importDetectionAnnotationsFromJson = (file: File | Blob, coco: boolean) => {
+   /**
+    * @param announce  Show the result dialog. False for the automatic load that
+    *   happens when a pipeline is opened — that is not something the user asked
+    *   for, and popping a summary over it every time would be noise.
+    */
+   const importDetectionAnnotationsFromJson = async (
+      file: File | Blob,
+      coco: boolean,
+      announce = true,
+   ): Promise<void> => {
       if (!(file instanceof Blob)) return;
-      const reader = new FileReader();
-      reader.onload = (event) => {
-         const json = event.target?.result;
-         if (typeof json !== "string") return;
-         try {
-            const parsed = JSON.parse(json);
-            // Keep a copy so the re-apply effect can match newly-discovered files later.
-            pendingAnnotationDataRef.current = { json: parsed, isCoco: coco, isSegmentation: false };
-            // Utils return index-keyed maps — convert to path-keyed for stable storage
-            const srcDir = annotatorConfig?.srcImgDir ?? "";
-            const importedIndexMap = coco
-               ? importFromCocoJsonUtil(parsed, files, srcDir)
-               : importFromDefaultJsonUtil(parsed, files, srcDir);
-            const importedMap = indexMapToPathMap(importedIndexMap, files);
-            // Functional update: this runs long after the closure was created
-            // (fetch + FileReader), so merging into `prev` — not a captured map —
-            // keeps concurrent edits/size writes from being clobbered.
-            setFileToAnnotationsMap((prev) => {
-               const merged = new Map(prev);
-               importedMap.forEach((imported, path) => {
-                  const existing = merged.get(path);
-                  // Replace-per-path: an imported file overwrites that file's
-                  // annotations instead of appending, so re-importing the same file
-                  // is idempotent. Existing metadata (width/height) is preserved.
-                  merged.set(path, existing
-                     ? { ...existing, annotations: imported.annotations }
-                     : imported
-                  );
-               });
-               return merged;
+      // Claimed before any awaiting, so a slow automatic load already in flight
+      // cannot land on top of this import.
+      if (announce) userImportedRef.current = true;
+      try {
+         const parsed = JSON.parse(await readFileText(file));
+
+         // Picking the wrong format in the dialog used to "succeed" and produce
+         // annotations with undefined labels, which is far worse than refusing.
+         if (coco && !looksLikeCoco(parsed) && looksLikeDefaultJson(parsed)) {
+            if (!announce) console.error("Automatic load aborted: expected COCO, file is default JSON.");
+            if (announce) setImportSummary({
+               ok: false, images: 0, annotations: 0, labels: [], appliedImages: 0, appliedAnnotations: 0,
+               error: "This file is not in COCO format.",
+               formatHint: "It looks like the simpler Default JSON format — reopen Import and choose Default JSON.",
             });
-         } catch (e) {
-            console.error("Failed to parse detection JSON:", e);
+            return;
          }
-      };
-      reader.readAsText(file);
+         if (!coco && !looksLikeDefaultJson(parsed) && looksLikeCoco(parsed)) {
+            if (!announce) console.error("Automatic load aborted: expected default JSON, file is COCO.");
+            if (announce) setImportSummary({
+               ok: false, images: 0, annotations: 0, labels: [], appliedImages: 0, appliedAnnotations: 0,
+               error: "This file is not in Default JSON format.",
+               formatHint: "It looks like COCO — reopen Import and choose COCO JSON.",
+            });
+            return;
+         }
+         if (!Array.isArray(parsed?.annotations)) {
+            if (announce) setImportSummary({
+               ok: false, images: 0, annotations: 0, labels: [], appliedImages: 0, appliedAnnotations: 0,
+               error: "This file has no \"annotations\" list, so there is nothing to import.",
+            });
+            return;
+         }
+
+         // Keep a copy so the re-apply effect can match newly-discovered files later.
+         pendingAnnotationDataRef.current = { json: parsed, isCoco: coco, isSegmentation: false };
+         // Remember the format so Save As opens on the one actually in use.
+         // Previously only an explicit save recorded this, so a session that
+         // imported COCO was still offered "Default JSON" by default.
+         rememberFileType(coco);
+         // Utils return index-keyed maps — convert to path-keyed for stable storage
+         const srcDir = annotatorConfig?.srcImgDir ?? "";
+         const importedIndexMap = coco
+            ? importFromCocoJsonUtil(parsed, files, srcDir)
+            : importFromDefaultJsonUtil(parsed, files, srcDir);
+         const importedMap = indexMapToPathMap(importedIndexMap, files);
+         // Functional update: this runs long after the closure was created
+         // (fetch + FileReader), so merging into `prev` — not a captured map —
+         // keeps concurrent edits/size writes from being clobbered.
+         setFileToAnnotationsMap((prev) => {
+            const merged = new Map(prev);
+            importedMap.forEach((imported, path) => {
+               const existing = merged.get(path);
+               // Replace-per-path: an imported file overwrites that file's
+               // annotations instead of appending, so re-importing the same file
+               // is idempotent. Existing metadata (width/height) is preserved.
+               merged.set(path, existing
+                  ? { ...existing, annotations: imported.annotations }
+                  : imported
+               );
+            });
+            return merged;
+         });
+         const stats = { ...fileTotals(parsed, coco, false), ...appliedTotals(importedMap) };
+         if (announce) setImportSummary({
+            ok: true,
+            ...stats,
+            // Only gathered when nothing landed, which is the only time it is shown.
+            // Gathered whenever anything failed to match, not only on a total miss:
+            // a partially-applied import leaves the rest just as stranded.
+            ...(stats.appliedAnnotations < stats.annotations || stats.annotations === 0
+               ? {
+                    samplePathsInFile: samplePaths(parsed, coco),
+                    sampleLoadedPaths: files.slice(0, 3),
+                    foldersToOpen: foldersAwaitingLoad(parsed, coco, files, srcDir),
+                 }
+               : {}),
+         });
+      } catch (e) {
+         console.error("Failed to import detection annotations:", e);
+         if (announce) setImportSummary({
+            ok: false, images: 0, annotations: 0, labels: [], appliedImages: 0, appliedAnnotations: 0,
+            error: e instanceof SyntaxError
+               ? "That file is not valid JSON, so it could not be read."
+               : `The file could not be read: ${e instanceof Error ? e.message : String(e)}`,
+         });
+      }
    };
 
    // ────────────────────────────────────────────────────────────────────────
@@ -405,7 +709,10 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
    // so exporting needs no flush step.
    const updateSegmentationMapForCurrentFile = () => fileToMasksMap;
 
-   const generateSegmentationJson = (coco: boolean, save: boolean, dir: string, sys: string) => {
+   // Resolves to true when the file was actually written (or downloaded), so the
+   // toolbar can tell a real save from a refused one and not repoint the
+   // annotator config at a file that was never created.
+   const generateSegmentationJson = async (coco: boolean, save: boolean, dir: string, sys: string): Promise<boolean> => {
       const updatedMap = updateSegmentationMapForCurrentFile();
       const srcDir = annotatorConfig?.srcImgDir ?? "";
       // Overlay live masks on the imported baseline so masks for folders that were
@@ -416,59 +723,89 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
          ? pendingAnnotationDataRef.current : null;
       const json = mergeSegmentationForSave(liveRel, baseline?.json ?? null, baseline?.isCoco ?? false, srcDir, coco, files);
       if (save && dir) {
-         if (isDemo) { alert("Demo mode: Saving is disabled."); return; }
+         if (isDemo) { alert("Demo mode: Saving is disabled."); return false; }
          return saveAnnotationFile(sys, dir, JSON.stringify(json, null, 2), tapisToken)
-            .then((ok) => {
-               alert(ok
-                  ? `Segmentation saved successfully to ${dir}`
-                  : `Failed to save segmentation to ${dir}. Please check the path and try again.`);
-            })
-            .catch((err) => {
-               console.error("Error saving segmentation:", err);
-               alert("Error saving segmentation. Please try again.");
+            .then((result) => {
+               if (result.ok) {
+                  alert(`Segmentation saved successfully to ${dir}`);
+                  return true;
+               }
+               console.error("Failed to save segmentation:", result);
+               alert(describeSaveFailure(result, dir, sys));
+               return false;
             });
       } else {
          downloadFile(JSON.stringify(json, null, 2), coco ? "segmentation.coco.json" : "segmentation.json");
       }
+      return true;
    };
 
-   const importSegmentationAnnotationsFromJson = (file: File | Blob) => {
+   const importSegmentationAnnotationsFromJson = async (
+      file: File | Blob,
+      announce = true,
+   ): Promise<void> => {
       if (!(file instanceof Blob)) return;
-      const reader = new FileReader();
-      reader.onload = (event) => {
-         const json = event.target?.result;
-         if (typeof json !== "string") return;
-         try {
-            const parsed = JSON.parse(json);
-            const isCoco = Array.isArray(parsed?.images) && Array.isArray(parsed?.annotations);
-            // Keep a copy so the re-apply effect can match newly-discovered files later.
-            pendingAnnotationDataRef.current = { json: parsed, isCoco, isSegmentation: true };
-            const srcDir = annotatorConfig?.srcImgDir ?? "";
-            const importedMap = isCoco
-               ? importSegmentationFromCoco(parsed, files, srcDir)
-               : importSegmentationJson(parsed, files, srcDir);
-            // Functional update: this runs long after the closure was created
-            // (fetch + FileReader), so merging into `prev` — not a captured map —
-            // keeps concurrent edits/size writes from being clobbered.
-            setFileToMasksMap((prev) => {
-               const merged = new Map(prev);
-               importedMap.forEach((imported, path) => {
-                  const existing = merged.get(path);
-                  // Replace-per-path: an imported file overwrites that file's masks
-                  // instead of appending, so re-importing the same file is idempotent.
-                  // Existing metadata (width/height) is preserved.
-                  merged.set(path, existing
-                     ? { ...existing, masks: imported.masks }
-                     : imported
-                  );
-               });
-               return merged;
+      // Claimed before any awaiting, so a slow automatic load already in flight
+      // cannot land on top of this import.
+      if (announce) userImportedRef.current = true;
+      try {
+         const parsed = JSON.parse(await readFileText(file));
+         const isCoco = Array.isArray(parsed?.images) && Array.isArray(parsed?.annotations);
+         // Masks arrive either as COCO annotations or as this app's own
+         // { files: [{ masks: [...] }] } shape; anything else has nothing to read.
+         if (!isCoco && !Array.isArray(parsed?.files)) {
+            if (announce) setImportSummary({
+               ok: false, images: 0, annotations: 0, labels: [], appliedImages: 0, appliedAnnotations: 0,
+               error: "This file contains no segmentation masks, so there is nothing to import.",
             });
-         } catch (e) {
-            console.error("Failed to parse segmentation JSON:", e);
+            return;
          }
-      };
-      reader.readAsText(file);
+
+         // Keep a copy so the re-apply effect can match newly-discovered files later.
+         pendingAnnotationDataRef.current = { json: parsed, isCoco, isSegmentation: true };
+         rememberFileType(isCoco);
+         const srcDir = annotatorConfig?.srcImgDir ?? "";
+         const importedMap = isCoco
+            ? importSegmentationFromCoco(parsed, files, srcDir)
+            : importSegmentationJson(parsed, files, srcDir);
+         // Functional update: this runs long after the closure was created
+         // (fetch + FileReader), so merging into `prev` — not a captured map —
+         // keeps concurrent edits/size writes from being clobbered.
+         setFileToMasksMap((prev) => {
+            const merged = new Map(prev);
+            importedMap.forEach((imported, path) => {
+               const existing = merged.get(path);
+               // Replace-per-path: an imported file overwrites that file's masks
+               // instead of appending, so re-importing the same file is idempotent.
+               // Existing metadata (width/height) is preserved.
+               merged.set(path, existing
+                  ? { ...existing, masks: imported.masks }
+                  : imported
+               );
+            });
+            return merged;
+         });
+         const segStats = { ...fileTotals(parsed, isCoco, true), ...appliedTotals(importedMap as any) };
+         if (announce) setImportSummary({
+            ok: true,
+            ...segStats,
+            ...(segStats.appliedAnnotations < segStats.annotations || segStats.annotations === 0
+               ? {
+                    samplePathsInFile: samplePaths(parsed, isCoco),
+                    sampleLoadedPaths: files.slice(0, 3),
+                    foldersToOpen: foldersAwaitingLoad(parsed, isCoco, files, srcDir),
+                 }
+               : {}),
+         });
+      } catch (e) {
+         console.error("Failed to import segmentation annotations:", e);
+         if (announce) setImportSummary({
+            ok: false, images: 0, annotations: 0, labels: [], appliedImages: 0, appliedAnnotations: 0,
+            error: e instanceof SyntaxError
+               ? "That file is not valid JSON, so it could not be read."
+               : `The file could not be read: ${e instanceof Error ? e.message : String(e)}`,
+         });
+      }
    };
 
    // ────────────────────────────────────────────────────────────────────────
@@ -501,8 +838,33 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
    const activeConfig = (pipelineType && MODE_CONFIG[pipelineType]) || DETECTION_CONFIG;
 
    const handleImageLoaded = () => {
+      setIsImageFetching(false);
       if (!firstImageLoadedRef.current) { firstImageLoadedRef.current = true; setIsImageLoading(false); }
    };
+
+   /**
+    * What the middle of the screen should say while nothing is drawable yet.
+    * Opening a pipeline kicks off a chain — config, then the directory listing,
+    * then the first image — and every step of it used to look identical to
+    * "nothing selected", so the app appeared to be doing nothing for seconds.
+    */
+   const canvasBusyMessage: string | null = isConfigLoading
+      ? "Loading your configuration…"
+      : annotatorConfig?.srcImgDir && files.length === 0
+         ? `Loading images from ${annotatorConfig.srcImgDir}…`
+         : isAnnotationsLoading
+            ? "Loading saved annotations…"
+            : isImageFetching || isImageLoading
+               ? "Loading image…"
+               : null;
+
+   /**
+    * Draw attention to the File Explorer tab while there is nothing on the canvas.
+    * It is a thin strip on the left edge and people did not realise it was the way
+    * in — they would sit watching an empty workspace while their images loaded.
+    * Stops as soon as the drawer is open or an image is showing.
+    */
+   const hintFileExplorer = !openFileExplorer && !selectedFile;
 
    const handleFilterAnnotations = (s: number, labels: string[], flags: string[]) => {
       setScore(s);
@@ -555,6 +917,7 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
            handleFilterAnnotations,
            activeDrawLabel,
            onActiveDrawLabelChange: setActiveDrawLabel,
+           imageKey: selectedFilePath,
         }
       : {
            annotations: boundingBoxes,
@@ -567,6 +930,7 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
            handleFilterAnnotations,
            activeDrawLabel,
            onActiveDrawLabelChange: setActiveDrawLabel,
+           imageKey: selectedFilePath,
         };
 
    // ────────────────────────────────────────────────────────────────────────
@@ -602,10 +966,62 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
                textTransform: "none",
                whiteSpace: "nowrap",
                "&:hover": { background: "primary.light", borderColor: "primary.main" },
+
+               // Pulse outward from the tab so the eye is pulled to the left edge.
+               // Honours the OS "reduce motion" setting, where a steady highlight
+               // is used instead of a repeating animation.
+               "@keyframes explorerPulse": {
+                  "0%":   { boxShadow: "0 0 0 0 rgba(25,118,210,0.55)" },
+                  "70%":  { boxShadow: "0 0 0 14px rgba(25,118,210,0)" },
+                  "100%": { boxShadow: "0 0 0 0 rgba(25,118,210,0)" },
+               },
+               ...(hintFileExplorer && {
+                  animation: "explorerPulse 1.9s ease-out infinite",
+                  borderColor: "primary.main",
+                  background: "#e8f1fc",
+                  "@media (prefers-reduced-motion: reduce)": {
+                     animation: "none",
+                     boxShadow: "0 0 0 3px rgba(25,118,210,0.35)",
+                  },
+               }),
             }}
          >
             File Explorer
          </Button>
+
+         {/* One-line nudge beside the pulsing tab, so the animation is explained
+             rather than just decorative. */}
+         {hintFileExplorer && (
+            <Box
+               sx={{
+                  position: "fixed",
+                  top: 126,
+                  left: 34,
+                  zIndex: (theme) => theme.zIndex.drawer + 1,
+                  pointerEvents: "none",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 0.75,
+                  px: 1.25,
+                  py: 0.5,
+                  borderRadius: "999px",
+                  bgcolor: "rgba(25,118,210,0.94)",
+                  color: "#fff",
+                  fontSize: "0.72rem",
+                  fontWeight: 600,
+                  whiteSpace: "nowrap",
+                  boxShadow: 3,
+                  "@keyframes explorerHintIn": {
+                     from: { opacity: 0, transform: "translateX(-6px)" },
+                     to:   { opacity: 1, transform: "translateX(0)" },
+                  },
+                  animation: "explorerHintIn 0.35s ease-out both",
+               }}
+            >
+               <ArrowBackIcon sx={{ fontSize: "0.9rem" }} />
+               {canvasBusyMessage ? "Loading images — open to browse" : "Open the File Explorer to pick an image"}
+            </Box>
+         )}
 
          {/* ── File Explorer drawer ── */}
          <Drawer
@@ -641,17 +1057,25 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
                fileDir={annotatorConfig?.srcImgDir}
                parentSystem={annotatorConfig?.system}
                onDirectorySubmit={(!isDemo || isAdmin) ? (srcImgDir, sys) => {
-                  // Full reset: new root directory means stale annotation paths may
-                  // be invalid. Displayed annotations are derived from the maps, so
-                  // clearing the maps clears the canvas.
+                  // The per-file maps are keyed by the old root's paths, so they go.
+                  // Displayed annotations are derived from them, which clears the canvas.
                   setFileToAnnotationsMap(new Map());
                   setFileToMasksMap(new Map());
                   setSelectedBoxId(undefined);
                   setSelectedMaskId(undefined);
                   setSelectedFile(null);
                   setSelectedFilePath(null);
-                  annotationsAutoLoaded.current = false;
-                  pendingAnnotationDataRef.current = null;
+
+                  // An imported annotation file is NOT discarded here. One file
+                  // routinely covers several sibling folders, and pointing the
+                  // explorer at the next one is exactly how a user reaches the rest
+                  // of it — throwing the import away at that moment silently lost
+                  // everything they had just loaded. It is re-matched against the
+                  // new root by the re-apply effect below.
+                  //
+                  // The configured file's one-shot auto-load is only re-armed when
+                  // nothing is pending, so it cannot overwrite that fresh import.
+                  annotationsAutoLoaded.current = pendingAnnotationDataRef.current !== null;
                   upsertAnnotatorConfig({ srcImgDir, system: sys });
                } : undefined}
             />
@@ -679,16 +1103,23 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
                : importDetectionAnnotationsFromJson(file, false)
             }
             filesUploaded={files.length > 0}
-            onAnnotationSaved={(filePath, isCoco) => {
+            onAnnotationSaved={(filePath, isCoco, savedSystem) => {
                // Saving wrote the file from in-memory state, which is now the source
                // of truth. Mark auto-load done so this config change doesn't re-trigger
                // the auto-load effect (which would re-import and merge the just-saved
                // file back in, duplicating or dropping annotations).
                annotationsAutoLoaded.current = true;
-               upsertAnnotatorConfig({ annotationFilePath: filePath, fileType: isCoco ? "coco" : "default" });
+               // The system is recorded alongside the path. Without it the file was
+               // read back from whichever system the images are on, which is not
+               // necessarily where it was written.
+               upsertAnnotatorConfig({
+                  annotationFilePath: filePath,
+                  fileType: isCoco ? "coco" : "default",
+                  annotationSystem: savedSystem,
+               });
             }}
             annotationFilePath={annotatorConfig?.annotationFilePath}
-            annotationSystem={annotatorConfig?.system}
+            annotationSystem={annotatorConfig?.annotationSystem || annotatorConfig?.system}
             annotationIsCoco={annotatorConfig?.fileType === "coco"}
             annotationSrcImgDir={annotatorConfig?.srcImgDir}
             hideNextStep={isSegmentation}
@@ -719,7 +1150,31 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
 
          {/* ── Main layout ── */}
          <Grid container spacing={2} sx={{ overflow: "hidden" }}>
-            <Grid size={9}>
+            <Grid size={9} sx={{ position: "relative" }}>
+               {/* Centred progress. Overlays the canvas when one is already shown
+                   so switching images is visibly in progress, and fills the empty
+                   column during the initial load. */}
+               {canvasBusyMessage && (
+                  <Box
+                     sx={{
+                        position: "absolute",
+                        inset: 0,
+                        zIndex: 5,
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 2,
+                        pointerEvents: "none",
+                        backgroundColor: selectedFile ? "rgba(255,255,255,0.6)" : "transparent",
+                     }}
+                  >
+                     <CircularProgress size={52} thickness={4} />
+                     <Typography variant="body1" sx={{ color: "text.secondary", fontWeight: 500, textAlign: "center", px: 2 }}>
+                        {canvasBusyMessage}
+                     </Typography>
+                  </Box>
+               )}
                {selectedFile ? (
                   <ImageCanvas
                      engine={activeConfig.engine as CanvasEngine<any>}
@@ -740,11 +1195,10 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
                      defaultLabel={activeDrawLabel ?? undefined}
                      focusRequest={focusRequest}
                   />
-               ) : isConfigLoading ? (
-                  <Box sx={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center", mt: 10, gap: 2 }}>
-                     <CircularProgress size={48} />
-                     <Typography variant="body1" color="text.secondary">Loading your configuration…</Typography>
-                  </Box>
+               ) : canvasBusyMessage ? (
+                  // The overlay above is already showing progress; keep the column
+                  // reserved so it does not collapse to zero height.
+                  <Box sx={{ width: "100%", minHeight: "60vh" }} />
                ) : (
                   <Box sx={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center" }}>
                      <h2>No file selected</h2>
@@ -760,6 +1214,132 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
                <AnnotationDetails variant={activeConfig.detailsVariant} {...(detailsProps as any)} />
             </Grid>
          </Grid>
+
+         {/* ── Import result ──
+             An import used to finish in silence: the dialog closed and the user
+             had to go hunting through images to tell whether anything landed. ── */}
+         <Dialog
+            open={Boolean(importSummary)}
+            onClose={() => setImportSummary(null)}
+            maxWidth="xs"
+            fullWidth
+         >
+            <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+               {/* A file that parsed but matched nothing is not a success — saying
+                   "imported" with a tick over three zeros reads as a lie. */}
+               {!importSummary?.ok
+                  ? <ErrorOutlineIcon color="error" />
+                  : importSummary.annotations === 0
+                     ? <WarningAmberIcon color="warning" />
+                     : <CheckCircleOutlineIcon color="success" />}
+               {!importSummary?.ok
+                  ? "Import failed"
+                  : importSummary.annotations === 0
+                     ? "Nothing to import"
+                     : isSegmentation ? "Masks imported" : "Annotations imported"}
+            </DialogTitle>
+            <DialogContent>
+               {importSummary?.ok ? (
+                  <>
+                     <Box sx={{ display: "flex", gap: 1.5, mb: 2 }}>
+                        {([
+                           ["Images", importSummary.images],
+                           [isSegmentation ? "Masks" : "Annotations", importSummary.annotations],
+                           ["Labels", importSummary.labels.length],
+                        ] as const).map(([caption, value]) => (
+                           <Box
+                              key={caption}
+                              sx={{
+                                 flex: 1, textAlign: "center", py: 1.25, borderRadius: 1.5,
+                                 bgcolor: "action.hover", border: "1px solid", borderColor: "divider",
+                              }}
+                           >
+                              <Typography variant="h5" sx={{ fontWeight: 700, lineHeight: 1.1 }}>{value}</Typography>
+                              <Typography variant="caption" sx={{ color: "text.secondary" }}>{caption}</Typography>
+                           </Box>
+                        ))}
+                     </Box>
+
+                     {importSummary.labels.length > 0 && (
+                        <>
+                           <Typography variant="caption" sx={{ display: "block", mb: 0.75, color: "text.secondary", fontWeight: 700 }}>
+                              Label names
+                           </Typography>
+                           <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, mb: 1 }}>
+                              {importSummary.labels.map((l) => (
+                                 <Chip key={l} label={l} size="small" sx={{ fontWeight: 600 }} />
+                              ))}
+                           </Box>
+                        </>
+                     )}
+
+                     {importSummary.foldersToOpen && importSummary.foldersToOpen.length > 0 && (
+                        <Alert severity="info" sx={{ mt: 1.5 }}>
+                           <Typography variant="body2" sx={{ mb: 0.75 }}>
+                              Open {importSummary.foldersToOpen.length === 1 ? "this folder" : "these folders"} in
+                              the File Explorer and the remaining annotations will be applied:
+                           </Typography>
+                           <Box sx={{ fontFamily: "monospace", fontSize: "0.7rem", lineHeight: 1.7 }}>
+                              {importSummary.foldersToOpen.map((f) => (
+                                 <Box key={f} sx={{ wordBreak: "break-all" }}>{f}</Box>
+                              ))}
+                           </Box>
+                        </Alert>
+                     )}
+
+                     {importSummary.appliedAnnotations === 0 && (
+                        <Alert severity={importSummary.annotations === 0 ? "warning" : "info"} sx={{ mt: 1 }}>
+                           <Typography variant="body2" sx={{ mb: 1 }}>
+                              {importSummary.annotations === 0
+                                 ? "This file contains no annotations."
+                                 : "None of them are on the images you have open yet. The paths in the " +
+                                   "file are relative to the source image directory, so they have to " +
+                                   "line up folder for folder with what is loaded — compare the two below."}
+                           </Typography>
+                           {/* Both sides of the comparison, so the mismatch can be seen
+                               rather than guessed at. */}
+                           <Box sx={{ fontFamily: "monospace", fontSize: "0.7rem", lineHeight: 1.6 }}>
+                              <Box sx={{ fontWeight: 700 }}>Paths in the file:</Box>
+                              {(importSummary.samplePathsInFile?.length
+                                 ? importSummary.samplePathsInFile
+                                 : ["(none found)"]
+                              ).map((p) => <Box key={p} sx={{ wordBreak: "break-all" }}>{p}</Box>)}
+                              <Box sx={{ fontWeight: 700, mt: 0.75 }}>Images loaded:</Box>
+                              {(importSummary.sampleLoadedPaths?.length
+                                 ? importSummary.sampleLoadedPaths
+                                 : ["(none — open a folder containing images first)"]
+                              ).map((p) => <Box key={p} sx={{ wordBreak: "break-all" }}>{p}</Box>)}
+                           </Box>
+                        </Alert>
+                     )}
+
+                     {importSummary.annotations > 0 && (
+                        <>
+                           <Divider sx={{ my: 1.5 }} />
+                           <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                              {importSummary.appliedAnnotations === importSummary.annotations
+                                 ? "All of them are on images you have open."
+                                 : `${importSummary.appliedAnnotations} of ${importSummary.annotations} ` +
+                                   `${importSummary.annotations === 1 ? "is" : "are"} on images you have open. ` +
+                                   `The rest are held and applied automatically as you open the folders holding them — ` +
+                                   `nothing is lost, and saving keeps them all.`}
+                           </Typography>
+                        </>
+                     )}
+                  </>
+               ) : (
+                  <>
+                     <Typography variant="body2">{importSummary?.error}</Typography>
+                     {importSummary?.formatHint && (
+                        <Alert severity="info" sx={{ mt: 1.5 }}>{importSummary.formatHint}</Alert>
+                     )}
+                  </>
+               )}
+            </DialogContent>
+            <DialogActions>
+               <Button variant="contained" onClick={() => setImportSummary(null)}>Close</Button>
+            </DialogActions>
+         </Dialog>
       </>
    );
 };

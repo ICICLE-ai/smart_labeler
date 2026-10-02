@@ -61,6 +61,7 @@ export const initConfig = (env: RuntimeEnv) => {
 
 export const getBaseURL = () => _baseUrl;
 export const getSam3Endpoint = () => _sam3Endpoint;
+export const getTapisBaseURL = () => _tapisBase;
 export const getAnnotatorType = () => _annotatorType;
 
 // Full application title per annotator type. Falls back to the bare product
@@ -84,17 +85,45 @@ export const sanitizePath = (path: string): string =>
       .replace(/[\u200B\u200C\u200D\uFEFF\u200E\u200F\u2028\u2029]/g, "")
       .replace(/[\r\n\t]+/g, "");
 
+/**
+ * Statuses worth trying again. A cold backend answers 502/503 for the first
+ * request or two; 401/403/404 are definite answers and retrying only delays
+ * the real error.
+ */
+const TRANSIENT_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const RETRY_DELAYS_MS = [400, 1200];
+
+/**
+ * GET returning parsed JSON, or null.
+ *
+ * Retries transient failures. The dashboard's pipeline list used to go straight
+ * to "Failed to load pipelines" whenever the backend was still warming up, so
+ * the first one or two visits after an idle period always looked broken and the
+ * user had to reload.
+ */
 export const fetchAndReturnData = async (
    url: string,
    token: string | null,
 ): Promise<any> => {
-   const response = await fetch(`${_baseUrl}${url}`, {
-      headers: {
-         "Tapis-Token": token ?? "",
-      },
-   });
-   if (!response.ok) return null;
-   return response.json();
+   for (let attempt = 0; ; attempt++) {
+      let response: Response | null = null;
+      try {
+         response = await fetch(`${_baseUrl}${url}`, {
+            headers: { "Tapis-Token": token ?? "" },
+         });
+      } catch {
+         response = null;   // network-level failure; treated as transient
+      }
+
+      if (response?.ok) return response.json();
+
+      const retriable = response === null || TRANSIENT_STATUSES.has(response.status);
+      if (!retriable || attempt >= RETRY_DELAYS_MS.length) {
+         if (response && !response.ok) console.warn(`GET ${url} failed with ${response.status}`);
+         return null;
+      }
+      await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+   }
 };
 
 export function getC(cookiesH: string | null | undefined) {
@@ -157,16 +186,47 @@ export const SubmitData = async (
    return response.json();
 };
 
-export const DeleteData = async (url: string, token: string): Promise<any> => {
-   const response = await fetch(`${_baseUrl}${url}`, {
-      method: "DELETE",
-      headers: {
-         "Tapis-Token": token,
-         "Content-Type": "application/json",
-      },
-   });
-   if (!response.ok) return null;
-   return response.json();
+export interface DeleteResult {
+   ok: boolean;
+   status?: number;
+   /** Server's explanation, when it gave one. */
+   detail?: string;
+}
+
+/**
+ * DELETE that reports whether it worked. It used to return null on failure,
+ * which every caller treated the same as a successful empty body — so a refused
+ * delete looked exactly like a successful one.
+ */
+export const DeleteData = async (url: string, token: string): Promise<DeleteResult> => {
+   let response: Response;
+   try {
+      response = await fetch(`${_baseUrl}${url}`, {
+         method: "DELETE",
+         headers: {
+            "Tapis-Token": token,
+            "Content-Type": "application/json",
+         },
+      });
+   } catch (e) {
+      return { ok: false, detail: e instanceof Error ? e.message : String(e) };
+   }
+   if (response.ok) return { ok: true, status: response.status };
+
+   let detail: string | undefined;
+   try {
+      const text = await response.text();
+      try {
+         const body = JSON.parse(text);
+         const picked = body?.description ?? body?.message ?? body?.detail ?? body?.error;
+         detail = typeof picked === "string" ? picked : undefined;
+      } catch {
+         detail = text || undefined;
+      }
+   } catch {
+      /* no body */
+   }
+   return { ok: false, status: response.status, detail };
 };
 
 export const SubmitFile = async (

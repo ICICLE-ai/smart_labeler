@@ -232,7 +232,7 @@ const ConfigureClassification: React.FC = () => {
         setProposalMappings(updated);
     };
 
-    const handleSubmit = (values: any): void => {
+    const handleSubmit = async (values: any): Promise<void> => {
         if (isDemo) {
             alert("Demo mode: Job simulated successfully. This pipeline is for demonstration purposes — no real job was submitted.");
             navigate(`/object-detection/classification/${pipeid}`);
@@ -277,24 +277,23 @@ const ConfigureClassification: React.FC = () => {
             objectnessThreshold: objectnessThreshold,
         };
 
-        SubmitData(
-            `/object-classification/${pipeid}/${odId || 0}`,
-            submitPayload,
-            cookie["tapis-token"]["access_token"]
-        )
-            .then((res) => {
-                if (!res) {
-                    alert("Failed to submit classification configuration");
-                    return;
-                }
-                notifyJobSubmitted();
-                alert("Classification configuration submitted successfully");
-                navigate(`/object-detection/classification/${pipeid}`);
-            })
-            .catch((err) => {
-                console.error(err);
+        try {
+            const res = await SubmitData(
+                `/object-classification/${pipeid}/${odId || 0}`,
+                submitPayload,
+                cookie["tapis-token"]["access_token"]
+            );
+            if (!res) {
                 alert("Failed to submit classification configuration");
-            });
+                return;
+            }
+            notifyJobSubmitted();
+            alert("Classification configuration submitted successfully");
+            navigate(`/object-detection/classification/${pipeid}`);
+        } catch (err) {
+            console.error(err);
+            alert("Failed to submit classification configuration");
+        }
     };
 
     return (
@@ -335,7 +334,7 @@ const ConfigureClassification: React.FC = () => {
                         name: "Classification Job",
                         system: "",
                     }}
-                    onSubmit={(values) => handleSubmit(values)}
+                    onSubmit={async (values) => { await handleSubmit(values); }}
                 >
                     <form style={{ width: "100%" }}>
                         <Stack gap="lg">

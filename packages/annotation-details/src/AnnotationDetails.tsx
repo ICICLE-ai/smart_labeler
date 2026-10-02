@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import type { BaseAnnotation } from "./types";
 import {
    Box,
@@ -26,6 +26,8 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import FlagIcon from "@mui/icons-material/Flag";
 import FlagOutlinedIcon from "@mui/icons-material/FlagOutlined";
 import AddIcon from "@mui/icons-material/Add";
+import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
+import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import { TextField } from "@mui/material";
 import { applyNMS, getLabelColor } from "./utils";
 
@@ -123,6 +125,12 @@ interface AnnotationDetailsProps {
     * and on to the canvas's `defaultLabel`. Omit to hide the section entirely.
     */
    onActiveDrawLabelChange?: (label: string | null) => void;
+   /**
+    * Identifies the image being shown. Changing it re-arms the confidence slider
+    * for the new image; without it the panel cannot tell a new image apart from
+    * an edit to the current one.
+    */
+   imageKey?: string | null;
 }
 
 export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
@@ -137,6 +145,7 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
    handleFilterAnnotations,
    activeDrawLabel = null,
    onActiveDrawLabelChange,
+   imageKey = null,
 }) => {
    const config = VARIANT_CONFIG[variant];
 
@@ -152,7 +161,28 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
    const [activeLabels, setActiveLabels] = useState<string[]>([]);
    const [activeFlags, setActiveFlags] = useState<string[]>([]);
    const itemRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
-   const [confidence, setConfidence] = useState<number>(0.3);
+   /**
+    * Lowest score present on this image, which is where the confidence filter
+    * starts so that nothing is hidden on arrival.
+    *
+    * It used to default to a fixed 0.30. Detectors — and SAM3, whose own
+    * detection confidence is adjustable in its dialog — routinely return boxes
+    * below that, so an image could open looking empty, or missing most of its
+    * annotations, with no indication that a filter was responsible.
+    */
+   const scoreFloor = useMemo(() => {
+      const scored = annotations
+         .map((a) => a.score)
+         .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+      if (scored.length === 0) return 0;
+      // Rounded down to the slider's step so the lowest-scoring annotation is on
+      // the visible side of the threshold rather than exactly on it.
+      return Math.max(0, Math.floor(Math.min(...scored) * 100) / 100);
+   }, [annotations]);
+
+   const [confidence, setConfidence] = useState<number>(scoreFloor);
+   /** Cleared on every image change, so a manual threshold lasts only as long as the image it was set for. */
+   const confidenceTouched = useRef(false);
    const [nms, setNms] = useState<number>(0.95);
 
    // Flag options – starts with defaults, user can add more at runtime
@@ -161,6 +191,15 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
 
    // Free-text entry for a label that does not exist on any annotation yet.
    const [newLabelInput, setNewLabelInput] = useState<string>("");
+
+   /**
+    * Pending bulk deletion awaiting confirmation. Bulk deletes are irreversible
+    * and can wipe an entire session's work, so they never fire straight from a
+    * click — the dialog states exactly how many items will go and from where.
+    */
+   const [pendingBulkDelete, setPendingBulkDelete] = useState<
+      { kind: "label"; label: string } | { kind: "all" } | null
+   >(null);
 
    // Flag menu state
    const [flagMenuAnchor, setFlagMenuAnchor] = useState<null | HTMLElement>(null);
@@ -172,6 +211,18 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
    useEffect(() => {
       handleFilterAnnotations?.(confidence, activeLabels, activeFlags);
    }, [confidence, activeLabels, activeFlags]);
+
+   // A new image gets its own threshold; a deliberate one does not follow the user around.
+   useEffect(() => {
+      confidenceTouched.current = false;
+   }, [imageKey]);
+
+   // Track the floor until the slider is moved by hand. This also catches
+   // annotations that arrive after the image does — an async import, or a SAM3
+   // prediction returning something below the current threshold.
+   useEffect(() => {
+      if (!confidenceTouched.current) setConfidence(scoreFloor);
+   }, [scoreFloor, imageKey]);
 
    useEffect(() => {
       setSelectedId(selectedBoxId);
@@ -207,6 +258,26 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
    const deleteBoxes = (ids: string[]) => {
       setBoxes((prev) => prev.filter((a) => !ids.includes(a.id)));
       deleteAnnotations(ids);
+   };
+
+   const idsForBulkDelete = (): string[] => {
+      if (!pendingBulkDelete) return [];
+      return pendingBulkDelete.kind === "all"
+         ? boxes.map((b) => b.id)
+         : boxes.filter((b) => b.label === pendingBulkDelete.label).map((b) => b.id);
+   };
+
+   const confirmBulkDelete = () => {
+      const ids = idsForBulkDelete();
+      if (ids.length > 0) {
+         deleteBoxes(ids);
+         // Anything that was selected may have just been removed.
+         setSelectedIds([]);
+         setSelectedId(undefined);
+         onSelectedBoxIdsChange?.([]);
+         onSelectedBoxChange(undefined);
+      }
+      setPendingBulkDelete(null);
    };
 
    const deleteSelected = () => {
@@ -539,11 +610,16 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
                   {confidence.toFixed(2)}
                </Typography>
             </Stack>
+            <Typography variant="caption" sx={{ display: "block", mb: 0.5, color: "text.secondary" }}>
+               {confidenceTouched.current && confidence > scoreFloor
+                  ? `Hiding ${config.itemNoun}s scoring below ${confidence.toFixed(2)}.`
+                  : `Showing everything on this image (lowest score ${scoreFloor.toFixed(2)}).`}
+            </Typography>
             <Slider
                value={confidence}
                min={0} max={1} step={0.01}
                valueLabelDisplay="auto"
-               onChange={(_, v) => setConfidence(v as number)}
+               onChange={(_, v) => { confidenceTouched.current = true; setConfidence(v as number); }}
                size="small"
             />
             <Tooltip title={config.removeBelowTooltip(confidence.toFixed(2))}>
@@ -603,9 +679,23 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
                <Typography variant="subtitle1" fontWeight={700} sx={{ letterSpacing: 0.5, textTransform: "uppercase", fontSize: "0.78rem", color: "text.secondary" }}>
                   {config.listTitle}
                </Typography>
-               <Typography variant="caption" color="text.secondary">
-                  {visibleBoxes.length} / {boxes.length}
-               </Typography>
+               <Stack direction="row" spacing={0.5} alignItems="center">
+                  <Typography variant="caption" color="text.secondary">
+                     {visibleBoxes.length} / {boxes.length}
+                  </Typography>
+                  {boxes.length > 0 && (
+                     <Tooltip title={`Delete every ${config.itemNoun} on this image`}>
+                        <IconButton
+                           size="small"
+                           color="error"
+                           onClick={() => setPendingBulkDelete({ kind: "all" })}
+                           sx={{ p: 0.25 }}
+                        >
+                           <DeleteSweepIcon fontSize="small" />
+                        </IconButton>
+                     </Tooltip>
+                  )}
+               </Stack>
             </Stack>
 
             {/* Bulk action bar – visible when ≥1 item is multi-selected */}
@@ -675,6 +765,15 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
                                     color: "#fff",
                                  }}
                               />
+                              <Tooltip title={`Delete all "${label}" ${config.itemNoun}s on this image`}>
+                                 <IconButton
+                                    size="small"
+                                    onClick={(e) => { e.stopPropagation(); setPendingBulkDelete({ kind: "label", label }); }}
+                                    sx={{ p: 0.25, color: "rgba(255,255,255,0.85)", "&:hover": { color: "#fff", backgroundColor: "rgba(0,0,0,0.15)" } }}
+                                 >
+                                    <DeleteSweepIcon sx={{ fontSize: "1rem" }} />
+                                 </IconButton>
+                              </Tooltip>
                            </Box>
 
                            {/* Group items */}
@@ -844,6 +943,44 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
                Clear flag
             </MenuItem>
          </Menu>
+
+         {/* ── Bulk delete confirmation ──
+             Deliberately a blocking dialog with an exact count: these actions
+             cannot be undone and can discard an entire image's annotations. ── */}
+         <Dialog open={Boolean(pendingBulkDelete)} onClose={() => setPendingBulkDelete(null)} maxWidth="xs" fullWidth>
+            <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+               <WarningAmberIcon color="warning" />
+               {pendingBulkDelete?.kind === "all"
+                  ? `Delete all ${config.listTitle.toLowerCase()}?`
+                  : `Delete all "${pendingBulkDelete?.kind === "label" ? pendingBulkDelete.label : ""}"?`}
+            </DialogTitle>
+            <DialogContent>
+               <Typography variant="body2">
+                  {(() => {
+                     const n = idsForBulkDelete().length;
+                     const noun = `${config.itemNoun}${n === 1 ? "" : "s"}`;
+                     return pendingBulkDelete?.kind === "all"
+                        ? `This removes all ${n} ${noun} from the image currently open. Other images are not affected.`
+                        : `This removes ${n} ${noun} labelled "${pendingBulkDelete?.kind === "label" ? pendingBulkDelete.label : ""}" from the image currently open. Other labels and other images are not affected.`;
+                  })()}
+               </Typography>
+               <Typography variant="body2" sx={{ mt: 1.5, fontWeight: 700, color: "warning.dark" }}>
+                  This cannot be undone. The change is only written to disk when you save.
+               </Typography>
+            </DialogContent>
+            <DialogActions>
+               <Button onClick={() => setPendingBulkDelete(null)}>Cancel</Button>
+               <Button
+                  variant="contained"
+                  color="error"
+                  startIcon={<DeleteSweepIcon />}
+                  onClick={confirmBulkDelete}
+                  disabled={idsForBulkDelete().length === 0}
+               >
+                  Delete {idsForBulkDelete().length}
+               </Button>
+            </DialogActions>
+         </Dialog>
 
          {/* ── Bulk label edit dialog ── */}
          <Dialog open={bulkEditOpen} onClose={() => setBulkEditOpen(false)} maxWidth="xs" fullWidth>

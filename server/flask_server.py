@@ -236,7 +236,13 @@ def updatepipe(path: PipePath, body: PipelineUpdate):
 def deletepipe(path: PipePath):
     token, user = getAuth(request)
     test_pipe(path.pipe_id, user)
-    delete_pipeline(path.pipe_id, user)
+    try:
+        delete_pipeline(path.pipe_id, user)
+    except PipelineDeleteError as e:
+        # This used to return 200 "Pipeline deleted." no matter what happened, so a
+        # failed delete was indistinguishable from a successful one: the list simply
+        # still had the pipeline in it, with nothing said.
+        abort(409, description=e.message)
     return jsonify({"message": "Pipeline deleted."})
 
 
@@ -255,6 +261,9 @@ def get_annotator_config(path: PipePath):
             "srcImgDir": r["srcimgdir"],
             "annotationFilePath": r["annotationfilepath"],
             "fileType": r.get("filetype", "default"),
+            # Falls back to the image system so rows written before this column
+            # existed keep behaving exactly as they did.
+            "annotationSystem": r.get("annotationsystem") or r["system"],
             "parentPipelineId": r["parentpipelineid"],
         }
         for r in configs

@@ -39,6 +39,7 @@ import {
 } from "~/utils/utils";
 import { ModelSelector } from "~/components/ModelSelector/ModelSelector";
 import { usePipeline } from "~/context/PipelineContext";
+import { verifyJobPaths } from "~/utils/tapisAccess";
 
 interface FormValues {
   system: string;
@@ -239,7 +240,7 @@ const ConfigureDetectionJob: React.FC = () => {
   };
 
   // Handle form submission
-  const handleSubmit = (values: FormValues): void => {
+  const handleSubmit = async (values: FormValues): Promise<void> => {
     if (isDemo) {
       notifyJobSubmitted();
       alert("Demo mode: Job simulated successfully. This pipeline is for demonstration purposes — no real job was submitted.");
@@ -294,26 +295,39 @@ const ConfigureDetectionJob: React.FC = () => {
       submitPayload.overlap_ratio = parseFloat(sahiOverlapRatio) || 0.25;
     }
 
-    SubmitData(
-      `/object-detection/${pipeid}/${
-        currentConfigurationId ? currentConfigurationId : 0
-      }`,
-      submitPayload,
-      cookie["tapis-token"]["access_token"]
-    )
-      .then((res) => {
-        if (!res) {
-          alert("Failed to submit object detection job");
-          return;
-        }
-        notifyJobSubmitted();
-        alert("Object detection job submitted successfully");
-        navigate(`/object-detection/detection/${pipeid}`);
-      })
-      .catch((err) => {
-        console.error("Error submitting job:", err);
-        alert("Failed to submit object detection job: " + (err?.message || "Unknown error"));
-      });
+    const token = cookie["tapis-token"]["access_token"];
+
+    // Confirm the paths are usable before dispatching. The job reads the query
+    // images, so that path must exist and be readable; the output directory is
+    // created by the job, so only a permission problem blocks.
+    const pathProblem = await verifyJobPaths(system, [
+      { label: "Query File Location", path: values.queryImagePath },
+      { label: "Output Directory", path: values.outputDir, allowMissing: true },
+    ], token);
+    if (pathProblem) {
+      alert(pathProblem);
+      return;
+    }
+
+    try {
+      const res = await SubmitData(
+        `/object-detection/${pipeid}/${
+          currentConfigurationId ? currentConfigurationId : 0
+        }`,
+        submitPayload,
+        token
+      );
+      if (!res) {
+        alert("Failed to submit object detection job");
+        return;
+      }
+      notifyJobSubmitted();
+      alert("Object detection job submitted successfully");
+      navigate(`/object-detection/detection/${pipeid}`);
+    } catch (err: any) {
+      console.error("Error submitting job:", err);
+      alert("Failed to submit object detection job: " + (err?.message || "Unknown error"));
+    }
   };
 
   // Handle configuration selection from history
@@ -374,7 +388,7 @@ const ConfigureDetectionJob: React.FC = () => {
                 method: "Image",
                 name: "Predict objects",
               }}
-              onSubmit={(values) => handleSubmit(values)}
+              onSubmit={async (values) => { await handleSubmit(values); }}
             >
               {({ handleSubmit: formikSubmit }) => (
                 <form onSubmit={formikSubmit} style={{ width: "100%" }}>

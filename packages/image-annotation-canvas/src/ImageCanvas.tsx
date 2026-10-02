@@ -443,12 +443,17 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
                         isEditable={editable}
                         isDrawing={activeMode === CanvasMode.DRAWING}
                         isEnableBoxEdit={activeMode === CanvasMode.EDIT}
-                        handleDrawingStateChange={(drawing) => {
-                           setActiveMode(drawing ? CanvasMode.DRAWING : CanvasMode.NONE);
-                           setEngineState(engine.createInitialEngineState());
-                        }}
-                        handleEnableBoxEditChange={(edit) => {
-                           setActiveMode(edit ? CanvasMode.EDIT : CanvasMode.NONE);
+                        onToolChange={(tool) => {
+                           // SAM3 carries its own configuration, so it announces its
+                           // mode through handleSAM3BoxPrediction instead; stepping on
+                           // it here would immediately cancel the tool the user just
+                           // confirmed in the SAM3 dialog.
+                           if (tool === "sam3") return;
+                           setActiveMode(
+                              tool === "draw" ? CanvasMode.DRAWING
+                                 : tool === "edit" ? CanvasMode.EDIT
+                                    : CanvasMode.NONE
+                           );
                            setEngineState(engine.createInitialEngineState());
                         }}
                         isGraphEnabled={props.isGraphEnabled}

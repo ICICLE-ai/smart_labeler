@@ -13,6 +13,9 @@ export type { TapisDirectoryFieldProps } from "./TapisDirectoryField";
 export { SubmitButton } from "./SubmitButton";
 
 export {
+   TapisError,
+   describeTapisFailure,
+   humanizeServerText,
    configureTapisFileExplorer,
    sanitizePath,
    getImage,

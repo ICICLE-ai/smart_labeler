@@ -83,6 +83,11 @@ function sam3Payload(ctx: Ctx, x?: number, y?: number, textPrompts?: string[]) {
       image_id: fileName?.substring(fileName.lastIndexOf("/") + 1, fileName.lastIndexOf(".")) || "image_0",
       pipe_id: ctx.pipeId || "0",
       system_id: ctx.systemId || "pitzer-tapis",
+      // The dialog collects these for every SAM3 mode, so they have to travel with
+      // every prediction — click and text-prompt alike. They used to be dropped here,
+      // which left the service running on its own defaults no matter what was set.
+      threshold: ctx.sam3Config.detectionConfidence,
+      mask_threshold: ctx.sam3Config.maskPrecision,
       ...(ctx.sam3Config.patchSize > 0 ? { patch_size: ctx.sam3Config.patchSize } : {}),
       ...(x !== undefined && y !== undefined ? { x, y } : {}),
       ...(textPrompts ? { text_prompts: textPrompts } : {}),

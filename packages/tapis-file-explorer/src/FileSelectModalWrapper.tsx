@@ -11,6 +11,12 @@ export interface FileSelectModalWrapperProps {
   toggle: () => void;
   selectMode?: TapisSelectMode;
   initialSelection?: TapisFileEntry[];
+  /**
+   * Stacking order for the modal. Raise it above any dialog this is opened from —
+   * Mantine's default (200) sits below a MUI Dialog (1300), which would hide the
+   * picker behind the dialog that opened it.
+   */
+  zIndex?: number;
 }
 
 export const FileSelectModalWrapper = ({
@@ -21,6 +27,7 @@ export const FileSelectModalWrapper = ({
   toggle,
   selectMode = { mode: "single", types: ["file", "dir"] },
   initialSelection,
+  zIndex,
 }: FileSelectModalWrapperProps) => {
   const [selectedFiles, setSelectedFiles] = useState<TapisFileEntry[]>(initialSelection ?? []);
   const [selectedSystem, setSelectedSystem] = useState<string | null>(systemId ?? null);
@@ -141,7 +148,7 @@ export const FileSelectModalWrapper = ({
   }
 
   return (
-    <Modal opened={true} onClose={toggle} title={title} size="lg" centered>
+    <Modal opened={true} onClose={toggle} title={title} size="lg" centered zIndex={zIndex}>
       {body}
       {footer}
     </Modal>
