@@ -2,12 +2,14 @@ import type { RuntimeEnv } from "~/context/AppConfigContext";
 import { configureTapisFileExplorer } from "@icicle-ai/tapis-file-explorer";
 import { configureImageAnnotator } from "@icicle-ai/image-annotator";
 import { configurePatraModelSelector, configureTapisVault } from "@icicle-ai/patra-model-selector";
+import { configureVideoSegmentation } from "@icicle-ai/video-segmentation";
 
 // Defaults overridden at runtime by initConfig() (called from root.tsx loader data).
 // Never use import.meta.env here — these values must be injectable at container
 // start without a Docker rebuild.
 let _baseUrl = "http://127.0.0.1:11112";
 let _sam3Endpoint = "https://sam3-sailab.nrp-nautilus.io";
+let _sam3VideoUrl = "http://127.0.0.1:2129";
 let _tapisBase = "https://icicleai.tapis.io";
 let _annotatorType: string | null = null;
 
@@ -36,6 +38,7 @@ export let PROPOSERS: string[] = [
 export const initConfig = (env: RuntimeEnv) => {
    _baseUrl = env.apiBaseUrl;
    _sam3Endpoint = env.sam3Endpoint;
+   _sam3VideoUrl = env.sam3VideoUrl;
    if (env.tapisBaseUrl) _tapisBase = env.tapisBaseUrl;
    if (env.allowedSystems) allowed_systems = JSON.parse(env.allowedSystems);
    if (env.embedders) EMBEDDERS = env.embedders.split(",");
@@ -52,6 +55,7 @@ export const initConfig = (env: RuntimeEnv) => {
       defaultSystem: DEFAULT_SYSTEM,
    });
    configureImageAnnotator({ apiBaseUrl: _baseUrl });
+   configureVideoSegmentation({ baseUrl: _sam3VideoUrl });
    // Patra and the Tapis vault are reached through this app's own backend rather
    // than directly: a direct browser call is cross-origin and neither upstream
    // sends CORS headers for it.
@@ -61,6 +65,7 @@ export const initConfig = (env: RuntimeEnv) => {
 
 export const getBaseURL = () => _baseUrl;
 export const getSam3Endpoint = () => _sam3Endpoint;
+export const getSam3VideoUrl = () => _sam3VideoUrl;
 export const getTapisBaseURL = () => _tapisBase;
 export const getAnnotatorType = () => _annotatorType;
 
@@ -69,6 +74,7 @@ export const getAnnotatorType = () => _annotatorType;
 export const APP_TITLES: Record<string, string> = {
    DETECTION: "Smart Labeling Service for Object Detection",
    SEGMENTATION: "Intelligent Semantic Segmentation & Annotation",
+   VIDEO_SEGMENTATION: "Video Segmentation & Tracking",
 };
 
 export const getAppTitle = (annotatorType?: string | null): string =>
@@ -527,6 +533,7 @@ export enum TYPE {
    DETECTION = "DETECTION",
    CLASSIFICATION = "CLASSIFICATION",
    SEGMENTATION = "SEGMENTATION",
+   VIDEO_SEGMENTATION = "VIDEO_SEGMENTATION",
 }
 
 export enum JobStatus {

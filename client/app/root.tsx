@@ -35,6 +35,7 @@ export async function loader() {
     ENV: {
       apiBaseUrl:    process.env.API_BASE_URL    ?? "http://127.0.0.1:11112",
       sam3Endpoint:  process.env.SAM3_ENDPOINT   ?? "https://sam3-sailab.nrp-nautilus.io",
+      sam3VideoUrl:  process.env.SAM3_VIDEO_URL  ?? "http://127.0.0.1:2129",
       tapisBaseUrl:  process.env.TAPIS_BASE_URL  ?? "https://icicleai.tapis.io",
       allowedSystems:  process.env.ALLOWED_SYSTEMS  ?? null,
       embedders:       process.env.EMBEDDERS        ?? null,
