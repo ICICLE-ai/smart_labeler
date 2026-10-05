@@ -28,6 +28,7 @@ const ICICLE_PACKAGES = [
   "tapis-file-explorer",
   "image-annotator",
   "patra-model-selector",
+  "video-segmentation",
 ];
 
 // Peer dependencies shared between this app and the aliased packages. Because the

@@ -38,7 +38,8 @@
       "@icicle-ai/annotation-details": ["../packages/annotation-details/src/index.ts"],
       "@icicle-ai/tapis-file-explorer": ["../packages/tapis-file-explorer/src/index.ts"],
       "@icicle-ai/image-annotator": ["../packages/image-annotator/src/index.ts"],
-      "@icicle-ai/patra-model-selector": ["../packages/patra-model-selector/src/index.ts"]
+      "@icicle-ai/patra-model-selector": ["../packages/patra-model-selector/src/index.ts"],
+      "@icicle-ai/video-segmentation": ["../packages/video-segmentation/src/index.ts"]
     },
     "noEmit": true
   }

@@ -7,7 +7,8 @@
     "annotation-details",
     "tapis-file-explorer",
     "patra-model-selector",
-    "image-annotator"
+    "image-annotator",
+    "video-segmentation"
   ],
   "scripts": {
     "build": "npm run build --workspaces",

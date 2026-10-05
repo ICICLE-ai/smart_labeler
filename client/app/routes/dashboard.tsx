@@ -67,6 +67,7 @@ export default function DashBoardPage() {
   const typeLabel =
     activeType === TYPE.DETECTION ? "Detection" :
     activeType === TYPE.SEGMENTATION ? "Segmentation" :
+    activeType === TYPE.VIDEO_SEGMENTATION ? "Video Segmentation & Tracking" :
     "Annotation";
 
   const fetchPipelines = (silent = false) => {
@@ -124,6 +125,8 @@ export default function DashBoardPage() {
     if (createdPipeId) {
       if (createType === TYPE.SEGMENTATION) {
         navigate(`/annotation/image-annotator/${createdPipeId}`);
+      } else if (createType === TYPE.VIDEO_SEGMENTATION) {
+        navigate(`/video-segmentation/${createdPipeId}`);
       } else {
         navigate(`/object-detection/image-annotator/${createdPipeId}`);
       }
@@ -288,6 +291,7 @@ export default function DashBoardPage() {
   const userPipelines = pipelines.filter((p) => !p.is_demo);
   const detectionPipelines = userPipelines.filter((p) => !p.type || p.type === TYPE.DETECTION);
   const segmentationPipelines = userPipelines.filter((p) => p.type === TYPE.SEGMENTATION);
+  const videoPipelines = userPipelines.filter((p) => p.type === TYPE.VIDEO_SEGMENTATION);
   const allDemoPipelines = pipelines.filter((p) => p.is_demo);
   const demoPipelines = activeType
     ? allDemoPipelines.filter((p) => !p.type || p.type === activeType)
@@ -296,12 +300,20 @@ export default function DashBoardPage() {
   const filterBySearch = (list: Pipeline[]) =>
     q ? list.filter((p) => (p.name ?? "").toLowerCase().includes(q) || String(p.pid).includes(q)) : list;
 
-  const goRoute = (p: Pipeline) =>
-    (p.type ?? activeType) === TYPE.SEGMENTATION
-      ? `/annotation/image-annotator/${p.pid}`
-      : `/object-detection/image-annotator/${p.pid}`;
-  const activePipelines = activeType === TYPE.SEGMENTATION ? segmentationPipelines : detectionPipelines;
-  const emptyLabel = activeType === TYPE.SEGMENTATION ? "No segmentation pipelines yet." : "No detection pipelines yet.";
+  const goRoute = (p: Pipeline) => {
+    const type = p.type ?? activeType;
+    if (type === TYPE.SEGMENTATION) return `/annotation/image-annotator/${p.pid}`;
+    if (type === TYPE.VIDEO_SEGMENTATION) return `/video-segmentation/${p.pid}`;
+    return `/object-detection/image-annotator/${p.pid}`;
+  };
+  const activePipelines =
+    activeType === TYPE.SEGMENTATION ? segmentationPipelines :
+    activeType === TYPE.VIDEO_SEGMENTATION ? videoPipelines :
+    detectionPipelines;
+  const emptyLabel =
+    activeType === TYPE.SEGMENTATION ? "No segmentation pipelines yet." :
+    activeType === TYPE.VIDEO_SEGMENTATION ? "No video pipelines yet." :
+    "No detection pipelines yet.";
 
   if (loadingPipelines) {
     return (
@@ -441,6 +453,9 @@ export default function DashBoardPage() {
               <Tabs.Tab value="segmentation" rightSection={<Badge size="xs" variant="light">{segmentationPipelines.length}</Badge>}>
                 Segmentation
               </Tabs.Tab>
+              <Tabs.Tab value="video" rightSection={<Badge size="xs" variant="light">{videoPipelines.length}</Badge>}>
+                Video
+              </Tabs.Tab>
               {demoPipelines.length > 0 && (
                 <Tabs.Tab value="demo" rightSection={<Badge size="xs" variant="light" color="gray">{demoPipelines.length}</Badge>}>
                   Demo
@@ -496,6 +511,30 @@ export default function DashBoardPage() {
                       key={p.pid}
                       pipeline={p}
                       onGo={() => navigate(`/annotation/image-annotator/${p.pid}`)}
+                      onRename={() => openRename(p)}
+                      onDelete={() => handleDelete(p.pid)}
+                      deleting={deletingId === p.pid}
+                    />
+                  ))}
+                </SimpleGrid>
+              )}
+            </Tabs.Panel>
+
+            <Tabs.Panel value="video">
+              {filterBySearch(videoPipelines).length === 0 ? (
+                <Card withBorder radius="md" p="xl" ta="center">
+                  <Text c="dimmed" size="lg">{q ? "No matching pipelines." : "No video pipelines yet."}</Text>
+                  {!q && (
+                    <Button leftSection={<IconPlus size={16} />} mt="md" onClick={openCreate}>New Pipeline</Button>
+                  )}
+                </Card>
+              ) : (
+                <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
+                  {filterBySearch(videoPipelines).map((p) => (
+                    <PipelineCard
+                      key={p.pid}
+                      pipeline={p}
+                      onGo={() => navigate(`/video-segmentation/${p.pid}`)}
                       onRename={() => openRename(p)}
                       onDelete={() => handleDelete(p.pid)}
                       deleting={deletingId === p.pid}
@@ -596,6 +635,7 @@ export default function DashBoardPage() {
                 data={[
                   { value: TYPE.DETECTION, label: "Detection" },
                   { value: TYPE.SEGMENTATION, label: "Segmentation" },
+                  { value: TYPE.VIDEO_SEGMENTATION, label: "Video Segmentation & Tracking" },
                 ]}
                 value={createType}
                 onChange={(v) => setCreateType((v as TYPE) ?? TYPE.DETECTION)}
