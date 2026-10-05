@@ -186,6 +186,82 @@ export const SubmitData = async (
    return response.json();
 };
 
+/** One readable sentence for a refused job submission. */
+export const describeJobFailure = (what: string, res: { status?: number; detail?: string }): string => {
+   const parts = [`${what} was NOT submitted.`];
+   if (res.detail) parts.push(res.detail);
+   else if (res.status) parts.push(`The server answered with error ${res.status}.`);
+   else parts.push("The server could not be reached.");
+   return parts.join("\n\n");
+};
+
+export interface JobSubmitResult {
+   ok: boolean;
+   status?: number;
+   /** Server's explanation, when it gave one. */
+   detail?: string;
+   /** The Tapis job id, present only on a confirmed submission. */
+   uuid?: string;
+}
+
+/**
+ * POST that submits a job and reports truthfully whether it was accepted.
+ *
+ * `SubmitData` resolves to the parsed body and only returns null when the HTTP
+ * status is bad, so a 200 carrying {"status": "error"} read as success and the
+ * UI announced jobs that were never queued. This treats anything without a job
+ * id as a failure and keeps the reason, so the caller can show it.
+ */
+export const SubmitJob = async (
+   url: string,
+   data: unknown,
+   token: string,
+): Promise<JobSubmitResult> => {
+   let response: Response;
+   try {
+      response = await fetch(`${_baseUrl}${url}`, {
+         method: "POST",
+         headers: {
+            "Tapis-Token": token,
+            "Content-Type": "application/json",
+         },
+         body: JSON.stringify(data),
+      });
+   } catch (e) {
+      return { ok: false, detail: e instanceof Error ? e.message : String(e) };
+   }
+
+   const text = await response.text().catch(() => "");
+   let body: any = null;
+   try {
+      body = text ? JSON.parse(text) : null;
+   } catch {
+      /* not JSON — fall back to the raw text below */
+   }
+
+   const picked = body?.description ?? body?.message ?? body?.detail ?? body?.error;
+   // A non-JSON body is usually a proxy's or framework's HTML error page. Its
+   // markup says nothing to a user, so fall back to the status code instead.
+   const looksLikeMarkup = /^\s*<(!doctype|html|head|body|title)/i.test(text);
+   const detail = typeof picked === "string" && picked.trim()
+      ? picked.trim()
+      : (text && !body && !looksLikeMarkup ? text.slice(0, 500) : undefined);
+
+   if (!response.ok) return { ok: false, status: response.status, detail };
+
+   // A 2xx still has to carry a job id. An older server reports a failed
+   // submission as 200 with status:"error", and that must not read as success.
+   const uuid = typeof body?.uuid === "string" ? body.uuid : undefined;
+   if (body?.status === "error" || !uuid) {
+      return {
+         ok: false,
+         status: response.status,
+         detail: detail ?? "The server did not return a job id, so the job was not queued.",
+      };
+   }
+   return { ok: true, status: response.status, uuid };
+};
+
 export interface DeleteResult {
    ok: boolean;
    status?: number;

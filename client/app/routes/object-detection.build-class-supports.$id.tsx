@@ -7,7 +7,7 @@ import React, { useEffect, useState } from "react";
 import { useCookies } from "react-cookie";
 import { SubmitButton } from "~/components/formik-mantine";
 import { HeroTitle } from "~/components/HeroTitle/HeroTitle";
-import { allowed_systems, DEFAULT_SYSTEM, fetchAndReturnData, SubmitData } from "~/utils/utils";
+import { allowed_systems, DEFAULT_SYSTEM, describeJobFailure, fetchAndReturnData, SubmitData, SubmitJob } from "~/utils/utils";
 import { verifyJobPaths } from "~/utils/tapisAccess";
 import { ModelSelector } from "~/components/ModelSelector/ModelSelector";
 import { usePipeline } from "~/context/PipelineContext";
@@ -150,7 +150,7 @@ const GenerateClassSupports: React.FC = () => {
       }
 
       try {
-         const res = await SubmitData(
+         const res = await SubmitJob(
             `/generate_class_supports/${pipeid}`,
             {
                srcImgDir: values["srcImgDir"],
@@ -166,8 +166,10 @@ const GenerateClassSupports: React.FC = () => {
                crop_sizes: cropSizes
             },
             token);
-         if (!res) {
-            alert("Failed to submit class supports generation job");
+         if (!res.ok) {
+            // Nothing was queued, so neither announce it nor move the user on
+            // to the step that waits for a job that does not exist.
+            alert(describeJobFailure("The class support generation job", res));
             return;
          }
          notifyJobSubmitted();
@@ -175,7 +177,7 @@ const GenerateClassSupports: React.FC = () => {
          navigate(`/object-detection/optimize-patch-size/${pipeid}`);
       } catch (err) {
          console.error(err);
-         alert("Failed to submit class supports generation job");
+         alert(`The class support generation job was NOT submitted.\n\n${err instanceof Error ? err.message : String(err)}`);
       }
    };
 

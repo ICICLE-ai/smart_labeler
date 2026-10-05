@@ -170,6 +170,7 @@ execute_query(
         embedder_models TEXT DEFAULT '',
         class_support_paths TEXT DEFAULT '',
         proposal_tensor_paths TEXT DEFAULT '',
+        classification_name TEXT DEFAULT '',
         node_count INTEGER DEFAULT 1,
         cores_per_node INTEGER DEFAULT 8,
         memory_mb INTEGER DEFAULT 64800,
@@ -189,6 +190,14 @@ for col, defval in [
         f"ALTER TABLE query_image_configuration ADD COLUMN IF NOT EXISTS {col} INTEGER DEFAULT {defval}",
         None,
     )
+
+# The classification job keeps its own name. It used to be written to `name`,
+# which the proposal job owns, so submitting a classification renamed the
+# proposal configuration it was run against.
+execute_query(
+    "ALTER TABLE query_image_configuration ADD COLUMN IF NOT EXISTS classification_name TEXT DEFAULT ''",
+    None,
+)
 
 execute_query(
     """CREATE TABLE IF NOT EXISTS object_detection(
@@ -657,6 +666,7 @@ def get_all_query_configurations(pipeline_id):
             "system": row["system"],
             "object_feature_tensor_file_path": row["object_feature_tensor_file_path"],
             "name": row["name"],
+            "classification_name": row.get("classification_name", ""),
             "proposer_ids": row["proposer_ids"],
             "embedder_ids": row["embedder_ids"],
             "is_sahi": row["is_sahi"],
@@ -702,6 +712,7 @@ def update_query_image_configuration(query_id, updates):
             "objectnessThresholdJobId",
             "is_query_dir",
             "name",
+            "classification_name",
             "class_support_paths",
             "proposal_tensor_paths",
             "node_count",

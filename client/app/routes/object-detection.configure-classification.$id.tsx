@@ -17,7 +17,7 @@ import {
     Divider,
     MultiSelect,
     Loader,
-    Accordion,
+    Badge,
 } from "@mantine/core";
 import { IconInfoCircle, IconAlertCircle, IconTrash, IconPlus } from "@tabler/icons-react";
 import { data, useLoaderData, useNavigate } from "@remix-run/react";
@@ -27,7 +27,7 @@ import { useCookies } from "react-cookie";
 import { SubmitButton } from "~/components/formik-mantine";
 import { HeroTitle } from "~/components/HeroTitle/HeroTitle";
 import { isImageFile, steps } from "~/components/ImageAnnotation/utils/utils";
-import { allowed_systems, DEFAULT_SYSTEM, fetchAndReturnData, SubmitData } from "~/utils/utils";
+import { allowed_systems, DEFAULT_SYSTEM, describeJobFailure, fetchAndReturnData, SubmitData, SubmitJob } from "~/utils/utils";
 import { ModelSelector } from "~/components/ModelSelector/ModelSelector";
 import { usePipeline } from "~/context/PipelineContext";
 
@@ -47,7 +47,7 @@ interface ProposalClassMapping {
 }
 
 const ConfigureClassification: React.FC = () => {
-    const [name, setName] = useState<string>("Classification Job");
+    const [name, setName] = useState<string>("Classify objects");
     const [system, setSystem] = useState<string>(DEFAULT_SYSTEM);
     const [embedderModelId, setEmbedderModelId] = useState<string>("");
     const [similarityThreshold, setSimilarityThreshold] = useState<number>(0.5);
@@ -131,6 +131,10 @@ const ConfigureClassification: React.FC = () => {
                 const queryConfig = res["query_image_configuration"];
                 if (queryConfig) {
                     setCurrentConfigurationId(queryConfig["id"] || "");
+                    // This job's own name. `name` on the configuration belongs to
+                    // the proposal job that created it, so reading it here would
+                    // show the wrong job's name back to the user.
+                    setName(queryConfig["classification_name"] || "Classify objects");
                     setProposalOutputDir(queryConfig["outputDir"] || "");
                     setQueryDir(queryConfig["queryImagePath"] || "");
                     setSystem(queryConfig["system"] || DEFAULT_SYSTEM);
@@ -203,7 +207,7 @@ const ConfigureClassification: React.FC = () => {
     }, [classificationJobId]);
 
     const resetForm = () => {
-        setName("Classification Job");
+        setName("Classify objects");
         setSystem(DEFAULT_SYSTEM);
         setEmbedderModelId("");
         setSimilarityThreshold(0.5);
@@ -212,24 +216,53 @@ const ConfigureClassification: React.FC = () => {
         formRef.current?.resetForm();
     };
 
+    /**
+     * Readiness of the mapping list, so the section can say what is missing
+     * before the user hits Submit and gets an alert instead.
+     */
+    const mappingStatus = React.useMemo(() => {
+        const seen = new Map<string, number>();
+        const duplicates = new Set<number>();
+        proposalMappings.forEach((m, i) => {
+            if (!m.proposal_tensor_file) return;
+            const first = seen.get(m.proposal_tensor_file);
+            if (first === undefined) seen.set(m.proposal_tensor_file, i);
+            else { duplicates.add(first); duplicates.add(i); }
+        });
+        const usable = proposalMappings.reduce(
+            (n, m, i) =>
+                n + (m.proposal_tensor_file && m.class_support_file && !duplicates.has(i) ? 1 : 0), 0);
+        return {
+            duplicates,
+            incomplete: proposalMappings.length - usable,
+            complete: usable,
+        };
+    }, [proposalMappings]);
+
+    /** The generated files arrive only once the upstream jobs finish. */
+    const filesPending = proposalFileOptions.length === 0 || classFileOptions.length === 0;
+
     const addProposalMapping = () => {
-        setProposalMappings([...proposalMappings, { proposal_tensor_file: "", class_support_file: "" }]);
+        setProposalMappings((prev) => [...prev, { proposal_tensor_file: "", class_support_file: "" }]);
     };
 
     const removeProposalMapping = (index: number) => {
-        setProposalMappings(proposalMappings.filter((_, i) => i !== index));
+        setProposalMappings((prev) => prev.filter((_, i) => i !== index));
     };
 
+    // Replace the row rather than writing into it: the spread above is shallow,
+    // so the old objects are the same ones the previous state holds and editing
+    // them in place mutates state React believes it already rendered.
     const updateProposalTensorFile = (index: number, proposalFile: string) => {
-        const updated = [...proposalMappings];
-        updated[index].proposal_tensor_file = proposalFile;
-        setProposalMappings(updated);
+        setProposalMappings((prev) =>
+            prev.map((m, i) => (i === index ? { ...m, proposal_tensor_file: proposalFile } : m))
+        );
     };
 
     const updateClassSupportFiles = (index: number, classFile: string) => {
-        const updated = [...proposalMappings];
-        updated[index].class_support_file = classFile;
-        setProposalMappings(updated);
+        setProposalMappings((prev) =>
+            prev.map((m, i) => (i === index ? { ...m, class_support_file: classFile } : m))
+        );
     };
 
     const handleSubmit = async (values: any): Promise<void> => {
@@ -244,13 +277,26 @@ const ConfigureClassification: React.FC = () => {
             return;
         }
 
-        // Validate all mappings have both proposal and class files
-        const invalidMappings = proposalMappings.filter(
-            (m) => !m.proposal_tensor_file || !m.class_support_file
-        );
+        // Validate all mappings have both proposal and class files. The row
+        // numbers are included so the user knows which ones to go and fix.
+        const incompleteRows = proposalMappings
+            .map((m, i) => (!m.proposal_tensor_file || !m.class_support_file ? i + 1 : 0))
+            .filter(Boolean);
+        if (incompleteRows.length > 0) {
+            alert(
+                `Every mapping needs both a proposal tensor and a class support file.\n\n` +
+                `Incomplete: mapping ${incompleteRows.join(", ")}.`
+            );
+            return;
+        }
 
-        if (invalidMappings.length > 0) {
-            alert("All mappings must have a proposal tensor file and at least one class support file.");
+        // Shares its reasoning with the inline warning, so the form never says
+        // one thing on the page and another in the alert.
+        if (mappingStatus.duplicates.size > 0) {
+            alert(
+                "The same proposal tensor is mapped more than once. " +
+                "Each proposal should appear in a single row."
+            );
             return;
         }
 
@@ -278,13 +324,15 @@ const ConfigureClassification: React.FC = () => {
         };
 
         try {
-            const res = await SubmitData(
+            const res = await SubmitJob(
                 `/object-classification/${pipeid}/${odId || 0}`,
                 submitPayload,
                 cookie["tapis-token"]["access_token"]
             );
-            if (!res) {
-                alert("Failed to submit classification configuration");
+            if (!res.ok) {
+                // Nothing was queued, so neither announce it nor move the user
+                // on to the step that waits for a job that does not exist.
+                alert(describeJobFailure("The classification job", res));
                 return;
             }
             notifyJobSubmitted();
@@ -292,7 +340,7 @@ const ConfigureClassification: React.FC = () => {
             navigate(`/object-detection/classification/${pipeid}`);
         } catch (err) {
             console.error(err);
-            alert("Failed to submit classification configuration");
+            alert(`The classification job was NOT submitted.\n\n${err instanceof Error ? err.message : String(err)}`);
         }
     };
 
@@ -331,7 +379,7 @@ const ConfigureClassification: React.FC = () => {
                 <Formik
                     innerRef={formRef}
                     initialValues={{
-                        name: "Classification Job",
+                        name: "Classify objects",
                         system: "",
                     }}
                     onSubmit={async (values) => { await handleSubmit(values); }}
@@ -346,7 +394,7 @@ const ConfigureClassification: React.FC = () => {
                                 <Stack gap="md">
                                     <TextInput
                                         label="Job Name"
-                                        placeholder="Classification Job"
+                                        placeholder="Classify objects"
                                         value={name}
                                         onChange={(event) => {
                                             setName(event.currentTarget.value);
@@ -420,13 +468,21 @@ const ConfigureClassification: React.FC = () => {
 
                             {/* Proposal Tensor & Class Support Mapping */}
                             <Box>
-                                <Group justify="space-between" mb="md">
-                                    <Box>
-                                        <Text fw={700} size="lg">
-                                            Proposal & Class Support Mapping
-                                        </Text>
-                                        <Text size="xs" c="dimmed">
-                                            Associate class support files with each proposal tensor file
+                                <Group justify="space-between" align="flex-start" mb="xs" wrap="wrap">
+                                    <Box style={{ minWidth: 240, flex: 1 }}>
+                                        <Group gap="xs" align="center">
+                                            <Text fw={700} size="lg">
+                                                Proposal &amp; Class Support Mapping
+                                            </Text>
+                                            {proposalMappings.length > 0 && (
+                                                <Badge variant="light" color={mappingStatus.incomplete ? "orange" : "teal"}>
+                                                    {mappingStatus.complete} of {proposalMappings.length} ready
+                                                </Badge>
+                                            )}
+                                        </Group>
+                                        <Text size="xs" c="dimmed" mt={2}>
+                                            Each proposal tensor is classified against one class support tensor.
+                                            Pair them up below — add a row for every proposal you want classified.
                                         </Text>
                                     </Box>
                                     <Button
@@ -438,108 +494,143 @@ const ConfigureClassification: React.FC = () => {
                                     </Button>
                                 </Group>
 
+                                {filesPending && (
+                                    <Alert
+                                        icon={<IconInfoCircle size={16} />}
+                                        color="blue"
+                                        variant="light"
+                                        mb="sm"
+                                    >
+                                        {proposalFileOptions.length === 0 && classFileOptions.length === 0
+                                            ? "Neither the proposal tensors nor the class support tensors are available yet. They appear here once those jobs finish."
+                                            : proposalFileOptions.length === 0
+                                                ? "No proposal tensor files yet — they appear here once the proposal generation job finishes."
+                                                : "No class support tensor files yet — they appear here once the class support job finishes."}
+                                    </Alert>
+                                )}
+
+                                {mappingStatus.duplicates.size > 0 && (
+                                    <Alert
+                                        icon={<IconAlertCircle size={16} />}
+                                        color="orange"
+                                        variant="light"
+                                        mb="sm"
+                                    >
+                                        The same proposal tensor is mapped more than once. Each proposal should
+                                        appear in a single row.
+                                    </Alert>
+                                )}
+
                                 {proposalMappings.length === 0 ? (
                                     <Paper
-                                        p="lg"
+                                        p="xl"
                                         radius="md"
-                                        withBorder
                                         style={{
                                             textAlign: "center",
-                                            background: "linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)",
+                                            border: "1px dashed var(--mantine-color-gray-4)",
+                                            background: "var(--mantine-color-gray-0)",
                                         }}
                                     >
-                                        <Text size="sm" c="dimmed">
-                                            No mappings yet. Click "Add Proposal" to create the first mapping.
+                                        <Text size="sm" fw={600}>No mappings yet</Text>
+                                        <Text size="xs" c="dimmed" mt={4}>
+                                            Use <b>Add Mapping</b> above to pair your first proposal tensor
+                                            with the class support tensor it should be classified against.
                                         </Text>
                                     </Paper>
                                 ) : (
-                                    <Accordion defaultValue={proposalMappings.length > 0 ? "0" : null}>
+                                    <Stack gap="sm">
                                         {proposalMappings.map((mapping, index) => {
-                                            const proposalFileName = mapping.proposal_tensor_file
-                                                ? mapping.proposal_tensor_file.split("/").pop()
-                                                : "Select file";
-                                            const classSupportFile = mapping.class_support_file
-                                                ? mapping.class_support_file.split("/").pop()
-                                                : "Select file";
-
+                                            const ready = !!mapping.proposal_tensor_file && !!mapping.class_support_file;
+                                            const duplicated = mappingStatus.duplicates.has(index);
+                                            const borderColor = duplicated
+                                                ? "var(--mantine-color-orange-4)"
+                                                : ready
+                                                    ? "var(--mantine-color-teal-3)"
+                                                    : "var(--mantine-color-gray-3)";
                                             return (
-                                                <Accordion.Item key={index} value={String(index)}>
-                                                    <Accordion.Control>
-                                                        <Group justify="space-between" style={{ width: "100%" }}>
-                                                            <Box style={{ flex: 1 }}>
-                                                                <Text fw={600}>{proposalFileName}</Text>
-                                                                <Text fw={600}>{classSupportFile}</Text>
-                                                            </Box>
+                                                <Paper
+                                                    key={index}
+                                                    p="md"
+                                                    radius="md"
+                                                    style={{ border: `1px solid ${borderColor}`, background: "#fff" }}
+                                                >
+                                                    <Group justify="space-between" mb="xs" wrap="nowrap">
+                                                        <Group gap="xs" align="center" wrap="nowrap">
+                                                            <Badge
+                                                                circle
+                                                                variant={ready && !duplicated ? "filled" : "light"}
+                                                                color={duplicated ? "orange" : ready ? "teal" : "gray"}
+                                                            >
+                                                                {index + 1}
+                                                            </Badge>
+                                                            <Text size="sm" fw={600}>
+                                                                {/* A duplicated row is not ready, whatever is filled in. */}
+                                                                {duplicated
+                                                                    ? "Duplicate proposal"
+                                                                    : ready ? "Ready" : "Needs both files"}
+                                                            </Text>
+                                                        </Group>
+                                                        <Tooltip label="Remove this mapping">
                                                             <ActionIcon
                                                                 color="red"
-                                                                variant="light"
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    removeProposalMapping(index);
-                                                                }}
+                                                                variant="subtle"
+                                                                aria-label={`Remove mapping ${index + 1}`}
+                                                                onClick={() => removeProposalMapping(index)}
                                                             >
                                                                 <IconTrash size={16} />
                                                             </ActionIcon>
-                                                        </Group>
-                                                    </Accordion.Control>
+                                                        </Tooltip>
+                                                    </Group>
 
-                                                    <Accordion.Panel>
-                                                        <Stack gap="md">
-                                                            <Box>
-                                                                <Text size="sm" fw={600} mb="xs">
-                                                                    Proposal Tensor File
-                                                                </Text>
-                                                                {loadingProposalFiles ? (
-                                                                    <Group justify="center" py="md">
-                                                                        <Loader size="sm" />
-                                                                    </Group>
-                                                                ) : proposalFileOptions.length === 0 ? (
-                                                                    <Text size="xs" c="dimmed">⏳ Job still in progress — files will appear once processing completes.</Text>
-                                                                ) : (
-                                                                    <Select
-                                                                        placeholder="Select proposal tensor file"
-                                                                        data={proposalFileOptions}
-                                                                        value={mapping.proposal_tensor_file}
-                                                                        onChange={(value) =>
-                                                                            updateProposalTensorFile(index, value || "")
-                                                                        }
-                                                                        searchable
-                                                                        clearable
-                                                                        maxDropdownHeight={200}
-                                                                    />
-                                                                )}
-                                                            </Box>
-
-                                                            <Box>
-                                                                <Text size="sm" fw={600} mb="xs">
-                                                                    Associated Class Support File
-                                                                </Text>
-                                                                {loadingClassFiles ? (
-                                                                    <Group justify="center" py="md">
-                                                                        <Loader size="sm" />
-                                                                    </Group>
-                                                                ) : classFileOptions.length === 0 ? (
-                                                                    <Text size="xs" c="dimmed">⏳ Job still in progress — files will appear once processing completes.</Text>
-                                                                ) : (
-                                                                    <Select
-                                                                        placeholder="Select class support files"
-                                                                        data={classFileOptions}
-                                                                        value={mapping.class_support_file}
-                                                                        onChange={(value) =>
-                                                                            updateClassSupportFiles(index, value || "")
-                                                                        }
-                                                                        searchable
-                                                                        clearable
-                                                                        maxDropdownHeight={200}
-                                                                    />
-                                                                )}
-                                                            </Box>
-                                                        </Stack>
-                                                    </Accordion.Panel>
-                                                </Accordion.Item>
+                                                    {/* Both halves of the pair side by side, so what maps to what
+                                                        is readable without opening anything. Stacks when narrow. */}
+                                                    <Grid gutter="sm" align="flex-start">
+                                                        <Grid.Col span={{ base: 12, sm: 6 }}>
+                                                            {loadingProposalFiles ? (
+                                                                <Group justify="center" py="md"><Loader size="sm" /></Group>
+                                                            ) : (
+                                                                <Select
+                                                                    label="Proposal tensor"
+                                                                    placeholder={proposalFileOptions.length === 0
+                                                                        ? "Not available yet"
+                                                                        : "Select proposal tensor file"}
+                                                                    data={proposalFileOptions}
+                                                                    value={mapping.proposal_tensor_file}
+                                                                    onChange={(value) => updateProposalTensorFile(index, value || "")}
+                                                                    disabled={proposalFileOptions.length === 0}
+                                                                    error={duplicated ? "Already mapped" : undefined}
+                                                                    searchable
+                                                                    clearable
+                                                                    comboboxProps={{ withinPortal: true }}
+                                                                    maxDropdownHeight={200}
+                                                                />
+                                                            )}
+                                                        </Grid.Col>
+                                                        <Grid.Col span={{ base: 12, sm: 6 }}>
+                                                            {loadingClassFiles ? (
+                                                                <Group justify="center" py="md"><Loader size="sm" /></Group>
+                                                            ) : (
+                                                                <Select
+                                                                    label="Classified against"
+                                                                    placeholder={classFileOptions.length === 0
+                                                                        ? "Not available yet"
+                                                                        : "Select class support file"}
+                                                                    data={classFileOptions}
+                                                                    value={mapping.class_support_file}
+                                                                    onChange={(value) => updateClassSupportFiles(index, value || "")}
+                                                                    disabled={classFileOptions.length === 0}
+                                                                    searchable
+                                                                    clearable
+                                                                    comboboxProps={{ withinPortal: true }}
+                                                                    maxDropdownHeight={200}
+                                                                />
+                                                            )}
+                                                        </Grid.Col>
+                                                    </Grid>
+                                                </Paper>
                                             );
                                         })}
-                                    </Accordion>
+                                    </Stack>
                                 )}
                             </Box>
 

@@ -204,6 +204,7 @@ class QueryImageConfigOut(BaseModel):
     method: str
     system: str
     name: str = ""
+    classification_name: str = ""
     proposer_ids: str = ""
     embedder_ids: str = ""
     proposer_models: str = ""

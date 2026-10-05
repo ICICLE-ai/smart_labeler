@@ -34,6 +34,8 @@ import {
   allowed_systems,
   fetchAndReturnData,
   SubmitData,
+  SubmitJob,
+  describeJobFailure,
   getBaseURL,
   DEFAULT_SYSTEM,
 } from "~/utils/utils";
@@ -310,15 +312,17 @@ const ConfigureDetectionJob: React.FC = () => {
     }
 
     try {
-      const res = await SubmitData(
+      const res = await SubmitJob(
         `/object-detection/${pipeid}/${
           currentConfigurationId ? currentConfigurationId : 0
         }`,
         submitPayload,
         token
       );
-      if (!res) {
-        alert("Failed to submit object detection job");
+      if (!res.ok) {
+        // Nothing was queued, so neither announce it nor move the user on to
+        // the step that waits for a job that does not exist.
+        alert(describeJobFailure("The object detection job", res));
         return;
       }
       notifyJobSubmitted();
@@ -326,7 +330,7 @@ const ConfigureDetectionJob: React.FC = () => {
       navigate(`/object-detection/detection/${pipeid}`);
     } catch (err: any) {
       console.error("Error submitting job:", err);
-      alert("Failed to submit object detection job: " + (err?.message || "Unknown error"));
+      alert(`The object detection job was NOT submitted.\n\n${err?.message || "Unknown error"}`);
     }
   };
 
