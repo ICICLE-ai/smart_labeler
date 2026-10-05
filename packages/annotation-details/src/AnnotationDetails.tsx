@@ -183,6 +183,8 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
    const [confidence, setConfidence] = useState<number>(scoreFloor);
    /** Cleared on every image change, so a manual threshold lasts only as long as the image it was set for. */
    const confidenceTouched = useRef(false);
+   /** Last floor seen for this image, so a newly arrived lower score is detectable. */
+   const previousFloor = useRef<number | null>(null);
    const [nms, setNms] = useState<number>(0.95);
 
    // Flag options – starts with defaults, user can add more at runtime
@@ -215,13 +217,27 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
    // A new image gets its own threshold; a deliberate one does not follow the user around.
    useEffect(() => {
       confidenceTouched.current = false;
+      previousFloor.current = null;
    }, [imageKey]);
 
    // Track the floor until the slider is moved by hand. This also catches
    // annotations that arrive after the image does — an async import, or a SAM3
    // prediction returning something below the current threshold.
+   //
+   // A hand-set threshold is still overridden when the floor DROPS, i.e. when
+   // something has just arrived that scores below everything seen on this image
+   // so far. Without that, moving the slider once latched it for the rest of the
+   // image: prompting again at a lower confidence brought the new boxes in
+   // underneath the threshold, where they were filtered out on arrival with
+   // nothing to say so — the slider appeared stuck and the results lost. A
+   // threshold the user raised is left alone as long as nothing new undercuts it.
    useEffect(() => {
-      if (!confidenceTouched.current) setConfidence(scoreFloor);
+      const floorDropped = previousFloor.current !== null && scoreFloor < previousFloor.current;
+      previousFloor.current = scoreFloor;
+      if (!confidenceTouched.current || floorDropped) {
+         if (floorDropped) confidenceTouched.current = false;
+         setConfidence(scoreFloor);
+      }
    }, [scoreFloor, imageKey]);
 
    useEffect(() => {
