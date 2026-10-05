@@ -436,7 +436,17 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
                      panning={{ disabled: isCanvasActive }}
                      maxScale={MAX_SCALE}
                      minScale={1}
-                     limitToBounds={false}
+                     // Keep the image inside its frame. Unbounded panning let a
+                     // single drag at high zoom throw the image clean out of view
+                     // — the further in you were, the less movement it took, and
+                     // once gone there was no way back but resetting the view.
+                     // It also made panning far and then zooming snap the content
+                     // back, since the next wheel tick re-clamped a position the
+                     // pan had been free to put out of range.
+                     // Bounds cost nothing here: zoom still anchors on the
+                     // pointer, the wheel still reaches maxScale, and every edge
+                     // of the image is still reachable by dragging.
+                     limitToBounds={true}
                      centerZoomedOut={true}
                   >
                      <Controls
