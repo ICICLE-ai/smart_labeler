@@ -13,8 +13,10 @@ export default defineConfig({
       "react-dom",
       "@mui/material",
       "@mui/icons-material",
+      "@mantine/core",
       "react-zoom-pan-pinch",
       "@icicle-ai/image-annotation-canvas",
       "@icicle-ai/annotation-details",
+      "@icicle-ai/tapis-file-explorer",
    ],
 });

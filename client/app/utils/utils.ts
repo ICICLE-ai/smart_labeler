@@ -55,7 +55,8 @@ export const initConfig = (env: RuntimeEnv) => {
       defaultSystem: DEFAULT_SYSTEM,
    });
    configureImageAnnotator({ apiBaseUrl: _baseUrl });
-   configureVideoSegmentation({ baseUrl: _sam3VideoUrl });
+   // Needs the Tapis base URL too: exports can be saved straight onto an HPC system.
+   configureVideoSegmentation({ baseUrl: _sam3VideoUrl, tapisBaseUrl: _tapisBase });
    // Patra and the Tapis vault are reached through this app's own backend rather
    // than directly: a direct browser call is cross-origin and neither upstream
    // sends CORS headers for it.
