@@ -28,6 +28,13 @@ export interface VideoSegmentationConfig {
 
 let _baseUrl = "http://127.0.0.1:2129";
 let _tapisBaseUrl = "https://icicleai.tapis.io";
+/** Held so an expired session can be renewed without the caller noticing. */
+let _tapisToken = "";
+
+/** Supplies the token used to (re-)establish a session with the auth gateway. */
+export function setAuthToken(token: string): void {
+   _tapisToken = token ?? "";
+}
 
 export function configureVideoSegmentation(cfg: VideoSegmentationConfig): void {
    if (cfg.baseUrl) _baseUrl = cfg.baseUrl.replace(/\/+$/, "");
@@ -92,6 +99,32 @@ async function readErrorDetail(response: Response): Promise<string> {
 async function request(
    path: string,
    init: RequestInit = {},
+   {
+      timeoutMs = DEFAULT_TIMEOUT_MS,
+      signal,
+      allowReauth = true,
+   }: { timeoutMs?: number; signal?: AbortSignal; allowReauth?: boolean } = {},
+): Promise<Response> {
+   const response = await rawRequest(path, init, { timeoutMs, signal });
+
+   // Behind the auth gateway a 401 means the session cookie is missing or has
+   // expired — on first load, or after sitting idle past the TTL. Re-establish
+   // it from the Tapis token and retry once, so callers never have to think
+   // about session lifetime. `allowReauth` stops /auth/session recursing.
+   if (response.status === 401 && allowReauth && _tapisToken) {
+      try {
+         await signIn(_tapisToken);
+      } catch {
+         return response;   // sign-in failed; let the caller see the original 401
+      }
+      return rawRequest(path, init, { timeoutMs, signal });
+   }
+   return response;
+}
+
+async function rawRequest(
+   path: string,
+   init: RequestInit = {},
    { timeoutMs = DEFAULT_TIMEOUT_MS, signal }: { timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<Response> {
    const controller = new AbortController();
@@ -101,7 +134,10 @@ async function request(
    signal?.addEventListener("abort", onCallerAbort);
 
    try {
-      return await fetch(`${_baseUrl}${path}`, { ...init, signal: controller.signal });
+      // `credentials: "include"` so the gateway's session cookie travels on
+      // cross-origin calls. Without it the browser silently omits the cookie
+      // and every request comes back 401.
+      return await fetch(`${_baseUrl}${path}`, { ...init, credentials: "include", signal: controller.signal });
    } catch (e) {
       // A caller-initiated abort is not a service failure — hand it back as-is
       // so navigation/cancellation paths can ignore it.
@@ -117,6 +153,54 @@ async function request(
 async function asJson<T>(response: Response): Promise<T> {
    if (!response.ok) throw new Sam3VideoError(await readErrorDetail(response), { status: response.status });
    return response.json();
+}
+
+// ---------------------------------------------------------------------------
+// Session
+// ---------------------------------------------------------------------------
+// When the service sits behind the auth gateway, a Tapis token is exchanged
+// once for a session cookie, which the browser then sends on its own — including
+// on the EventSource progress stream, which cannot carry custom headers.
+// Deployments without the gateway (a direct SSH tunnel to a GPU node) simply
+// answer 404 here, which is treated as "no sign-in needed".
+
+let _signedInAs: string | null = null;
+
+export function currentUser(): string | null {
+   return _signedInAs;
+}
+
+/**
+ * Establishes a session from a Tapis token. Safe to call repeatedly — it is
+ * cheap, and re-calling refreshes a cookie that is close to expiry.
+ *
+ * @returns the username, or null when the service is not behind a gateway.
+ */
+export async function signIn(tapisToken: string): Promise<string | null> {
+   _tapisToken = tapisToken ?? "";
+   const response = await request("/auth/session", {
+      method: "POST",
+      headers: { "X-Tapis-Token": tapisToken ?? "" },
+   }, { timeoutMs: 15_000, allowReauth: false });
+
+   // No gateway in front of this deployment: nothing to sign in to.
+   if (response.status === 404) { _signedInAs = null; return null; }
+   if (response.status === 401) {
+      throw new Sam3VideoError(
+         `The video service rejected your credentials: ${await readErrorDetail(response)}. Sign in again and retry.`,
+         { status: 401 },
+      );
+   }
+   if (!response.ok) throw new Sam3VideoError(await readErrorDetail(response), { status: response.status });
+
+   const body = await response.json().catch(() => ({}));
+   _signedInAs = body?.username ?? null;
+   return _signedInAs;
+}
+
+export async function signOut(): Promise<void> {
+   _signedInAs = null;
+   await request("/auth/session", { method: "DELETE" }, { timeoutMs: 10_000 }).catch(() => undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +248,8 @@ export function uploadVideo(
    return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `${_baseUrl}/uploads`);
+      // Carries the gateway's session cookie, as `credentials: "include"` does for fetch.
+      xhr.withCredentials = true;
       xhr.upload.onprogress = (e) => {
          if (e.lengthComputable) onProgress?.(e.loaded / e.total);
       };
@@ -342,7 +428,9 @@ export function subscribeTrackJob(
 
    let es: EventSource | null = null;
    try {
-      es = new EventSource(`${_baseUrl}/track-jobs/${jobId}/events`);
+      // withCredentials is the whole reason the gateway authenticates by cookie:
+      // EventSource cannot send an Authorization or X-Tapis-Token header.
+      es = new EventSource(`${_baseUrl}/track-jobs/${jobId}/events`, { withCredentials: true });
       es.onmessage = (ev) => {
          if (stopped) return;
          try {
