@@ -378,19 +378,28 @@ export function detectionJsonToRelMap(
 
 // Build the detection export JSON, overlaying live annotations (keyed by path
 // relative to srcImgDir) on top of the imported baseline so that annotations for
-// unopened sibling folders survive the save. When baselineJson is null this is
+// unopened sibling folders survive the save. With no baselines this is
 // equivalent to exporting just the live map.
+/** One annotation document brought into the session, with its format. */
+export type AnnotationBaseline = { json: any; isCoco: boolean };
+
 export function mergeDetectionForSave(
    liveRelMap: Map<string, FileAnnotations>,
-   baselineJson: any | null,
-   baselineIsCoco: boolean,
+   baselines: AnnotationBaseline[],
    srcImgDir: string,
    coco: boolean,
    liveFiles: string[] = [],
 ): object {
-   const complete = baselineJson
-      ? detectionJsonToRelMap(baselineJson, baselineIsCoco, srcImgDir, liveFiles)
-      : new Map<string, FileAnnotations>();
+   // Oldest first, so a later import overrides an earlier one per image while
+   // images only the earlier one mentions are still carried through. Taking a
+   // single baseline here is what made importing one folder's annotations drop
+   // every other folder's from the saved file.
+   const complete = new Map<string, FileAnnotations>();
+   for (const baseline of baselines) {
+      if (!baseline?.json) continue;
+      detectionJsonToRelMap(baseline.json, baseline.isCoco, srcImgDir, liveFiles)
+         .forEach((fa, rel) => complete.set(rel, fa));
+   }
    liveRelMap.forEach((fa, rel) => complete.set(rel, fa)); // live edits win per file
    const rels = [...complete.keys()];
    const exportFiles = rels.map((r) => joinUnderDir(r, srcImgDir));

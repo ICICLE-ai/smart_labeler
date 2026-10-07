@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FileExplorer, type FileAnnotationStat } from "@icicle-ai/tapis-file-explorer";
 import {
    ImageCanvas,
@@ -324,7 +324,33 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
    // Stores the parsed annotation JSON after auto-load so we can apply it to
    // files that arrive later (subfolder navigation grows the file list after
    // the one-shot auto-load has already run).
-   const pendingAnnotationDataRef = useRef<{ json: any; isCoco: boolean; isSegmentation: boolean } | null>(null);
+   /**
+    * Every annotation document brought into this session, oldest first.
+    *
+    * It used to be a single slot, so importing a second file threw the first
+    * away. That silently destroyed data on save: the file loaded when the
+    * pipeline opened is the only record of annotations for folders the user
+    * never visits, and saving rebuilds the whole document from the baseline
+    * plus live edits. Importing one folder's annotations therefore wiped every
+    * other folder's out of the saved file.
+    *
+    * Later layers win per image path; live edits win over all of them.
+    */
+   type AnnotationLayer = { json: any; isCoco: boolean; isSegmentation: boolean };
+   const pendingAnnotationDataRef = useRef<AnnotationLayer[]>([]);
+
+   /**
+    * Add a document to the stack. A re-import of the same content replaces the
+    * layer it duplicates rather than stacking another copy of it, so repeatedly
+    * importing one file cannot grow the stack without bound.
+    */
+   const pushAnnotationLayer = useCallback((layer: AnnotationLayer) => {
+      const fingerprint = (l: AnnotationLayer) =>
+         `${l.isCoco}|${l.isSegmentation}|${JSON.stringify(l.json)}`;
+      const key = fingerprint(layer);
+      const kept = pendingAnnotationDataRef.current.filter((l) => fingerprint(l) !== key);
+      pendingAnnotationDataRef.current = [...kept, layer];
+   }, []);
 
    // ── Detection-specific state ──
    const [selectedBoxId, setSelectedBoxId] = useState<string | undefined>();
@@ -450,7 +476,7 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
                   `but the pipeline has it recorded as ${annotatorConfig.fileType}. Using the file's actual format.`
                );
             }
-            pendingAnnotationDataRef.current = { json: parsed, isCoco, isSegmentation };
+            pushAnnotationLayer({ json: parsed, isCoco, isSegmentation });
             const file = new File([text], "annotations.json", { type: "application/json" });
             if (isSegmentation) {
                importSegmentationAnnotationsFromJson(file, false);
@@ -475,10 +501,8 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
 
    // Re-apply stored annotations whenever the file list grows (subfolder navigation).
    // Only fills entries not already present — never overwrites live user edits.
-   useEffect(() => {
-      const data = pendingAnnotationDataRef.current;
-      if (!data || files.length === 0) return;
-      const srcDir = annotatorConfig?.srcImgDir ?? "";
+   /** Fill in annotations from one imported document for files now known. */
+   const applyLayer = (data: AnnotationLayer, srcDir: string) => {
       if (data.isSegmentation) {
          const importedMap = data.isCoco
             ? importSegmentationFromCoco(data.json, files, srcDir)
@@ -503,8 +527,20 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
             return merged;
          });
       }
-      // srcImgDir participates in path matching, so a config arriving after the
-      // files must re-run this fill (it only adds missing entries, never overwrites).
+   };
+
+   // Re-apply stored annotations whenever the file list grows (subfolder
+   // navigation). Only fills entries not already present — never overwrites live
+   // user edits. srcImgDir participates in path matching, so a config arriving
+   // after the files must re-run this fill.
+   useEffect(() => {
+      const layers = pendingAnnotationDataRef.current;
+      if (layers.length === 0 || files.length === 0) return;
+      const srcDir = annotatorConfig?.srcImgDir ?? "";
+      // Newest first: each layer only claims paths nothing has claimed yet, so a
+      // later import still takes precedence over an earlier one, and live edits
+      // (already in the map) are never overwritten by either.
+      for (const data of [...layers].reverse()) applyLayer(data, srcDir);
    }, [files, annotatorConfig?.srcImgDir]);
 
    // ────────────────────────────────────────────────────────────────────────
@@ -580,9 +616,10 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
       // opened this session aren't dropped from the saved file.
       const liveRel = new Map<string, FileAnnotations>();
       updatedMap.forEach((fa, fullPath) => liveRel.set(toRelativeFilename(fullPath, srcDir), fa));
-      const baseline = pendingAnnotationDataRef.current && !pendingAnnotationDataRef.current.isSegmentation
-         ? pendingAnnotationDataRef.current : null;
-      const json = mergeDetectionForSave(liveRel, baseline?.json ?? null, baseline?.isCoco ?? false, srcDir, coco, files);
+      // Every detection document seen this session, oldest first, so folders the
+      // user never opened keep their annotations in the saved file.
+      const baselines = pendingAnnotationDataRef.current.filter((l) => !l.isSegmentation);
+      const json = mergeDetectionForSave(liveRel, baselines, srcDir, coco, files);
       if (save && dir) {
          if (isDemo) { alert("Demo mode: Saving is disabled."); return false; }
          return saveAnnotationFile(sys, dir, JSON.stringify(json, null, 2), tapisToken)
@@ -647,7 +684,7 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
          }
 
          // Keep a copy so the re-apply effect can match newly-discovered files later.
-         pendingAnnotationDataRef.current = { json: parsed, isCoco: coco, isSegmentation: false };
+         pushAnnotationLayer({ json: parsed, isCoco: coco, isSegmentation: false });
          // Remember the format so Save As opens on the one actually in use.
          // Previously only an explicit save recorded this, so a session that
          // imported COCO was still offered "Default JSON" by default.
@@ -719,9 +756,8 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
       // never opened this session aren't dropped from the saved file.
       const liveRel = new Map<string, SegmentationFileAnnotations>();
       updatedMap.forEach((fa, fullPath) => liveRel.set(toRelativeFilename(fullPath, srcDir), fa));
-      const baseline = pendingAnnotationDataRef.current && pendingAnnotationDataRef.current.isSegmentation
-         ? pendingAnnotationDataRef.current : null;
-      const json = mergeSegmentationForSave(liveRel, baseline?.json ?? null, baseline?.isCoco ?? false, srcDir, coco, files);
+      const baselines = pendingAnnotationDataRef.current.filter((l) => l.isSegmentation);
+      const json = mergeSegmentationForSave(liveRel, baselines, srcDir, coco, files);
       if (save && dir) {
          if (isDemo) { alert("Demo mode: Saving is disabled."); return false; }
          return saveAnnotationFile(sys, dir, JSON.stringify(json, null, 2), tapisToken)
@@ -762,7 +798,7 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
          }
 
          // Keep a copy so the re-apply effect can match newly-discovered files later.
-         pendingAnnotationDataRef.current = { json: parsed, isCoco, isSegmentation: true };
+         pushAnnotationLayer({ json: parsed, isCoco, isSegmentation: true });
          rememberFileType(isCoco);
          const srcDir = annotatorConfig?.srcImgDir ?? "";
          const importedMap = isCoco
@@ -1075,7 +1111,7 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
                   //
                   // The configured file's one-shot auto-load is only re-armed when
                   // nothing is pending, so it cannot overwrite that fresh import.
-                  annotationsAutoLoaded.current = pendingAnnotationDataRef.current !== null;
+                  annotationsAutoLoaded.current = pendingAnnotationDataRef.current.length > 0;
                   upsertAnnotatorConfig({ srcImgDir, system: sys });
                } : undefined}
             />

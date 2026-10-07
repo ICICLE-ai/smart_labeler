@@ -31,6 +31,32 @@ import { allowed_systems, DEFAULT_SYSTEM, describeJobFailure, fetchAndReturnData
 import { ModelSelector } from "~/components/ModelSelector/ModelSelector";
 import { usePipeline } from "~/context/PipelineContext";
 
+/**
+ * Embedding backbones a tensor can be built with, as they appear in the
+ * generated filenames (see build_embedder_string on the server).
+ *
+ * A proposal tensor and a class support tensor are only comparable when they
+ * were embedded by the same backbone — matching bioclip proposals against
+ * dinov3 class supports compares vectors from two different spaces and yields
+ * nonsense. The pairing is therefore filtered rather than left to the user.
+ *
+ * bioclip and dinov3 are embedders only. owlv2 is also a proposer, so a name
+ * carrying it alongside an unambiguous embedder is read as that embedder.
+ */
+const EMBEDDER_TOKENS = ["bioclip", "dinov3", "owlv2"] as const;
+const UNAMBIGUOUS_EMBEDDERS = ["bioclip", "dinov3"] as const;
+
+/** The embedding backbone a generated filename names, if it names one. */
+export const embedderTokenOf = (filePath: string): string | null => {
+    const name = (filePath || "").split("/").pop()?.toLowerCase() ?? "";
+    const definite = UNAMBIGUOUS_EMBEDDERS.filter((t) => name.includes(t));
+    if (definite.length === 1) return definite[0];
+    // Two unambiguous embedders in one name is not something we can resolve;
+    // leave it unfiltered rather than guess.
+    if (definite.length > 1) return null;
+    return EMBEDDER_TOKENS.find((t) => name.includes(t)) ?? null;
+};
+
 interface ClassificationConfig {
     id?: number;
     name: string;
@@ -239,6 +265,24 @@ const ConfigureClassification: React.FC = () => {
         };
     }, [proposalMappings]);
 
+    /**
+     * Class support files offered for a given proposal tensor: only those built
+     * with the same embedding backbone.
+     *
+     * `matched` is false when the proposal names a backbone but nothing on disk
+     * carries it. Everything is offered in that case rather than an empty
+     * dropdown, so an unexpected naming convention cannot block the form — the
+     * row says what happened instead.
+     */
+    const classOptionsFor = React.useCallback((proposalFile: string) => {
+        const token = embedderTokenOf(proposalFile);
+        if (!token) return { options: classFileOptions, token: null, matched: true };
+        const options = classFileOptions.filter((o) => embedderTokenOf(o.value) === token);
+        return options.length > 0
+            ? { options, token, matched: true }
+            : { options: classFileOptions, token, matched: false };
+    }, [classFileOptions]);
+
     /** The generated files arrive only once the upstream jobs finish. */
     const filesPending = proposalFileOptions.length === 0 || classFileOptions.length === 0;
 
@@ -255,7 +299,22 @@ const ConfigureClassification: React.FC = () => {
     // them in place mutates state React believes it already rendered.
     const updateProposalTensorFile = (index: number, proposalFile: string) => {
         setProposalMappings((prev) =>
-            prev.map((m, i) => (i === index ? { ...m, proposal_tensor_file: proposalFile } : m))
+            prev.map((m, i) => {
+                if (i !== index) return m;
+                // Drop a class support that the new proposal cannot be compared
+                // against, rather than leaving a mismatched pair sitting there
+                // looking selected.
+                const token = embedderTokenOf(proposalFile);
+                const keep =
+                    !m.class_support_file ||
+                    !token ||
+                    embedderTokenOf(m.class_support_file) === token;
+                return {
+                    ...m,
+                    proposal_tensor_file: proposalFile,
+                    class_support_file: keep ? m.class_support_file : "",
+                };
+            })
         );
     };
 
@@ -542,6 +601,7 @@ const ConfigureClassification: React.FC = () => {
                                         {proposalMappings.map((mapping, index) => {
                                             const ready = !!mapping.proposal_tensor_file && !!mapping.class_support_file;
                                             const duplicated = mappingStatus.duplicates.has(index);
+                                            const classOptions = classOptionsFor(mapping.proposal_tensor_file);
                                             const borderColor = duplicated
                                                 ? "var(--mantine-color-orange-4)"
                                                 : ready
@@ -595,7 +655,7 @@ const ConfigureClassification: React.FC = () => {
                                                                         ? "Not available yet"
                                                                         : "Select proposal tensor file"}
                                                                     data={proposalFileOptions}
-                                                                    value={mapping.proposal_tensor_file}
+                                                                    value={mapping.proposal_tensor_file || null}
                                                                     onChange={(value) => updateProposalTensorFile(index, value || "")}
                                                                     disabled={proposalFileOptions.length === 0}
                                                                     error={duplicated ? "Already mapped" : undefined}
@@ -615,10 +675,25 @@ const ConfigureClassification: React.FC = () => {
                                                                     placeholder={classFileOptions.length === 0
                                                                         ? "Not available yet"
                                                                         : "Select class support file"}
-                                                                    data={classFileOptions}
-                                                                    value={mapping.class_support_file}
+                                                                    // Narrowed to the proposal's embedding backbone.
+                                                                    data={classOptions.options}
+                                                                    // Remount when the backbone changes: a searchable Select keeps
+                                                                    // its own display text, so clearing the value alone leaves the
+                                                                    // old filename on screen under a row reading "Needs both files".
+                                                                    key={`cs-${index}-${classOptions.token ?? "any"}`}
+                                                                    value={mapping.class_support_file || null}
                                                                     onChange={(value) => updateClassSupportFiles(index, value || "")}
                                                                     disabled={classFileOptions.length === 0}
+                                                                    description={
+                                                                        classOptions.token && classOptions.matched
+                                                                            ? `Showing ${classOptions.token} class supports only`
+                                                                            : undefined
+                                                                    }
+                                                                    error={
+                                                                        classOptions.token && !classOptions.matched
+                                                                            ? `No ${classOptions.token} class supports found — showing all`
+                                                                            : undefined
+                                                                    }
                                                                     searchable
                                                                     clearable
                                                                     comboboxProps={{ withinPortal: true }}
