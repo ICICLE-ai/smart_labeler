@@ -1,9 +1,42 @@
-import type { Annotation } from "../canvas/ImageCanvas";
+// App-specific annotator helpers.
+//
+// The reusable half of this module — the COCO/default-JSON import and export, the
+// path-relativisation used to key annotations across nested directories, the
+// colour palette, and NMS — now lives in the @icicle-ai/* packages and is
+// re-exported below so existing import sites keep working. What remains here is
+// genuinely specific to this app: the object-detection pipeline's step list, its
+// query-image configuration shape, and the MUI charts it renders.
+import type { Annotation } from "@icicle-ai/image-annotation-canvas";
+import { getLabelColor } from "@icicle-ai/image-annotation-canvas";
+import { exportToCoco, exportToDefaultJson, downloadFile, type FileAnnotations } from "@icicle-ai/image-annotator";
+import { calculateIoU } from "@icicle-ai/annotation-details";
 import { LineChart } from '@mui/x-charts/LineChart';
 import React from 'react';
 import { saveFile } from "~/utils/utils";
 
-export const MAX_SCALE = 8
+// Re-exports of the packaged helpers, kept so route-level imports of this module
+// do not have to change. Prefer importing these straight from the package.
+export {
+   MAX_SCALE,
+   SAM3_MODES,
+   LABEL_PALETTE,
+   getLabelColor,
+} from "@icicle-ai/image-annotation-canvas";
+export {
+   toRelativeFilename,
+   normalizeRelKey,
+   buildFileIndexResolver,
+   exportToCoco,
+   exportToDefaultJson,
+   joinUnderDir,
+   detectionJsonToRelMap,
+   mergeDetectionForSave,
+   importFromCocoJsonUtil,
+   importFromDefaultJsonUtil,
+   downloadFile,
+} from "@icicle-ai/image-annotator";
+export type { FileAnnotations } from "@icicle-ai/image-annotator";
+export { applyNMS, calculateIoU } from "@icicle-ai/annotation-details";
 
 export interface QueryImageConfiguration {
    id: number;
@@ -33,35 +66,6 @@ export interface QueryImageConfiguration {
    max_minutes?: number;
 }
 
-// ---------------------------------------------------------------------------
-// Colour palette – one colour per unique label, assigned on first encounter.
-// ---------------------------------------------------------------------------
-export const LABEL_PALETTE = [
-   "#1976d2", // blue
-   "#388e3c", // green
-   "#f57c00", // orange
-   "#7b1fa2", // purple
-   "#00838f", // teal
-   "#558b2f", // olive
-   "#6d4c41", // brown
-   "#ad1457", // pink
-   "#0277bd", // light-blue
-   "#e65100", // deep-orange
-   // Red (#c62828) is intentionally excluded – reserved for selection highlighting
-];
-
-// Shared label-color resolver – assigns a stable color per unique label string.
-// Uses a module-level cache so the same label always gets the same color across
-// both ImageCanvas and AnnotationDetails.
-export const getLabelColor = (() => {
-   const cache = new Map<string, string>();
-   let idx = 0;
-   return (label: string): string => {
-      if (!cache.has(label)) cache.set(label, LABEL_PALETTE[idx++ % LABEL_PALETTE.length]);
-      return cache.get(label)!;
-   };
-})();
-
 export const systems = [
    { 'label': 'pitzer-tapis', 'value': 'pitzer-tapis' },
    { 'label': 'expanse-tapis', 'value': 'expanse-tapis' },
@@ -69,19 +73,7 @@ export const systems = [
    { 'label': 'cardinal-tapis', 'value': 'cardinal-tapis' },
 ];
 
-export enum SAM3_MODES {
-   SINGLE_CLICK = 'SINGLE_CLICK',
-   TEXT_PROMPTS = 'TEXT_PROMPTS'
-}
-
 export const DISPLAY_TYPE = ['IMAGE', 'GRAPH'];
-
-export interface FileAnnotations {
-   name: string;
-   annotations: Annotation[];
-   width: number;
-   height: number;
-}
 
 export type Step = {
    id: number;
@@ -137,435 +129,6 @@ export const steps: Step[] = [
    },
 ];
 
-// Convert a full Tapis path to a path relative to srcImgDir.
-// Falls back to the bare basename when the prefix doesn't match.
-export function toRelativeFilename(fullPath: string, srcImgDir: string): string {
-   const normDir = srcImgDir.replace(/^\/+/, "").replace(/\/+$/, "");
-   const normPath = fullPath.replace(/^\/+/, "");
-   if (normDir && normPath.startsWith(normDir + "/")) return normPath.slice(normDir.length + 1);
-   const lastSlash = fullPath.lastIndexOf("/");
-   return lastSlash >= 0 ? fullPath.slice(lastSlash + 1) : fullPath;
-}
-
-// Canonical identity for an image *as spelled inside an annotation file*.
-//
-// Annotation files in the wild write the same image three different ways — bare
-// basename, path relative to srcImgDir, or the full path — and the merge-on-save
-// baseline is keyed by whatever string the file happened to use. Without this
-// normalization a re-spelled path lands under a second key, so the save writes the
-// image twice and the next load reads both copies back onto one image.
-// Mirrors toRelativeFilename's output for paths that do sit under srcImgDir.
-export function normalizeRelKey(rawPath: string, srcImgDir: string): string {
-   const normDir = srcImgDir.replace(/^\/+/, "").replace(/\/+$/, "");
-   const norm = rawPath.replace(/^\/+/, "").replace(/\/{2,}/g, "/");
-   if (normDir && norm.startsWith(normDir + "/")) return norm.slice(normDir.length + 1);
-   return norm;
-}
-
-// Resolve a path written in an annotation file to an index in `files`.
-//
-// Matching walks from most specific to least. Basename matching is the last resort
-// and is skipped when that basename repeats across folders — collapsing
-// `train/img_001.jpg` and `val/img_001.jpg` onto one image is what silently piled
-// both files' annotations onto one image and dropped the other's.
-export function buildFileIndexResolver(files: string[], srcImgDir: string = "") {
-   const fullToIdx = new Map<string, number>();
-   const relToIdx = new Map<string, number>();
-   const baseToIdx = new Map<string, number>();
-   const ambiguousBases = new Set<string>();
-
-   files.forEach((file, idx) => {
-      if (typeof file !== "string") return;
-      fullToIdx.set(file.replace(/^\/+/, ""), idx);
-      const rel = toRelativeFilename(file, srcImgDir);
-      if (!relToIdx.has(rel)) relToIdx.set(rel, idx);
-      const base = file.substring(file.lastIndexOf("/") + 1);
-      if (baseToIdx.has(base)) ambiguousBases.add(base);
-      else baseToIdx.set(base, idx);
-   });
-
-   return (rawPath: string): number | undefined => {
-      if (typeof rawPath !== "string" || !rawPath) return undefined;
-
-      const stripped = rawPath.replace(/^\/+/, "").replace(/\/{2,}/g, "/");
-      const byFull = fullToIdx.get(stripped);
-      if (byFull !== undefined) return byFull;
-
-      const rel = normalizeRelKey(rawPath, srcImgDir);
-      const byRel = relToIdx.get(rel);
-      if (byRel !== undefined) return byRel;
-
-      // Either side may carry extra leading folders (an export made under a
-      // different root). Accept a suffix match only when exactly one file fits.
-      const suffixHits: number[] = [];
-      relToIdx.forEach((idx, r) => {
-         if (r.endsWith("/" + rel) || rel.endsWith("/" + r)) suffixHits.push(idx);
-      });
-      if (suffixHits.length === 1) return suffixHits[0];
-      if (suffixHits.length > 1) return undefined;
-
-      const base = rel.substring(rel.lastIndexOf("/") + 1);
-      if (ambiguousBases.has(base)) {
-         console.warn(`Ambiguous annotation path "${rawPath}": "${base}" exists in multiple folders — skipped.`);
-         return undefined;
-      }
-      return baseToIdx.get(base);
-   };
-}
-
-// Collapse identical annotations on the same image. Files written before the
-// path-identity fix carry the same box twice under two spellings of the image
-// path; both now resolve to one image, so drop the repeat on the way in.
-function dedupeAnnotations(annotations: Annotation[]): Annotation[] {
-   const seen = new Set<string>();
-   return annotations.filter((a) => {
-      const key = `${a.label}|${a.x}|${a.y}|${a.width}|${a.height}|${a.flag ?? ""}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-   });
-}
-
-export function exportToCoco(
-   fileToAnnotationsMap: Map<number, FileAnnotations>,
-   files: string[],
-   srcImgDir: string = ""
-) {
-   // --- 1. Initialize COCO Structure ---
-   type CocoImage = {
-      id: number;
-      width: number;
-      height: number;
-      file_name: string;
-   };
-   type CocoCategory = { id: number; name: string };
-   type CocoAnnotation = {
-      id: number;
-      image_id: number;
-      category_id: number | undefined;
-      bbox: [number, number, number, number];
-      area: number;
-      iscrowd: number;
-      flag?: string;
-   };
-
-   const coco: {
-      info: {
-         year: number;
-         version: string;
-         date_created: string;
-      };
-      licenses: any[];
-      images: CocoImage[];
-      categories: CocoCategory[];
-      annotations: CocoAnnotation[];
-   } = {
-      info: {
-         year: new Date().getFullYear(),
-         version: "1.0",
-         date_created: new Date().toISOString(),
-      },
-      licenses: [],
-      images: [],
-      categories: [],
-      annotations: [],
-   };
-
-   // --- 2. Create Categories ---
-   const categoryMap = new Map<string, number>();
-   let categoryId = 1;
-
-   fileToAnnotationsMap.forEach((fileAnnotations) => {
-      fileAnnotations.annotations.forEach((ann) => {
-         if (!categoryMap.has(ann.label)) {
-            categoryMap.set(ann.label, categoryId);
-            coco.categories.push({
-               id: categoryId,
-               name: ann.label,
-            });
-            categoryId++;
-         }
-      });
-   });
-
-   // --- 3. Create Images and Annotations ---
-   let annotationId = 1; // COCO annotation IDs must be unique across the whole dataset.
-
-   fileToAnnotationsMap.forEach((fileAnnotations, imageIndex) => {
-      if (imageIndex < 0) return;
-      const file = files[imageIndex];
-      const fileName = toRelativeFilename(file, srcImgDir);
-      if (!file) {
-         console.warn(`Skipping image at index ${imageIndex}: No file found.`);
-         return;
-      }
-
-      // Since we don't have width/height, set to 0 or extract if available elsewhere
-      coco.images.push({
-         id: imageIndex,
-         width: fileAnnotations.width,
-         height: fileAnnotations.height,
-         file_name: fileName,
-      });
-
-      fileAnnotations.annotations.forEach((ann) => {
-         coco.annotations.push({
-            id: annotationId++,
-            image_id: imageIndex,
-            category_id: categoryMap.get(ann.label),
-            bbox: [ann.x, ann.y, ann.width, ann.height],
-            area: ann.width * ann.height,
-            iscrowd: 0,
-            ...(ann.flag ? { flag: ann.flag } : {}),
-         });
-      });
-   });
-
-   return coco;
-}
-
-export function exportToDefaultJson(
-   fileToAnnotationsMap: Map<number, FileAnnotations>,
-   files: string[],
-   srcImgDir: string = ""
-) {
-   const annotations: any[] = [];
-
-   fileToAnnotationsMap.forEach((fileAnnotations, imageIndex) => {
-      const file = files[imageIndex];
-      if (!file) return;
-
-      fileAnnotations.annotations.forEach((ann) => {
-         annotations.push({
-            image_path: toRelativeFilename(file, srcImgDir),
-            class: ann.label,
-            bounding_box: [ann.x, ann.y, ann.x + ann.width, ann.y + ann.height],
-            score: ann.score,
-            ...(ann.flag ? { flag: ann.flag } : {}),
-         });
-      });
-   });
-
-   return { annotations };
-}
-
-// ---------------------------------------------------------------------------
-// Merge-on-save helpers
-//
-// When the user imports an annotation file spanning several folders but only
-// visits (and thus loads into memory) some of them, saving must not drop the
-// annotations for the folders that were never opened. These helpers rebuild a
-// complete export by overlaying the live in-memory annotations on top of the
-// originally-imported dataset (the "baseline"), keyed by each image's path
-// RELATIVE to srcImgDir — the same identity the exporters write — so live edits
-// win and untouched folders are preserved.
-// ---------------------------------------------------------------------------
-
-// Normalize a path to a single leading slash and no trailing/duplicate slashes.
-const canonPath = (p: string): string =>
-   "/" + p.replace(/^\/+/, "").replace(/\/+$/, "").replace(/\/{2,}/g, "/");
-
-// Reconstruct a full path from a path relative to srcImgDir. When srcImgDir is
-// empty the export already flattened paths to basenames, so this stays consistent.
-export const joinUnderDir = (rel: string, srcImgDir: string): string => {
-   const d = srcImgDir.replace(/\/+$/, "");
-   return d ? canonPath(`${d}/${rel}`) : "/" + rel.replace(/^\/+/, "");
-};
-
-// Parse an exported detection JSON back into a map keyed by each image's path
-// relative to srcImgDir — the same identity the live map and the exporters use, so
-// a baseline entry and a live entry for one image collapse onto one key instead of
-// both being written to the saved file. Preserves folder structure, so same-named
-// files in sibling folders don't collide.
-//
-// `files` is the live file list. Passing it is what lets a baseline path resolve to
-// the file it actually refers to: the importer matches "a.jpg" to
-// "<srcImgDir>/sub/a.jpg" by basename, so the baseline has to key that entry
-// "sub/a.jpg" too — otherwise the user's edits land under a different key and the
-// original (pre-edit, pre-delete) annotations get written back out alongside them.
-export function detectionJsonToRelMap(
-   json: any,
-   isCoco: boolean,
-   srcImgDir: string = "",
-   files: string[] = [],
-): Map<string, FileAnnotations> {
-   const resolveFileIndex = buildFileIndexResolver(files, srcImgDir);
-   // Anchor to the real file when this path points at one we know about. Paths that
-   // resolve to nothing keep their own spelling — that's the unopened-folder data
-   // the baseline exists to preserve.
-   const keyFor = (rawPath: string): string => {
-      const idx = resolveFileIndex(rawPath);
-      return idx !== undefined ? toRelativeFilename(files[idx], srcImgDir) : normalizeRelKey(rawPath, srcImgDir);
-   };
-
-   const map = new Map<string, FileAnnotations>();
-   if (isCoco) {
-      const catIdToName = new Map<number, string>();
-      (json?.categories ?? []).forEach((c: any) => catIdToName.set(c.id, c.name));
-      const imgIdToMeta = new Map<number, { rel: string; width: number; height: number }>();
-      (json?.images ?? []).forEach((im: any) =>
-         imgIdToMeta.set(im.id, { rel: keyFor(im.file_name ?? ""), width: im.width ?? 0, height: im.height ?? 0 }));
-      (json?.annotations ?? []).forEach((a: any) => {
-         const meta = imgIdToMeta.get(a.image_id);
-         if (!meta) return;
-         const fa: FileAnnotations = map.get(meta.rel) ?? { name: meta.rel, width: meta.width, height: meta.height, annotations: [] };
-         const [x, y, w, h] = a.bbox ?? [0, 0, 0, 0];
-         fa.annotations.push({
-            id: `${Date.now()}-${Math.random()}`,
-            label: catIdToName.get(a.category_id) ?? "unknown",
-            x, y, width: w, height: h,
-            ...(a.score !== undefined ? { score: a.score } : {}),
-            ...(a.flag ? { flag: a.flag } : {}),
-         });
-         map.set(meta.rel, fa);
-      });
-   } else {
-      (json?.annotations ?? []).forEach((a: any) => {
-         if (a.image_path === undefined) return;
-         const rel = keyFor(a.image_path);
-         const fa: FileAnnotations = map.get(rel) ?? { name: rel, width: 0, height: 0, annotations: [] };
-         const [x0, y0, x1, y1] = a.bounding_box ?? [0, 0, 0, 0];
-         fa.annotations.push({
-            id: `${Date.now()}-${Math.random()}`,
-            label: a.class,
-            x: x0, y: y0, width: x1 - x0, height: y1 - y0,
-            ...(a.score !== undefined ? { score: a.score } : {}),
-            ...(a.iou !== undefined ? { iou: a.iou } : {}),
-            ...(a.flag ? { flag: a.flag } : {}),
-         });
-         map.set(rel, fa);
-      });
-   }
-   return map;
-}
-
-// Build the detection export JSON, overlaying live annotations (keyed by path
-// relative to srcImgDir) on top of the imported baseline so that annotations for
-// unopened sibling folders survive the save. When baselineJson is null this is
-// equivalent to exporting just the live map.
-export function mergeDetectionForSave(
-   liveRelMap: Map<string, FileAnnotations>,
-   baselineJson: any | null,
-   baselineIsCoco: boolean,
-   srcImgDir: string,
-   coco: boolean,
-   liveFiles: string[] = [],
-): object {
-   const complete = baselineJson
-      ? detectionJsonToRelMap(baselineJson, baselineIsCoco, srcImgDir, liveFiles)
-      : new Map<string, FileAnnotations>();
-   liveRelMap.forEach((fa, rel) => complete.set(rel, fa)); // live edits win per file
-   const rels = [...complete.keys()];
-   const exportFiles = rels.map((r) => joinUnderDir(r, srcImgDir));
-   const indexMap = new Map<number, FileAnnotations>();
-   rels.forEach((r, i) => indexMap.set(i, complete.get(r)!));
-   return coco
-      ? exportToCoco(indexMap, exportFiles, srcImgDir)
-      : exportToDefaultJson(indexMap, exportFiles, srcImgDir);
-}
-
-export function importFromCocoJsonUtil(
-   cocoJson: any,
-   files: string[],
-   srcImgDir: string = ""
-): Map<number, FileAnnotations> {
-   const resolveFileIndex = buildFileIndexResolver(files, srcImgDir);
-
-   // Build category id to label map
-   const categoryIdToLabel = new Map<number, string>();
-   if (Array.isArray(cocoJson.categories)) {
-      cocoJson.categories.forEach((cat: any) => {
-         categoryIdToLabel.set(cat.id, cat.name);
-      });
-   }
-
-   // imageId → file index + size. Two COCO images can resolve to the same file
-   // when an older file spelled one image's path two ways; dedupe below drops the
-   // repeated boxes rather than stacking them.
-   const imageIdToFileIndex = new Map<number, number>();
-   const imageIdToSize = new Map<number, { width: number; height: number }>();
-   if (Array.isArray(cocoJson.images)) {
-      cocoJson.images.forEach((img: any) => {
-         const fileIdx = resolveFileIndex(img.file_name);
-         if (fileIdx === undefined) return;
-         imageIdToFileIndex.set(img.id, fileIdx);
-         imageIdToSize.set(img.id, { width: img.width ?? 0, height: img.height ?? 0 });
-      });
-   }
-
-   // Build fileToAnnotationsMap
-   const fileToAnnotationsMap = new Map<number, FileAnnotations>();
-   if (Array.isArray(cocoJson.annotations)) {
-      cocoJson.annotations.forEach((ann: any) => {
-         const fileIdx = imageIdToFileIndex.get(ann.image_id);
-         if (fileIdx === undefined) return;
-         const label = categoryIdToLabel.get(ann.category_id) || "unknown";
-         const [x, y, width, height] = ann.bbox;
-         const annotation: Annotation = {
-            id: `${Date.now()}-${Math.random()}`,
-            label,
-            x,
-            y,
-            width,
-            height,
-            ...(ann.flag ? { flag: ann.flag } : {}),
-         };
-         if (!fileToAnnotationsMap.has(fileIdx)) {
-            const size = imageIdToSize.get(ann.image_id) ?? { width: 0, height: 0 };
-            fileToAnnotationsMap.set(fileIdx, {
-               name: files[fileIdx],
-               width: size.width,
-               height: size.height,
-               annotations: [],
-            });
-         }
-         fileToAnnotationsMap.get(fileIdx)!.annotations.push(annotation);
-      });
-   }
-
-   fileToAnnotationsMap.forEach((fa) => { fa.annotations = dedupeAnnotations(fa.annotations); });
-   return fileToAnnotationsMap;
-}
-
-export function importFromDefaultJsonUtil(
-   defaultJson: any,
-   files: string[],
-   srcImgDir: string = ""
-): Map<number, FileAnnotations> {
-   const resolveFileIndex = buildFileIndexResolver(files, srcImgDir);
-
-   const fileToAnnotationsMap = new Map<number, FileAnnotations>();
-   if (Array.isArray(defaultJson.annotations)) {
-      defaultJson.annotations.forEach((ann: any) => {
-         const fileIdx = resolveFileIndex(ann.image_path);
-         if (fileIdx === undefined) return;
-         const annotation: Annotation = {
-            id: `${Date.now()}-${Math.random()}`,
-            label: ann.class,
-            x: ann.bounding_box[0],
-            y: ann.bounding_box[1],
-            width: ann.bounding_box[2] - ann.bounding_box[0],
-            height: ann.bounding_box[3] - ann.bounding_box[1],
-            score: ann.score,
-            iou: ann.iou,
-            ...(ann.flag ? { flag: ann.flag } : {}),
-         };
-         if (!fileToAnnotationsMap.has(fileIdx)) {
-            fileToAnnotationsMap.set(fileIdx, {
-               name: files[fileIdx],
-               width: 0,
-               height: 0,
-               annotations: [],
-            });
-         }
-         fileToAnnotationsMap.get(fileIdx)!.annotations.push(annotation);
-      });
-   }
-
-   fileToAnnotationsMap.forEach((fa) => { fa.annotations = dedupeAnnotations(fa.annotations); });
-   return fileToAnnotationsMap;
-}
-
 export const generateJson = (filesToAnnotationMap: Map<number, FileAnnotations>, filename: string, files: string[],
    system: string, cookie: any, coco: boolean = false, save: boolean = false, dir: string = "", score: number = 0.0) => {
    // Ensure the latest annotations are saved for the currently selected file
@@ -596,41 +159,6 @@ export const generateJson = (filesToAnnotationMap: Map<number, FileAnnotations>,
          filename || `annotations_${Date.now()}.json`
       );
    }
-};
-
-export const downloadFile = async (content: string, fileName: string) => {
-   // Chrome/Edge: use the File System Access API for a native Save-As dialog
-   if (typeof (window as any).showSaveFilePicker === 'function') {
-      try {
-         const handle = await (window as any).showSaveFilePicker({
-            suggestedName: fileName,
-            types: [{ description: 'JSON Files', accept: { 'application/json': ['.json'] } }],
-         });
-         const writable = await handle.createWritable();
-         await writable.write(content);
-         await writable.close();
-         return;
-      } catch (error: any) {
-         if (error.name === 'AbortError') return; // user cancelled — do not fall through
-         console.warn('showSaveFilePicker failed:', error);
-      }
-   }
-
-   // Fallback for Firefox / Safari: prompt the user for a filename, then download
-   const userFileName = window.prompt('Save file as:', fileName);
-   if (userFileName === null) return; // user cancelled
-   const resolvedName = userFileName.trim() || fileName;
-
-   const blob = new Blob([content], { type: 'application/json' });
-   const url = URL.createObjectURL(blob);
-   const a = document.createElement('a');
-   a.href = url;
-   a.download = resolvedName.endsWith('.json') ? resolvedName : `${resolvedName}.json`;
-   a.style.display = 'none';
-   document.body.appendChild(a);
-   a.click();
-   document.body.removeChild(a);
-   URL.revokeObjectURL(url);
 };
 
 export const isImageFile = (filename: string): boolean => {
@@ -843,64 +371,4 @@ export const generateMultipleIoUScoreGraph = (
          grid={{ vertical: true, horizontal: true }}
       />
    );
-};
-
-export const calculateIoU = (box1: Annotation, box2: Annotation): number => {
-   const x1_min = box1.x;
-   const y1_min = box1.y;
-   const x1_max = box1.x + box1.width;
-   const y1_max = box1.y + box1.height;
-
-   const x2_min = box2.x;
-   const y2_min = box2.y;
-   const x2_max = box2.x + box2.width;
-   const y2_max = box2.y + box2.height;
-
-   const inter_x_min = Math.max(x1_min, x2_min);
-   const inter_y_min = Math.max(y1_min, y2_min);
-   const inter_x_max = Math.min(x1_max, x2_max);
-   const inter_y_max = Math.min(y1_max, y2_max);
-
-   const inter_area = Math.max(0, inter_x_max - inter_x_min) * Math.max(0, inter_y_max - inter_y_min);
-   const box1_area = box1.width * box1.height;
-   const box2_area = box2.width * box2.height;
-   const union_area = box1_area + box2_area - inter_area;
-
-   return union_area > 0 ? inter_area / union_area : 0;
-};
-
-export const applyNMS = (boxes: Annotation[], iouThreshold: number = 0.5): string[] => {
-   // Sort boxes by score descending
-   const sortedBoxes = [...boxes].sort((a, b) => {
-      const scoreA = a.score ?? 0;
-      const scoreB = b.score ?? 0;
-      return scoreB - scoreA;
-   });
-
-   const keptBoxIds = new Set<string>();
-   const toRemoveIds: string[] = [];
-
-   sortedBoxes.forEach((box) => {
-      let shouldKeep = true;
-
-      // Check if this box overlaps with any already-kept box
-      for (const keptId of keptBoxIds) {
-         const keptBox = boxes.find((b) => b.id === keptId);
-         if (!keptBox) continue;
-
-         const iou = calculateIoU(box, keptBox);
-         if (iou > iouThreshold) {
-            shouldKeep = false;
-            break;
-         }
-      }
-
-      if (shouldKeep) {
-         keptBoxIds.add(box.id);
-      } else {
-         toRemoveIds.push(box.id);
-      }
-   });
-
-   return toRemoveIds; // Return value can be used to trigger UI updates if needed]
 };

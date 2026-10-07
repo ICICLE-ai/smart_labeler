@@ -10,6 +10,9 @@ COPY labeler_env.yaml /smart_labeler/requirements.yaml
 COPY entrypoint.sh /smart_labeler/entrypoint.sh
 COPY server /smart_labeler/server
 COPY client /smart_labeler/client
+# The client's Remix build resolves @icicle-ai/* to ../packages/*/src, so the
+# shared package sources must sit beside the client inside the image.
+COPY packages /smart_labeler/packages
 COPY downloadStream.js /smart_labeler/downloadStream.js
 
 RUN chmod +x /smart_labeler/entrypoint.sh

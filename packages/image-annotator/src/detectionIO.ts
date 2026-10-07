@@ -8,13 +8,19 @@ export interface FileAnnotations {
 }
 
 // Convert a full Tapis path to a path relative to srcImgDir.
-// Falls back to the bare basename when the prefix doesn't match.
+//
+// When the path does not sit under srcImgDir (including when srcImgDir is unset)
+// the whole path is kept. It used to fall back to the bare basename, which made
+// two images that merely share a filename — train/img_001.png and
+// val/img_001.png — indistinguishable in a saved file, so one overwrote the
+// other. It also disagreed with normalizeRelKey, which keeps the full path in
+// exactly that case, so the save and the merge baseline keyed the same image two
+// different ways.
 export function toRelativeFilename(fullPath: string, srcImgDir: string): string {
    const normDir = srcImgDir.replace(/^\/+/, "").replace(/\/+$/, "");
-   const normPath = fullPath.replace(/^\/+/, "");
+   const normPath = fullPath.replace(/^\/+/, "").replace(/\/{2,}/g, "/");
    if (normDir && normPath.startsWith(normDir + "/")) return normPath.slice(normDir.length + 1);
-   const lastSlash = fullPath.lastIndexOf("/");
-   return lastSlash >= 0 ? fullPath.slice(lastSlash + 1) : fullPath;
+   return normPath;
 }
 
 // Canonical identity for an image *as spelled inside an annotation file*.
@@ -27,7 +33,12 @@ export function toRelativeFilename(fullPath: string, srcImgDir: string): string 
 // Mirrors toRelativeFilename's output for paths that do sit under srcImgDir.
 export function normalizeRelKey(rawPath: string, srcImgDir: string): string {
    const normDir = srcImgDir.replace(/^\/+/, "").replace(/\/+$/, "");
-   const norm = rawPath.replace(/^\/+/, "").replace(/\/{2,}/g, "/");
+   // Exports from other tools often prefix "./"; it means the same path.
+   const norm = rawPath
+      .replace(/^\.\//, "")
+      .replace(/\/\.\//g, "/")
+      .replace(/^\/+/, "")
+      .replace(/\/{2,}/g, "/");
    if (normDir && norm.startsWith(normDir + "/")) return norm.slice(normDir.length + 1);
    return norm;
 }
@@ -74,7 +85,17 @@ export function buildFileIndexResolver(files: string[], srcImgDir: string = "") 
       if (suffixHits.length === 1) return suffixHits[0];
       if (suffixHits.length > 1) return undefined;
 
-      const base = rel.substring(rel.lastIndexOf("/") + 1);
+      // Basename matching is only ever appropriate for a path that names no
+      // folder at all. A path like "val/img_001.png" states which folder it means;
+      // matching it to "train/img_001.png" is simply wrong, and that is what put
+      // one folder's annotations onto the other's image. It mattered most before
+      // both folders had been opened: `files` only holds what the explorer has
+      // listed so far, so the duplicate-basename guard below could not yet see a
+      // duplicate, and the fallback silently took the one file it knew about.
+      // Leaving it unresolved is safe — the importer re-runs as more folders load.
+      if (rel.includes("/")) return undefined;
+
+      const base = rel;
       if (ambiguousBases.has(base)) {
          console.warn(`Ambiguous annotation path "${rawPath}": "${base}" exists in multiple folders — skipped.`);
          return undefined;
@@ -83,17 +104,66 @@ export function buildFileIndexResolver(files: string[], srcImgDir: string = "") 
    };
 }
 
-// Collapse identical annotations on the same image. Files written before the
-// path-identity fix carry the same box twice under two spellings of the image
-// path; both now resolve to one image, so drop the repeat on the way in.
-function dedupeAnnotations(annotations: Annotation[]): Annotation[] {
-   const seen = new Set<string>();
-   return annotations.filter((a) => {
-      const key = `${a.label}|${a.x}|${a.y}|${a.width}|${a.height}|${a.flag ?? ""}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-   });
+/** An imported box together with the identity it was filed under in the JSON. */
+type TaggedAnnotation = { source: string; annotation: Annotation };
+
+function annotationKey(a: Annotation): string {
+   return `${a.label}|${a.x}|${a.y}|${a.width}|${a.height}|${a.flag ?? ""}`;
+}
+
+/**
+ * Collapse boxes that exist only because one image was spelled two different
+ * ways in the file — the artifact of files written before the path-identity
+ * fix, where both spellings now resolve to the same image.
+ *
+ * Boxes filed under the SAME identity are always kept, however identical they
+ * look. Running one text prompt twice legitimately stacks two boxes in exactly
+ * the same place, and that is the user's data, not an artifact: an earlier
+ * version compared geometry alone and silently dropped such boxes the next
+ * time the file was opened.
+ *
+ * `source` is the raw `image_path` for default JSON and the `image_id` for
+ * COCO, so duplicate spellings read as distinct sources while repeated boxes
+ * under one spelling do not.
+ */
+function dedupeAcrossPathSpellings(tagged: TaggedAnnotation[]): Annotation[] {
+   // Group by source, keeping the order the sources first appeared in.
+   const order: string[] = [];
+   const groups = new Map<string, Annotation[]>();
+   for (const { source, annotation } of tagged) {
+      if (!groups.has(source)) {
+         groups.set(source, []);
+         order.push(source);
+      }
+      groups.get(source)!.push(annotation);
+   }
+   // One spelling means nothing here is a spelling artifact.
+   if (order.length <= 1) return tagged.map((t) => t.annotation);
+
+   const kept: Annotation[] = [];
+   const keptCounts = new Map<string, number>();
+   for (const source of order) {
+      // Each box already kept can absorb at most one repeat from this source,
+      // so a set duplicated under N spellings collapses to one copy while
+      // genuinely stacked boxes survive.
+      const available = new Map(keptCounts);
+      const keptHere: Annotation[] = [];
+      for (const a of groups.get(source)!) {
+         const key = annotationKey(a);
+         const left = available.get(key) ?? 0;
+         if (left > 0) {
+            available.set(key, left - 1);
+            continue;
+         }
+         keptHere.push(a);
+      }
+      kept.push(...keptHere);
+      for (const a of keptHere) {
+         const key = annotationKey(a);
+         keptCounts.set(key, (keptCounts.get(key) ?? 0) + 1);
+      }
+   }
+   return kept;
 }
 
 export function exportToCoco(
@@ -231,8 +301,9 @@ export function exportToDefaultJson(
 const canonPath = (p: string): string =>
    "/" + p.replace(/^\/+/, "").replace(/\/+$/, "").replace(/\/{2,}/g, "/");
 
-// Reconstruct a full path from a path relative to srcImgDir. When srcImgDir is
-// empty the export already flattened paths to basenames, so this stays consistent.
+// Reconstruct a full path from a path relative to srcImgDir. With no srcImgDir
+// the relative form is already the full path, so this just restores the leading
+// slash.
 export const joinUnderDir = (rel: string, srcImgDir: string): string => {
    const d = srcImgDir.replace(/\/+$/, "");
    return d ? canonPath(`${d}/${rel}`) : "/" + rel.replace(/^\/+/, "");
@@ -307,19 +378,28 @@ export function detectionJsonToRelMap(
 
 // Build the detection export JSON, overlaying live annotations (keyed by path
 // relative to srcImgDir) on top of the imported baseline so that annotations for
-// unopened sibling folders survive the save. When baselineJson is null this is
+// unopened sibling folders survive the save. With no baselines this is
 // equivalent to exporting just the live map.
+/** One annotation document brought into the session, with its format. */
+export type AnnotationBaseline = { json: any; isCoco: boolean };
+
 export function mergeDetectionForSave(
    liveRelMap: Map<string, FileAnnotations>,
-   baselineJson: any | null,
-   baselineIsCoco: boolean,
+   baselines: AnnotationBaseline[],
    srcImgDir: string,
    coco: boolean,
    liveFiles: string[] = [],
 ): object {
-   const complete = baselineJson
-      ? detectionJsonToRelMap(baselineJson, baselineIsCoco, srcImgDir, liveFiles)
-      : new Map<string, FileAnnotations>();
+   // Oldest first, so a later import overrides an earlier one per image while
+   // images only the earlier one mentions are still carried through. Taking a
+   // single baseline here is what made importing one folder's annotations drop
+   // every other folder's from the saved file.
+   const complete = new Map<string, FileAnnotations>();
+   for (const baseline of baselines) {
+      if (!baseline?.json) continue;
+      detectionJsonToRelMap(baseline.json, baseline.isCoco, srcImgDir, liveFiles)
+         .forEach((fa, rel) => complete.set(rel, fa));
+   }
    liveRelMap.forEach((fa, rel) => complete.set(rel, fa)); // live edits win per file
    const rels = [...complete.keys()];
    const exportFiles = rels.map((r) => joinUnderDir(r, srcImgDir));
@@ -359,6 +439,10 @@ export function importFromCocoJsonUtil(
    }
 
    const fileToAnnotationsMap = new Map<number, FileAnnotations>();
+   // Boxes are collected per file tagged with their image_id, so two COCO
+   // image entries spelling one file two ways stay distinguishable from the
+   // same image legitimately carrying a box twice.
+   const taggedByFile = new Map<number, TaggedAnnotation[]>();
    if (Array.isArray(cocoJson.annotations)) {
       cocoJson.annotations.forEach((ann: any) => {
          const fileIdx = imageIdToFileIndex.get(ann.image_id);
@@ -383,11 +467,14 @@ export function importFromCocoJsonUtil(
                annotations: [],
             });
          }
-         fileToAnnotationsMap.get(fileIdx)!.annotations.push(annotation);
+         if (!taggedByFile.has(fileIdx)) taggedByFile.set(fileIdx, []);
+         taggedByFile.get(fileIdx)!.push({ source: String(ann.image_id), annotation });
       });
    }
 
-   fileToAnnotationsMap.forEach((fa) => { fa.annotations = dedupeAnnotations(fa.annotations); });
+   fileToAnnotationsMap.forEach((fa, fileIdx) => {
+      fa.annotations = dedupeAcrossPathSpellings(taggedByFile.get(fileIdx) ?? []);
+   });
    return fileToAnnotationsMap;
 }
 
@@ -399,6 +486,9 @@ export function importFromDefaultJsonUtil(
    const resolveFileIndex = buildFileIndexResolver(files, srcImgDir);
 
    const fileToAnnotationsMap = new Map<number, FileAnnotations>();
+   // Tagged with the raw image_path, so two spellings of one file remain
+   // distinguishable from one spelling repeating the same box.
+   const taggedByFile = new Map<number, TaggedAnnotation[]>();
    if (Array.isArray(defaultJson.annotations)) {
       defaultJson.annotations.forEach((ann: any) => {
          const fileIdx = resolveFileIndex(ann.image_path);
@@ -422,11 +512,14 @@ export function importFromDefaultJsonUtil(
                annotations: [],
             });
          }
-         fileToAnnotationsMap.get(fileIdx)!.annotations.push(annotation);
+         if (!taggedByFile.has(fileIdx)) taggedByFile.set(fileIdx, []);
+         taggedByFile.get(fileIdx)!.push({ source: String(ann.image_path), annotation });
       });
    }
 
-   fileToAnnotationsMap.forEach((fa) => { fa.annotations = dedupeAnnotations(fa.annotations); });
+   fileToAnnotationsMap.forEach((fa, fileIdx) => {
+      fa.annotations = dedupeAcrossPathSpellings(taggedByFile.get(fileIdx) ?? []);
+   });
    return fileToAnnotationsMap;
 }
 

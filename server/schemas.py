@@ -103,6 +103,8 @@ class AnnotatorConfigCreate(BaseModel):
     srcImgDir: str
     annotationFilePath: str
     fileType: str = "default"
+    # Where the annotation file itself lives. Blank means "same as system".
+    annotationSystem: str = ""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -112,6 +114,7 @@ class AnnotatorConfigUpdate(BaseModel):
     srcImgDir: Optional[str] = None
     annotationFilePath: Optional[str] = None
     fileType: Optional[str] = None
+    annotationSystem: Optional[str] = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -122,6 +125,7 @@ class AnnotatorConfigOut(BaseModel):
     srcImgDir: str
     annotationFilePath: str
     fileType: str
+    annotationSystem: str
     parentPipelineId: int
 
 
@@ -200,6 +204,7 @@ class QueryImageConfigOut(BaseModel):
     method: str
     system: str
     name: str = ""
+    classification_name: str = ""
     proposer_ids: str = ""
     embedder_ids: str = ""
     proposer_models: str = ""

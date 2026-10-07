@@ -20,6 +20,18 @@ HPC_CORES_PER_NODE = os.getenv("HPC_CORES_PER_NODE", 8)
 HPC_NUMBER_OF_NODES = os.getenv("HPC_NUMBER_OF_NODES", 1)
 
 
+def job_name(body, fallback):
+    """
+    The Tapis job name.
+
+    Each step has its own fallback so that two jobs in one pipeline are never
+    both submitted under the same name — an empty name field used to leave them
+    indistinguishable in the Tapis job list.
+    """
+    name = (body.get("name") or "").strip()
+    return name or fallback
+
+
 class ObjectDetectionClassSupports:
 
     @staticmethod
@@ -31,7 +43,7 @@ class ObjectDetectionClassSupports:
 
         app_config = get_app_config("class_supports", system)
         data = {
-            "name": body["name"],
+            "name": job_name(body, "Generate class supports"),
             **app_config,
             "description": "Test job for generate class supports object-detection",
             "nodeCount": HPC_NUMBER_OF_NODES,
@@ -98,12 +110,15 @@ class ObjectDetectionClassSupports:
         print("Submitting job with data:", data)
         res = submit_tapis_job(data, token)
         print("Class supports - Job submission response:", res)
-        if res["status"] == "success":
-            sid = res["uuid"]
+        # A job id is the only proof the submission landed; without one there is
+        # nothing to record and nothing to report as submitted.
+        sid = res.get("uuid") if res.get("status") == "success" else None
+        if sid:
             print(f"Class supports job submitted successfully with UUID: {sid}")
             update_object_detection(digid, {"generate_class_supports_job_id": sid})
         else:
-            print("Error submitting job:", res["message"])
+            print("Error submitting class supports job "
+                  f"(HTTP {res.get('httpStatus')}): {res.get('message')}")
         return res
 
 
@@ -127,7 +142,7 @@ class ObjectDetection:
 
         app_config = get_app_config("detection", system)
         data = {
-            "name": body["name"],
+            "name": job_name(body, "Generate proposals"),
             **app_config,
             "description": "Test job for optimize objectness threshold",
             "nodeCount": body.get("node_count", HPC_NUMBER_OF_NODES),
@@ -197,13 +212,14 @@ class ObjectDetection:
 
         res = submit_tapis_job(data, token)
         print("Proposal - Job submission response:", res)
-        if res["status"] == "success":
-            sid = res["uuid"]
+        sid = res.get("uuid") if res.get("status") == "success" else None
+        if sid:
             print(f"Proposal job submitted successfully with UUID: {sid}")
             update_query_image_configuration(body["id"], {"objectnessThresholdJobId": sid})
             update_object_detection(digid, {"current_query_image_configuration": body["id"]})
         else:
-            print("Error submitting job:", res["message"])
+            print("Error submitting proposal job "
+                  f"(HTTP {res.get('httpStatus')}): {res.get('message')}")
         return res
 
 
@@ -222,7 +238,7 @@ class ObjectClassification:
 
         app_config = get_app_config("classification", system)
         data = {
-            "name": body["name"],
+            "name": job_name(body, "Classify objects"),
             **app_config,
             "description": "Job to predict class",
             "nodeCount": 1,
@@ -285,12 +301,12 @@ class ObjectClassification:
         print('data : ', data)
         res = submit_tapis_job(data, token)
         print("Classification - Job submission response:", res)
-        if res["status"] == "success":
-            sid = res["uuid"]
+        sid = res.get("uuid") if res.get("status") == "success" else None
+        if sid:
             print(f"Classification job submitted successfully with UUID: {sid}")
             update_query_image_configuration(body["id"], {"detectionJobId": sid})
             update_object_detection(digid, {"current_query_image_configuration": body["id"]})
         else:
-            print("Error submitting job:", res["message"])
-            sid = None
+            print("Error submitting classification job "
+                  f"(HTTP {res.get('httpStatus')}): {res.get('message')}")
         return res

@@ -284,6 +284,18 @@ export const segmentationEngine: CanvasEngine<SegmentationAnnotation> = {
       };
    },
 
+   getCenter(mask) {
+      if (!mask.points?.length) return { x: 0, y: 0 };
+      // Centre of the polygon's bounding box. The centroid would sit outside a
+      // sufficiently concave mask, which is not what "bring it into view" wants.
+      const xs = mask.points.map((p) => p.x);
+      const ys = mask.points.map((p) => p.y);
+      return {
+         x: (Math.min(...xs) + Math.max(...xs)) / 2,
+         y: (Math.min(...ys) + Math.max(...ys)) / 2,
+      };
+   },
+
    runSam3Text(textPrompts, ctx) {
       ctx.setIsSam3Loading(true);
       ctx.sam3Client

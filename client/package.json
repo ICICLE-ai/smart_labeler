@@ -25,6 +25,7 @@
     "@tabler/icons-react": "^3.5.0",
     "@tapis/tapisui-common": "^0.0.13",
     "@tapis/tapisui-hooks": "^0.0.3",
+    "formik": "^2.4.6",
     "isbot": "^4.1.0",
     "react": "^18.2.1",
     "react-cookie": "^7.2.2",

@@ -170,6 +170,7 @@ execute_query(
         embedder_models TEXT DEFAULT '',
         class_support_paths TEXT DEFAULT '',
         proposal_tensor_paths TEXT DEFAULT '',
+        classification_name TEXT DEFAULT '',
         node_count INTEGER DEFAULT 1,
         cores_per_node INTEGER DEFAULT 8,
         memory_mb INTEGER DEFAULT 64800,
@@ -189,6 +190,14 @@ for col, defval in [
         f"ALTER TABLE query_image_configuration ADD COLUMN IF NOT EXISTS {col} INTEGER DEFAULT {defval}",
         None,
     )
+
+# The classification job keeps its own name. It used to be written to `name`,
+# which the proposal job owns, so submitting a classification renamed the
+# proposal configuration it was run against.
+execute_query(
+    "ALTER TABLE query_image_configuration ADD COLUMN IF NOT EXISTS classification_name TEXT DEFAULT ''",
+    None,
+)
 
 execute_query(
     """CREATE TABLE IF NOT EXISTS object_detection(
@@ -221,6 +230,11 @@ execute_query("ALTER TABLE pipeline DROP CONSTRAINT IF EXISTS pipeline_pipelineu
 execute_query("ALTER TABLE pipeline DROP COLUMN IF EXISTS metadata", None)
 execute_query("ALTER TABLE object_detection DROP COLUMN IF EXISTS percentcomplete", None)
 execute_query("ALTER TABLE annotator_configuration ADD COLUMN IF NOT EXISTS fileType TEXT DEFAULT 'default'", None)
+# The Tapis system the annotation FILE lives on. Kept apart from `system`, which
+# is the system holding the source IMAGES: the save dialog lets those differ, and
+# with one column the file was written to one system and read back from another.
+# Empty means "same as system", which is how every pre-existing row behaves.
+execute_query("ALTER TABLE annotator_configuration ADD COLUMN IF NOT EXISTS annotationSystem TEXT DEFAULT ''", None)
 execute_query('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE', None)
 
 _default_system = os.getenv("DEFAULT_SYSTEM", "expanse-tapis-static")
@@ -335,16 +349,82 @@ def update_pipeline(pipeline_id, user, data):
     )
     return True
 
+class PipelineDeleteError(Exception):
+    """A pipeline could not be deleted. `message` is safe to show a user."""
+
+    def __init__(self, message, cause=None):
+        super().__init__(message)
+        self.message = message
+        self.cause = cause
+
+
 def delete_pipeline(pipeline_id, user):
+    """
+    Remove a pipeline and everything hanging off it, in one transaction.
+
+    Each DELETE used to run as its own committed statement, so a failure part way
+    through left the pipeline behind with some of its children already gone — and
+    the error was swallowed and reported to the caller as success, which is why a
+    pipeline could appear to "not delete" with nothing explaining why. The
+    statements are ordered children-first so foreign keys are never violated, and
+    anything that still goes wrong is raised rather than hidden.
+    """
+    statements = (
+        # object_detection points at query_image_configuration, so it goes first.
+        ("DELETE FROM object_detection WHERE parentpipeline = %s", (pipeline_id,)),
+        ("DELETE FROM query_image_configuration WHERE parentpipelineid = %s", (pipeline_id,)),
+        ("DELETE FROM annotator_configuration WHERE parentpipelineid = %s", (pipeline_id,)),
+        ("DELETE FROM pipeline WHERE pipelineid = %s", (pipeline_id,)),
+    )
+
+    connection = None
+    cursor = None
     try:
-        execute_query("DELETE FROM object_detection WHERE parentpipeline = %s", (pipeline_id,))
-        execute_query("DELETE FROM query_image_configuration WHERE parentpipelineid = %s", (pipeline_id,))
-        execute_query("DELETE FROM annotator_configuration WHERE parentpipelineid = %s", (pipeline_id,))
-        execute_query("DELETE FROM pipeline WHERE pipelineid = %s", (pipeline_id,))
+        connection = connection_pool.getconn()
+        cursor = connection.cursor(cursor_factory=RealDictCursor)
+        for querystring, values in statements:
+            cursor.execute(querystring, values)
+        deleted = cursor.rowcount
+        connection.commit()
+        if deleted == 0:
+            # The pipeline row was already gone. Treat as success so a retry after a
+            # half-finished delete does not look like a failure.
+            print(f"pipeline {pipeline_id} was already absent at delete time")
+        return True
+    except psycopg2.errors.ForeignKeyViolation as e:
+        if connection:
+            try:
+                connection.rollback()
+            except Exception:
+                pass
+        # Names the table still holding a reference, which is the one piece of
+        # information needed to fix this.
+        detail = getattr(getattr(e, "diag", None), "table_name", None) or "another record"
+        raise PipelineDeleteError(
+            f"This pipeline still has data attached to it in \"{detail}\", so it cannot "
+            f"be removed yet. Nothing was deleted.",
+            cause=e,
+        ) from e
     except Exception as e:
-        print(f"Error deleting pipeline {pipeline_id}: {str(e)}")
-        return False
-    return True
+        if connection:
+            try:
+                connection.rollback()
+            except Exception:
+                pass
+        print(f"Error deleting pipeline {pipeline_id}: {e}")
+        raise PipelineDeleteError(
+            "The pipeline could not be deleted because the database refused the "
+            "request. Nothing was deleted.",
+            cause=e,
+        ) from e
+    finally:
+        if cursor:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+        if connection:
+            connection_pool.putconn(connection)
 
 ###################################################
 
@@ -352,8 +432,15 @@ def delete_pipeline(pipeline_id, user):
 
 def create_annotator_configuration(pipeline_id, data):
     return execute_query(
-        "INSERT INTO annotator_configuration (system, srcImgDir, annotationFilePath, parentpipelineid, fileType) VALUES (%s, %s, %s, %s, %s)",
-        (data.get("system", ""), data.get("srcImgDir", ""), data.get("annotationFilePath", ""), pipeline_id, data.get("fileType", "default")),
+        "INSERT INTO annotator_configuration (system, srcImgDir, annotationFilePath, parentpipelineid, fileType, annotationSystem) VALUES (%s, %s, %s, %s, %s, %s)",
+        (
+            data.get("system", ""),
+            data.get("srcImgDir", ""),
+            data.get("annotationFilePath", ""),
+            pipeline_id,
+            data.get("fileType", "default"),
+            data.get("annotationSystem", ""),
+        ),
     )
 
 
@@ -382,7 +469,7 @@ def get_annotator_configuration_by_id(config_id):
 def update_annotator_configuration(config_id, updates):
     update_fields, values = [], []
     for key, value in updates.items():
-        if key in ["system", "srcImgDir", "annotationFilePath", "fileType"]:
+        if key in ["system", "srcImgDir", "annotationFilePath", "fileType", "annotationSystem"]:
             update_fields.append(f"{key} = %s")
             values.append(value)
     if not update_fields:
@@ -579,6 +666,7 @@ def get_all_query_configurations(pipeline_id):
             "system": row["system"],
             "object_feature_tensor_file_path": row["object_feature_tensor_file_path"],
             "name": row["name"],
+            "classification_name": row.get("classification_name", ""),
             "proposer_ids": row["proposer_ids"],
             "embedder_ids": row["embedder_ids"],
             "is_sahi": row["is_sahi"],
@@ -624,6 +712,7 @@ def update_query_image_configuration(query_id, updates):
             "objectnessThresholdJobId",
             "is_query_dir",
             "name",
+            "classification_name",
             "class_support_paths",
             "proposal_tensor_paths",
             "node_count",

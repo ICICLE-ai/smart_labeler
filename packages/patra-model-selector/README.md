@@ -45,6 +45,23 @@ configureTapisVault({
 });
 ```
 
+### Going through your own backend instead
+
+Both upstreams can be routed through a backend of your own, which is the
+practical answer to the CORS note below. Point `proxy.baseUrl` at it:
+
+```ts
+configurePatraModelSelector({ proxy: { baseUrl: "https://my-api.example.com" } });
+configureTapisVault({ proxy: { baseUrl: "https://my-api.example.com" } });
+```
+
+The default paths match the Smart Labeler backend's own routes —
+`GET /patra/list?new=true`, `GET /patra/download_mc/<uuid>?new=true`, and
+`GET`/`POST /api/vault/secret/hftoken`, each with the Tapis token in a
+`Tapis-Token` header. Override `listPath`, `detailsPath`, `secretPath` or
+`tokenHeader` if your backend spells them differently. Pass `proxy: null` to go
+back to calling Patra and Tapis directly.
+
 ## Quick start
 
 ```tsx
@@ -93,21 +110,26 @@ one" link in that modal, opening a second modal with the guide in an
 `<iframe>`. Omit it and that link simply doesn't render — this package
 ships no bundled asset of its own.
 
-## Why `tapisUsername` is required for the vault calls
+## Why `tapisUsername` is needed for the direct vault calls
 
 Tapis vault secrets are addressed by **tenant + username**, not just a
 token. The original app derived the username server-side by decoding the
-token; since this package calls Tapis directly from the browser, your app
+token; when this package calls Tapis directly from the browser, your app
 has to supply it — typically whatever your own auth/session state already
 has, since you're the one who knows who's logged in.
 
+Configure a vault `proxy` (above) and the argument becomes unnecessary: a
+backend can decode the token itself, so `tapisUsername` is ignored.
+
 ## CORS
 
-Calling Patra and Tapis directly from the browser only works if those
+Calling Patra and Tapis **directly** from the browser only works if those
 services send CORS headers for your app's origin. Tapis is known-good
 (confirmed elsewhere in the source app). Patra's CORS posture depends on
 your deployment — test `listPatraModels`/`getPatraModelDetails` against
-your actual instance before relying on this in production.
+your actual instance before relying on it, and configure a `proxy` if it
+does not cooperate. The Smart Labeler itself uses the proxy route for both
+upstreams for exactly this reason.
 
 ## API
 
@@ -116,9 +138,11 @@ your actual instance before relying on this in production.
 | `ModelSelector` | The card grid + selection + gated-model flow |
 | `PatraDetailsContent` | Standalone read-only model card detail view |
 | `PatraCard`, `PatraModelDetails` | Data shapes returned by Patra |
-| `configurePatraModelSelector` | One-time setup: Patra base URL |
+| `configurePatraModelSelector` | One-time setup: Patra base URL, or a backend proxy |
+| `PatraClientConfig`, `PatraProxyConfig` | Shapes accepted by `configurePatraModelSelector` |
 | `listPatraModels`, `getPatraModelDetails` | The underlying Patra client calls |
-| `configureTapisVault` | One-time setup: Tapis base URL, tenant |
+| `configureTapisVault` | One-time setup: Tapis base URL and tenant, or a backend proxy |
+| `TapisVaultConfig`, `TapisVaultProxyConfig` | Shapes accepted by `configureTapisVault` |
 | `checkHfSecretExists`, `saveHfTokenToVault` | The underlying Tapis vault client calls |
 
 ## Local development (inside this monorepo)

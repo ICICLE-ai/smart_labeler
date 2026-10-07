@@ -9,6 +9,8 @@ standalone in any Formik form. Extracted from the
 - Aggressive image prefetching (current page + neighbors) with a sliding
   LRU-ish cache window, so paging and arrow-key navigation feel instant
 - Arrow-key (←/→) navigation between images, directory breadcrumbs
+- Optional per-file annotation badges (count + flagged) and "Annotated" /
+  "Flagged" filters, driven by a `fileStats` map you supply
 - A lower-level `FileExplorerWrapper` / `FileSelectModalWrapper` pair for
   building your own file/dir picker UI (single or multi-select)
 - `TapisDirectoryField` — a Formik-bound text field + "Browse" button that
@@ -78,6 +80,34 @@ function Example({ tapisToken }: { tapisToken: string }) {
 Pass `fileDir` + `parentSystem` instead of `onDirectorySubmit` to render the
 browser pinned to a fixed directory, with no "change directory" form.
 
+### Annotation badges and filters
+
+This package does not know anything about annotations, so pass a `fileStats` map
+keyed by the same file paths the panel reports through `onFileSelect` /
+`filesInDirectory`. Each entry adds a count badge next to the filename (with a
+flag icon when `flagged` is true), and enables the "Annotated" / "Flagged"
+filter chips above the list. Files absent from the map count as unannotated.
+
+```tsx
+// Recompute whenever your annotations change — a new Map identity is what tells
+// FileExplorer to re-filter.
+const fileStats = useMemo(() => {
+   const stats = new Map<string, FileAnnotationStat>();
+   myAnnotationsByPath.forEach((anns, path) => {
+      if (anns.length === 0) return;
+      stats.set(path, { count: anns.length, flagged: anns.some((a) => Boolean(a.flag)) });
+   });
+   return stats;
+}, [myAnnotationsByPath]);
+
+<FileExplorer fileStats={fileStats} /* …the props above… */ />;
+```
+
+Filtering only narrows what the panel displays, prefetches and walks with the
+arrow keys — `filesInDirectory` still reports the full directory listing, so the
+paths your annotations are keyed by never change underneath you. Omit
+`fileStats` and neither the badges nor the filter chips render.
+
 ## Standalone directory/file picker
 
 ```tsx
@@ -123,9 +153,10 @@ import { TapisDirectoryField } from "@icicle-ai/tapis-file-explorer";
 |---|---|
 | `FileExplorer` | The main paginated browser panel |
 | `FileExplorerWrapper` | Lower-level Tapis directory listing UI (used inside the modal) |
-| `FileSelectModalWrapper` | Modal wrapping `FileExplorerWrapper` with a Select button |
+| `FileSelectModalWrapper` | Modal wrapping `FileExplorerWrapper` with a Select button. Pass `zIndex` to stack it above a host dialog — Mantine's default (200) sits below a MUI Dialog (1300) |
 | `TapisDirectoryField` | Formik text field + Browse button, opens the modal |
 | `SubmitButton` | Tiny Mantine button that calls `formik.submitForm()` |
+| `FileAnnotationStat` | `{ count: number; flagged: boolean }` — one entry of the `fileStats` map |
 | `configureTapisFileExplorer` | One-time setup: API base URLs, allowed systems |
 | `getImage`, `getDirContentsFromTapis`, `getTapisDirListing`, `sanitizePath` | The underlying Tapis client functions, if you want to build your own UI |
 

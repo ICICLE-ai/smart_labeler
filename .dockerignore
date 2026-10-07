@@ -1,0 +1,61 @@
+# Host-installed dependencies must never enter an image. They carry
+# platform-specific native binaries (esbuild, rollup, sass built for the host
+# OS) that break `npm run build` inside the linux container, and they are
+# ~2 GB of build context that every image then has to copy. Each Dockerfile
+# runs a fresh, linux-native `npm install` instead.
+#
+# This file applies to builds whose context is the repository root: the
+# combined image, and the client image (which needs packages/ beside client/,
+# so it cannot use client/ as its context).
+node_modules
+**/node_modules
+
+# Build outputs — regenerated inside the image.
+build
+**/build
+**/dist
+.cache
+**/.cache
+
+# Host-generated Python artifacts, compiled for the host's Python version.
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.so
+
+# Local virtual environments; dependencies come from labeler_env.yaml.
+.venv/
+venv/
+env/
+ENV/
+.conda/
+
+# Secrets and local-only configuration. Never bake these into an image layer.
+.env
+.env.*
+*.pem
+*.key
+
+# Local databases and data produced while running on the host.
+*.db
+*.sqlite
+*.sqlite3
+uploads/
+outputs/
+
+# Test, lint and type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+playwright-report/
+test-results/
+
+# Version control, editor, OS and log noise
+.git
+.github
+.vscode/
+.idea/
+.DS_Store
+*.log

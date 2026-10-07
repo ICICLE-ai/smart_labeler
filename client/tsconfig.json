@@ -2,6 +2,8 @@
   "include": [
     "**/*.ts",
     "**/*.tsx",
+    "../packages/*/src/**/*.ts",
+    "../packages/*/src/**/*.tsx",
     "**/.server/**/*.ts",
     "**/.server/**/*.tsx",
     "**/.client/**/*.ts",
@@ -31,7 +33,12 @@
     "forceConsistentCasingInFileNames": true,
     "baseUrl": ".",
     "paths": {
-      "~/*": ["./app/*"]
+      "~/*": ["./app/*"],
+      "@icicle-ai/image-annotation-canvas": ["../packages/image-annotation-canvas/src/index.ts"],
+      "@icicle-ai/annotation-details": ["../packages/annotation-details/src/index.ts"],
+      "@icicle-ai/tapis-file-explorer": ["../packages/tapis-file-explorer/src/index.ts"],
+      "@icicle-ai/image-annotator": ["../packages/image-annotator/src/index.ts"],
+      "@icicle-ai/patra-model-selector": ["../packages/patra-model-selector/src/index.ts"]
     },
     "noEmit": true
   }

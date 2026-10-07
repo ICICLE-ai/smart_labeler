@@ -146,6 +146,13 @@ export interface CanvasEngine<T extends BaseAnnotation> {
    /** Enter key while in DRAWING mode (e.g. close a polygon). */
    onDrawingEnterKey?: (ctx: EngineContext<T>) => void;
 
+   /**
+    * Centre point of an annotation, in natural image pixels. Lets the shell bring
+    * an annotation into view without knowing its shape. Omit it and the canvas
+    * simply won't recentre for this annotation kind.
+    */
+   getCenter?: (annotation: T) => Coords;
+
    dialogTitle: string;
    labelPlaceholder: string;
 }

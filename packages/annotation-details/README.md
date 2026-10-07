@@ -54,6 +54,9 @@ function Example() {
 
 ## What it renders
 
+- **Label for new annotations** (only when you pass `onActiveDrawLabelChange`) —
+  pick an existing label, or type a brand-new one, to arm it for whatever is
+  drawn next. See below.
 - **Label chips** — click to filter the list (and, via `handleFilterAnnotations`,
   your canvas) to one or more labels.
 - **Flag chips** — a small built-in taxonomy (starts with "Needs Review"),
@@ -67,6 +70,31 @@ function Example() {
   have a rectangular NMS concept, so the button is hidden for that variant).
 - **Grouped, multi-select list** — grouped by label; ctrl/cmd-click for
   multi-select, then bulk-relabel or bulk-delete.
+
+## Arming a label for new annotations
+
+Pass `onActiveDrawLabelChange` and keep the result in `activeDrawLabel` to render
+a "label for new annotations" section. Clicking a label arms it; clicking the
+armed label again disarms it. The text field registers a label the dataset does
+not contain yet — useful for starting a new class — and arms it in one step.
+
+The panel only reports the choice; acting on it is the canvas's job. Forward the
+value to `ImageCanvas`'s `defaultLabel` and new annotations take that label
+without the label prompt appearing:
+
+```tsx
+const [drawLabel, setDrawLabel] = useState<string | null>(null);
+
+<AnnotationDetails
+   activeDrawLabel={drawLabel}
+   onActiveDrawLabelChange={setDrawLabel}
+   /* …the props above… */
+/>
+<ImageCanvas defaultLabel={drawLabel ?? undefined} /* … */ />
+```
+
+Omit `onActiveDrawLabelChange` and the section does not render at all, so
+existing consumers are unaffected.
 
 ## API
 

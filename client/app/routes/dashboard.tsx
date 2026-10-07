@@ -1,4 +1,5 @@
 import {
+  Anchor,
   ActionIcon,
   Alert,
   Badge,
@@ -21,7 +22,7 @@ import {
   Title,
   Tooltip,
 } from "@mantine/core";
-import { IconSearch, IconAlertCircle, IconEdit, IconInfoCircle, IconPlus, IconRocket, IconTrash, IconUpload, IconX, IconCheck, IconFile } from "@tabler/icons-react";
+import { IconSearch, IconAlertCircle, IconEdit, IconInfoCircle, IconPlus, IconRocket, IconTrash, IconUpload, IconX, IconCheck, IconFile, IconUsers } from "@tabler/icons-react";
 import { useLoaderData, useNavigate } from "@remix-run/react";
 import { Formik } from "formik";
 import { useEffect, useRef, useState } from "react";
@@ -41,6 +42,16 @@ type Pipeline = {
 };
 
 type FileUploadState = { progress: number; status: "idle" | "uploading" | "done" | "error" };
+
+/**
+ * Shared allocation account. This is a community allocation, not a private one:
+ * anyone using it lands on the same Expanse (SDSC) project, so data uploaded
+ * under it is visible to other users of the service. Made explicit in the UI
+ * because people were uploading data without realising that.
+ */
+const COMMUNITY_SLURM_ACCOUNT = "uot260";
+const ALLOCATION_CONTACT_NAME = "Hari Subramoni";
+const ALLOCATION_CONTACT_EMAIL = "subramoni.1@osu.edu";
 
 export default function DashBoardPage() {
   const loaded = useLoaderData<Pipeline[]>();
@@ -84,7 +95,7 @@ export default function DashBoardPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
   const [createDesc, setCreateDesc] = useState("");
-  const [createSlurm, setCreateSlurm] = useState("uot260");
+  const [createSlurm, setCreateSlurm] = useState(COMMUNITY_SLURM_ACCOUNT);
   const [createType, setCreateType] = useState<TYPE>(TYPE.DETECTION);
   const [creating, setCreating] = useState(false);
 
@@ -198,7 +209,7 @@ export default function DashBoardPage() {
   const openCreate = () => {
     setCreateName("");
     setCreateDesc("");
-    setCreateSlurm("uot260");
+    setCreateSlurm(COMMUNITY_SLURM_ACCOUNT);
     setCreateType(activeType ?? TYPE.DETECTION);
     setCreateOpen(true);
   };
@@ -210,7 +221,7 @@ export default function DashBoardPage() {
     try {
       const res = await SubmitData(`/pipe/create`, {
         name: createName.trim(),
-        slurmaccount: createSlurm.trim() || "uot260",
+        slurmaccount: createSlurm.trim() || COMMUNITY_SLURM_ACCOUNT,
         description: createDesc.trim(),
         type: createType,
       }, token);
@@ -229,7 +240,7 @@ export default function DashBoardPage() {
   const openRename = (p: Pipeline) => {
     setRenameId(p.pid);
     setRenameName(p.name ?? "");
-    setRenameSlurm(p.slurm_account || "uot260");
+    setRenameSlurm(p.slurm_account || COMMUNITY_SLURM_ACCOUNT);
     setRenameDesc(p.description ?? "");
   };
 
@@ -251,14 +262,26 @@ export default function DashBoardPage() {
 
   const handleDelete = async (pid: string) => {
     setDeletingId(pid);
+    setDeleteError(null);
     try {
-      await DeleteData(`/pipe/delete/${pid}`, token);
+      const result = await DeleteData(`/pipe/delete/${pid}`, token);
+      if (!result.ok) {
+        // The result used to be discarded, so a refused delete just quietly
+        // reappeared in the refreshed list with no explanation.
+        setDeleteError(
+          result.detail?.trim() ||
+            (result.status
+              ? `The pipeline could not be deleted (error ${result.status}).`
+              : "The pipeline could not be deleted — the server could not be reached.")
+        );
+      }
     } finally {
       setDeletingId(null);
       fetchPipelines(true);
     }
   };
 
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const q = search.trim().toLowerCase();
 
@@ -333,6 +356,20 @@ export default function DashBoardPage() {
             • If your images are not yet on any cluster, use <strong>Upload Data</strong> to transfer files from your local machine to a Tapis storage system first.
           </Text>
         </Alert>
+
+        {deleteError && (
+          <Alert
+            icon={<IconAlertCircle size={16} />}
+            color="red"
+            variant="light"
+            mb="md"
+            title="Pipeline not deleted"
+            withCloseButton
+            onClose={() => setDeleteError(null)}
+          >
+            <Text size="sm" style={{ whiteSpace: "pre-wrap" }}>{deleteError}</Text>
+          </Alert>
+        )}
 
         {pipelinesError ? (
           <Alert color="red" variant="light" mb="md" title="Failed to load pipelines">
@@ -510,10 +547,49 @@ export default function DashBoardPage() {
             />
             <TextInput
               label="SLURM Account"
-              placeholder="uot260"
+              placeholder={COMMUNITY_SLURM_ACCOUNT}
               value={createSlurm}
               onChange={(e) => setCreateSlurm(e.currentTarget.value)}
+              description="The allocation that compute jobs for this pipeline are charged to."
             />
+
+            {createSlurm.trim() === COMMUNITY_SLURM_ACCOUNT || !createSlurm.trim() ? (
+              <Alert
+                icon={<IconUsers size={16} />}
+                color="orange"
+                variant="light"
+                title="You are using the community allocation"
+              >
+                <Text size="sm" mb={6}>
+                  <strong>{COMMUNITY_SLURM_ACCOUNT}</strong> is a shared community account. It gives
+                  you access to <strong>Expanse (SDSC)</strong> and is the quickest way to get
+                  started.
+                </Text>
+                <Text size="sm" mb={6}>
+                  Because it is shared, <strong>data you upload under it can be seen by other
+                  people using this service</strong>. Do not put anything confidential there.
+                </Text>
+                <Text size="sm">
+                  For a private allocation of your own, request one from {ALLOCATION_CONTACT_NAME}{" "}
+                  at{" "}
+                  <Anchor
+                    href={`mailto:${ALLOCATION_CONTACT_EMAIL}?subject=${encodeURIComponent(
+                      "Smart Labeler — allocation request"
+                    )}`}
+                  >
+                    {ALLOCATION_CONTACT_EMAIL}
+                  </Anchor>
+                  , then enter its account code above.
+                </Text>
+              </Alert>
+            ) : (
+              <Alert icon={<IconCheck size={16} />} color="green" variant="light">
+                <Text size="sm">
+                  Jobs will be charged to <strong>{createSlurm.trim()}</strong>. Make sure you have
+                  access to this allocation, or the jobs you submit will be rejected.
+                </Text>
+              </Alert>
+            )}
             {!activeType && (
               <Select
                 label="Pipeline Type"

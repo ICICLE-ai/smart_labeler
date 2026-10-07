@@ -18,6 +18,32 @@ logic (COCO and a simpler default format, both directions, with folder-scoped
 merge-on-save so annotations for folders you never opened this session
 aren't dropped).
 
+It also wires up the features the three underlying packages expose but cannot
+drive on their own:
+
+- **Per-file annotation badges and filters.** It derives the explorer's
+  `fileStats` map from its own per-file annotation/mask maps, so counts and flag
+  indicators next to each filename stay current as you annotate, and the
+  "Annotated" / "Flagged" filters work without any extra wiring.
+- **Saving that explains itself.** `saveAnnotationFile` reports the HTTP status
+  rather than a bare boolean, so a 403 (Tapis accepted the request but the user
+  has no write access to that folder) is told apart from a bad path or an expired
+  session. `ImageAnnotator` turns each into a message naming the folder, the
+  system, and what to do about it. The `Tools` toolbar treats a refused write as
+  a failure: the Save As dialog stays open, and the annotator config is not
+  repointed at a file that was never created.
+- **A folder browser in Save As.** "Browse" opens the Tapis directory picker;
+  choosing a folder fills in `annotation_<YYYYMMDD-HHMMSS>.json`, or
+  `.coco.json` in COCO mode. Flipping the format re-extensions a generated name
+  while keeping its timestamp, and leaves a hand-typed name alone.
+- **Selection kept in sync both ways.** Clicking an annotation in the details
+  panel pans the canvas until it is centred; selecting one on the canvas scrolls
+  the matching row into view in the panel. Only the list-to-canvas direction
+  moves the view, so clicking on the canvas never shifts what you are looking at.
+- **A label armed for new annotations.** The details panel's label picker is
+  connected to the canvas's `defaultLabel`, so choosing (or typing) a label up
+  front makes every new box or mask take it without a prompt.
+
 ## Why this package exists
 
 The four packages above are each independently usable, but this route was
@@ -107,6 +133,7 @@ original route.
 | `Tools` | The toolbar, exported standalone if you want to build your own layout |
 | `AnnotationFileFormatSwitch` | The COCO/default format toggle used inside Tools' dialogs |
 | `configureImageAnnotator` | One-time setup: your backend's base URL |
+| `SaveAnnotationResult` | `{ ok, status?, detail? }` returned by `saveAnnotationFile` |
 | `fetchAnnotatorConfigs`, `fetchPipeline`, `fetchIsAdmin`, `createAnnotatorConfig`, `updateAnnotatorConfig`, `fetchAnnotationFileText`, `saveAnnotationFile` | The underlying backend client calls |
 | `FileAnnotations`, `exportToCoco`, `exportToDefaultJson`, `importFromCocoJsonUtil`, `importFromDefaultJsonUtil`, `mergeDetectionForSave`, `detectionJsonToRelMap`, `toRelativeFilename`, `joinUnderDir`, `downloadFile` | Detection (bounding-box) JSON I/O, if you want to build your own save/load flow |
 | `SegmentationFileAnnotations`, `exportSegmentationJson`, `exportSegmentationToCoco`, `importSegmentationJson`, `importSegmentationFromCoco`, `mergeSegmentationForSave`, `segJsonToRelMap` | The segmentation (polygon mask) equivalents |

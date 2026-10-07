@@ -307,8 +307,10 @@ and the server, a client-only image, and a server-only image.
 # This is a long build; it creates the full conda environment from labeler_env.yaml.
 docker build -t smart-labeler:local .
 
-# Client only. Build context is client/ — it contains its own downloadStream.js.
-docker build -t smart-labeler-client:local client
+# Client only. The build context is the repository ROOT, not client/: the Remix
+# build resolves @icicle-ai/* to ../packages/*/src, so the shared package sources
+# must be inside the context alongside the client.
+docker build -f client/Dockerfile -t smart-labeler-client:local .
 
 # Server only. Build context is server/ — it contains its own labeler_env.yaml.
 docker build -t smart-labeler-server:local server

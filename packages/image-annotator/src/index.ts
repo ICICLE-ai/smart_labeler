@@ -16,7 +16,7 @@ export {
    fetchAnnotationFileText,
    saveAnnotationFile,
 } from "./backendClient";
-export type { ImageAnnotatorConfig, AnnotatorConfig, PipelineInfo } from "./backendClient";
+export type { ImageAnnotatorConfig, AnnotatorConfig, PipelineInfo, SaveAnnotationResult } from "./backendClient";
 
 export {
    toRelativeFilename,

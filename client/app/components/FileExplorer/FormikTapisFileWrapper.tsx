@@ -4,6 +4,7 @@ import { Input, InputGroup, Button } from "reactstrap";
 import { useField } from "formik";
 import { useModal } from "@tapis/tapisui-common";
 import FileSelectModalWrapper from "~/components/FileExplorer/FileSelectModalWrapper";
+import type { TapisFileEntry, TapisSelectMode } from "@icicle-ai/tapis-file-explorer";
 
 const pathToFile = (path?: string) => {
   if (path) {
@@ -51,7 +52,6 @@ const normalizeToPathOnly = (value?: string) => {
 };
 
 export const FormikTapisFileInputWrapper = ({
-  allowSystemChange = true,
   disabled,
   systemId,
   path,
@@ -67,7 +67,7 @@ export const FormikTapisFileInputWrapper = ({
   const { modal, open, close } = useModal();
 
   const onSelect = useCallback(
-    (_selectedSystemId, selectedFiles) => {
+    (_selectedSystemId: string | null, selectedFiles: TapisFileEntry[]) => {
       const selectedPath = selectedFiles?.[0]?.path;
       setValue(normalizeToPathOnly(selectedPath));
     },
@@ -83,8 +83,8 @@ export const FormikTapisFileInputWrapper = ({
     return result;
   }, [value, systemId, path]);
 
-  const selectMode = useMemo(() => {
-    const types = [];
+  const selectMode = useMemo<TapisSelectMode>(() => {
+    const types: TapisSelectMode["types"] = [];
     if (files) {
       types.push("file");
     }
@@ -123,7 +123,6 @@ export const FormikTapisFileInputWrapper = ({
           selectMode={selectMode}
           path={parent}
           initialSelection={file ? [file] : undefined}
-          allowSystemChange={allowSystemChange}
         />
       )}
     </>

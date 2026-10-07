@@ -1,4 +1,7 @@
 import type { RuntimeEnv } from "~/context/AppConfigContext";
+import { configureTapisFileExplorer } from "@icicle-ai/tapis-file-explorer";
+import { configureImageAnnotator } from "@icicle-ai/image-annotator";
+import { configurePatraModelSelector, configureTapisVault } from "@icicle-ai/patra-model-selector";
 
 // Defaults overridden at runtime by initConfig() (called from root.tsx loader data).
 // Never use import.meta.env here — these values must be injectable at container
@@ -38,9 +41,27 @@ export const initConfig = (env: RuntimeEnv) => {
    if (env.embedders) EMBEDDERS = env.embedders.split(",");
    if (env.proposers) PROPOSERS = env.proposers.split(",");
    _annotatorType = env.annotatorType ? env.annotatorType.toUpperCase() : null;
+
+   // The @icicle-ai/* packages are deployment-agnostic: they hold the same
+   // endpoints in their own module-level config so they can be reused outside
+   // this app. Point them at whatever this container was started with.
+   configureTapisFileExplorer({
+      apiBaseUrl: _baseUrl,
+      tapisBaseUrl: _tapisBase,
+      allowedSystems: allowed_systems,
+      defaultSystem: DEFAULT_SYSTEM,
+   });
+   configureImageAnnotator({ apiBaseUrl: _baseUrl });
+   // Patra and the Tapis vault are reached through this app's own backend rather
+   // than directly: a direct browser call is cross-origin and neither upstream
+   // sends CORS headers for it.
+   configurePatraModelSelector({ proxy: { baseUrl: _baseUrl } });
+   configureTapisVault({ proxy: { baseUrl: _baseUrl } });
 };
 
 export const getBaseURL = () => _baseUrl;
+export const getSam3Endpoint = () => _sam3Endpoint;
+export const getTapisBaseURL = () => _tapisBase;
 export const getAnnotatorType = () => _annotatorType;
 
 // Full application title per annotator type. Falls back to the bare product
@@ -64,17 +85,45 @@ export const sanitizePath = (path: string): string =>
       .replace(/[\u200B\u200C\u200D\uFEFF\u200E\u200F\u2028\u2029]/g, "")
       .replace(/[\r\n\t]+/g, "");
 
+/**
+ * Statuses worth trying again. A cold backend answers 502/503 for the first
+ * request or two; 401/403/404 are definite answers and retrying only delays
+ * the real error.
+ */
+const TRANSIENT_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const RETRY_DELAYS_MS = [400, 1200];
+
+/**
+ * GET returning parsed JSON, or null.
+ *
+ * Retries transient failures. The dashboard's pipeline list used to go straight
+ * to "Failed to load pipelines" whenever the backend was still warming up, so
+ * the first one or two visits after an idle period always looked broken and the
+ * user had to reload.
+ */
 export const fetchAndReturnData = async (
    url: string,
    token: string | null,
 ): Promise<any> => {
-   const response = await fetch(`${_baseUrl}${url}`, {
-      headers: {
-         "Tapis-Token": token ?? "",
-      },
-   });
-   if (!response.ok) return null;
-   return response.json();
+   for (let attempt = 0; ; attempt++) {
+      let response: Response | null = null;
+      try {
+         response = await fetch(`${_baseUrl}${url}`, {
+            headers: { "Tapis-Token": token ?? "" },
+         });
+      } catch {
+         response = null;   // network-level failure; treated as transient
+      }
+
+      if (response?.ok) return response.json();
+
+      const retriable = response === null || TRANSIENT_STATUSES.has(response.status);
+      if (!retriable || attempt >= RETRY_DELAYS_MS.length) {
+         if (response && !response.ok) console.warn(`GET ${url} failed with ${response.status}`);
+         return null;
+      }
+      await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+   }
 };
 
 export function getC(cookiesH: string | null | undefined) {
@@ -137,16 +186,123 @@ export const SubmitData = async (
    return response.json();
 };
 
-export const DeleteData = async (url: string, token: string): Promise<any> => {
-   const response = await fetch(`${_baseUrl}${url}`, {
-      method: "DELETE",
-      headers: {
-         "Tapis-Token": token,
-         "Content-Type": "application/json",
-      },
-   });
-   if (!response.ok) return null;
-   return response.json();
+/** One readable sentence for a refused job submission. */
+export const describeJobFailure = (what: string, res: { status?: number; detail?: string }): string => {
+   const parts = [`${what} was NOT submitted.`];
+   if (res.detail) parts.push(res.detail);
+   else if (res.status) parts.push(`The server answered with error ${res.status}.`);
+   else parts.push("The server could not be reached.");
+   return parts.join("\n\n");
+};
+
+export interface JobSubmitResult {
+   ok: boolean;
+   status?: number;
+   /** Server's explanation, when it gave one. */
+   detail?: string;
+   /** The Tapis job id, present only on a confirmed submission. */
+   uuid?: string;
+}
+
+/**
+ * POST that submits a job and reports truthfully whether it was accepted.
+ *
+ * `SubmitData` resolves to the parsed body and only returns null when the HTTP
+ * status is bad, so a 200 carrying {"status": "error"} read as success and the
+ * UI announced jobs that were never queued. This treats anything without a job
+ * id as a failure and keeps the reason, so the caller can show it.
+ */
+export const SubmitJob = async (
+   url: string,
+   data: unknown,
+   token: string,
+): Promise<JobSubmitResult> => {
+   let response: Response;
+   try {
+      response = await fetch(`${_baseUrl}${url}`, {
+         method: "POST",
+         headers: {
+            "Tapis-Token": token,
+            "Content-Type": "application/json",
+         },
+         body: JSON.stringify(data),
+      });
+   } catch (e) {
+      return { ok: false, detail: e instanceof Error ? e.message : String(e) };
+   }
+
+   const text = await response.text().catch(() => "");
+   let body: any = null;
+   try {
+      body = text ? JSON.parse(text) : null;
+   } catch {
+      /* not JSON — fall back to the raw text below */
+   }
+
+   const picked = body?.description ?? body?.message ?? body?.detail ?? body?.error;
+   // A non-JSON body is usually a proxy's or framework's HTML error page. Its
+   // markup says nothing to a user, so fall back to the status code instead.
+   const looksLikeMarkup = /^\s*<(!doctype|html|head|body|title)/i.test(text);
+   const detail = typeof picked === "string" && picked.trim()
+      ? picked.trim()
+      : (text && !body && !looksLikeMarkup ? text.slice(0, 500) : undefined);
+
+   if (!response.ok) return { ok: false, status: response.status, detail };
+
+   // A 2xx still has to carry a job id. An older server reports a failed
+   // submission as 200 with status:"error", and that must not read as success.
+   const uuid = typeof body?.uuid === "string" ? body.uuid : undefined;
+   if (body?.status === "error" || !uuid) {
+      return {
+         ok: false,
+         status: response.status,
+         detail: detail ?? "The server did not return a job id, so the job was not queued.",
+      };
+   }
+   return { ok: true, status: response.status, uuid };
+};
+
+export interface DeleteResult {
+   ok: boolean;
+   status?: number;
+   /** Server's explanation, when it gave one. */
+   detail?: string;
+}
+
+/**
+ * DELETE that reports whether it worked. It used to return null on failure,
+ * which every caller treated the same as a successful empty body — so a refused
+ * delete looked exactly like a successful one.
+ */
+export const DeleteData = async (url: string, token: string): Promise<DeleteResult> => {
+   let response: Response;
+   try {
+      response = await fetch(`${_baseUrl}${url}`, {
+         method: "DELETE",
+         headers: {
+            "Tapis-Token": token,
+            "Content-Type": "application/json",
+         },
+      });
+   } catch (e) {
+      return { ok: false, detail: e instanceof Error ? e.message : String(e) };
+   }
+   if (response.ok) return { ok: true, status: response.status };
+
+   let detail: string | undefined;
+   try {
+      const text = await response.text();
+      try {
+         const body = JSON.parse(text);
+         const picked = body?.description ?? body?.message ?? body?.detail ?? body?.error;
+         detail = typeof picked === "string" ? picked : undefined;
+      } catch {
+         detail = text || undefined;
+      }
+   } catch {
+      /* no body */
+   }
+   return { ok: false, status: response.status, detail };
 };
 
 export const SubmitFile = async (

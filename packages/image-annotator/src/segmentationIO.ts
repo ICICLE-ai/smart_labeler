@@ -2,6 +2,7 @@ import type { SegmentationAnnotation } from "@icicle-ai/image-annotation-canvas"
 // Path identity is shared with the detection side so both write and match images
 // the same way.
 import { toRelativeFilename, joinUnderDir, normalizeRelKey, buildFileIndexResolver } from "./detectionIO";
+import type { AnnotationBaseline } from "./detectionIO";
 
 export interface SegmentationFileAnnotations {
    name: string;
@@ -174,15 +175,18 @@ export function segJsonToRelMap(
 // srcImgDir) on top of the imported baseline so unopened folders survive the save.
 export function mergeSegmentationForSave(
    liveRelMap: Map<string, SegmentationFileAnnotations>,
-   baselineJson: any | null,
-   baselineIsCoco: boolean,
+   baselines: AnnotationBaseline[],
    srcImgDir: string,
    coco: boolean,
    liveFiles: string[] = [],
 ): object {
-   const complete = baselineJson
-      ? segJsonToRelMap(baselineJson, baselineIsCoco, srcImgDir, liveFiles)
-      : new Map<string, SegmentationFileAnnotations>();
+   // Oldest first; see mergeDetectionForSave for why this is a list.
+   const complete = new Map<string, SegmentationFileAnnotations>();
+   for (const baseline of baselines) {
+      if (!baseline?.json) continue;
+      segJsonToRelMap(baseline.json, baseline.isCoco, srcImgDir, liveFiles)
+         .forEach((fa, rel) => complete.set(rel, fa));
+   }
    liveRelMap.forEach((fa, rel) => complete.set(rel, fa)); // live edits win per file
    const rels = [...complete.keys()];
    const exportFiles = rels.map((r) => joinUnderDir(r, srcImgDir));

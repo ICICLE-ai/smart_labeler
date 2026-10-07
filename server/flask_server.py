@@ -68,14 +68,22 @@ CORS(
 
 # ── Auth helper ───────────────────────────────────────────────────────────────
 def getAuth(req):
+    token = req.headers.get("Tapis-Token")
+    if not token:
+        abort(401, description="Missing Tapis-Token header")
     try:
-        token = req.headers.get("Tapis-Token")
-        if not token:
-            abort(401, description="Missing Tapis-Token header")
         username = auth.get_username(token)
-        return token, username
-    except Exception:
-        abort(403, description="Tapis authentication failed — please log back in")
+    except Exception as e:
+        # First call after a cold pod start occasionally hits a transient
+        # network/DNS error reaching Tapis's userinfo endpoint; one retry
+        # clears it without masking a genuinely invalid token below.
+        print(f"getAuth: get_username failed, retrying once: {e}")
+        try:
+            username = auth.get_username(token)
+        except Exception as e2:
+            print(f"getAuth: get_username failed on retry: {e2}")
+            abort(403, description="Tapis authentication failed — please log back in")
+    return token, username
 
 
 # ── Blueprints ────────────────────────────────────────────────────────────────
@@ -228,7 +236,13 @@ def updatepipe(path: PipePath, body: PipelineUpdate):
 def deletepipe(path: PipePath):
     token, user = getAuth(request)
     test_pipe(path.pipe_id, user)
-    delete_pipeline(path.pipe_id, user)
+    try:
+        delete_pipeline(path.pipe_id, user)
+    except PipelineDeleteError as e:
+        # This used to return 200 "Pipeline deleted." no matter what happened, so a
+        # failed delete was indistinguishable from a successful one: the list simply
+        # still had the pipeline in it, with nothing said.
+        abort(409, description=e.message)
     return jsonify({"message": "Pipeline deleted."})
 
 
@@ -247,6 +261,9 @@ def get_annotator_config(path: PipePath):
             "srcImgDir": r["srcimgdir"],
             "annotationFilePath": r["annotationfilepath"],
             "fileType": r.get("filetype", "default"),
+            # Falls back to the image system so rows written before this column
+            # existed keep behaving exactly as they did.
+            "annotationSystem": r.get("annotationsystem") or r["system"],
             "parentPipelineId": r["parentpipelineid"],
         }
         for r in configs
@@ -527,6 +544,7 @@ def getObjectDetectionPipeline(path: PipeIdPath):
                 "system": qic["system"],
                 "object_feature_tensor_file_path": qic["object_feature_tensor_file_path"],
                 "name": qic["name"],
+                "classification_name": qic.get("classification_name", ""),
                 "proposer_ids": qic["proposer_ids"],
                 "embedder_ids": qic["embedder_ids"],
                 "is_sahi": qic["is_sahi"],
@@ -539,6 +557,40 @@ def getObjectDetectionPipeline(path: PipeIdPath):
                 "proposal_tensor_paths": qic.get("proposal_tensor_paths", ""),
             }
     return jsonify(data)
+
+
+def job_submission_response(res, what):
+    """
+    Turn a submit_tapis_job result into an honest HTTP response.
+
+    A failed submission used to be returned as-is, which meant a body saying
+    {"status": "error"} went out with HTTP 200 and the UI reported the job as
+    submitted. Anything other than a confirmed UUID is an error here, carrying
+    the status Tapis gave us and the reason it gave.
+    """
+    if isinstance(res, dict) and res.get("status") == "success" and res.get("uuid"):
+        return jsonify(res)
+
+    reason = (res or {}).get("message") if isinstance(res, dict) else None
+    status = (res or {}).get("httpStatus") if isinstance(res, dict) else None
+    # Tapis's own 4xx are the user's to fix (bad path, no allocation, expired
+    # token); everything else is a failure on the way to Tapis.
+    if not isinstance(status, int) or status < 400 or status > 599 or status >= 500:
+        status = 502
+
+    message = reason or "Tapis gave no reason for refusing the job."
+    print(f"{what} was NOT submitted (HTTP {status}): {message}")
+    # Deliberately jsonify rather than abort(): Flask renders an aborted
+    # HTTPException as an HTML page unless an error handler says otherwise, and
+    # an HTML blob is not something the UI can put in front of a user. The
+    # reason is repeated under the keys the client already looks for.
+    return jsonify({
+        "status": "error",
+        "description": message,
+        "message": message,
+        "detail": reason,
+        "httpStatus": status,
+    }), status
 
 
 @od_blp.post("/generate_class_supports/<ids>",
@@ -587,7 +639,10 @@ def generate_class_supports(path: IdsPath, query: ClassSupportsQuery, body: Clas
             cropSize = raw
         update_object_detection(path.ids, {"cropSize": cropSize, "crop_sizes": body.crop_sizes})
 
-    return ObjectDetectionClassSupports.run(path.ids, token, job_body, secret)
+    return job_submission_response(
+        ObjectDetectionClassSupports.run(path.ids, token, job_body, secret),
+        "The class support generation job",
+    )
 
 
 @od_blp.post("/object-detection/<pipeid>/<int:id>",
@@ -637,7 +692,10 @@ def object_detection(path: PipeIdIdPath, body: ObjectDetectionRequest):
     job_body["embedder_ids"] = ",".join(embedder_names)
     job_body["proposer_ids"] = ",".join(proposer_names)
 
-    return ObjectDetection.run(path.pipeid, token, job_body, secret)
+    return job_submission_response(
+        ObjectDetection.run(path.pipeid, token, job_body, secret),
+        "The object detection job",
+    )
 
 
 @od_blp.post("/object-classification/<pipeid>/<od_id>",
@@ -651,7 +709,13 @@ def object_classification(path: PipeIdOdIdPath, body: ObjectClassificationReques
         print(f"Error reading vault secret: {e}")
 
     job_body = body.model_dump()
-    update_query_image_configuration(body.id, job_body)
+    # `name` on this row belongs to the proposal job that created the
+    # configuration. Writing the classification job's name there renamed the
+    # proposal, so the classification name is stored in its own column and the
+    # Tapis job below still gets the name the user typed.
+    config_updates = {k: v for k, v in job_body.items() if k != "name"}
+    config_updates["classification_name"] = job_body.get("name", "")
+    update_query_image_configuration(body.id, config_updates)
 
     models = []
     for p in body.class_support_paths.split(" "):
@@ -660,7 +724,10 @@ def object_classification(path: PipeIdOdIdPath, body: ObjectClassificationReques
             models.append(parts[2])
     job_body["models"] = " ".join(models)
 
-    return ObjectClassification.run(path.pipeid, token, job_body, secret)
+    return job_submission_response(
+        ObjectClassification.run(path.pipeid, token, job_body, secret),
+        "The classification job",
+    )
 
 
 @od_blp.post("/update_class_support_tensor_file_path/<ids>",

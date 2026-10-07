@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import type { BaseAnnotation } from "./types";
 import {
    Box,
@@ -26,6 +26,8 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import FlagIcon from "@mui/icons-material/Flag";
 import FlagOutlinedIcon from "@mui/icons-material/FlagOutlined";
 import AddIcon from "@mui/icons-material/Add";
+import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
+import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import { TextField } from "@mui/material";
 import { applyNMS, getLabelColor } from "./utils";
 
@@ -112,6 +114,23 @@ interface AnnotationDetailsProps {
    onAnnotationUpdate: (id: string, updates: Partial<BaseAnnotation>) => void;
    deleteAnnotations: (id: string[]) => void;
    handleFilterAnnotations?: (score: number, activeLabels: string[], activeFlags: string[]) => void;
+   /**
+    * Label currently armed for new annotations. `null` means "no label chosen",
+    * and the canvas keeps prompting per annotation.
+    */
+   activeDrawLabel?: string | null;
+   /**
+    * Enables the "label for new annotations" section. Supply it to let the user
+    * pick (or type) a label up front; pass the value back in as `activeDrawLabel`
+    * and on to the canvas's `defaultLabel`. Omit to hide the section entirely.
+    */
+   onActiveDrawLabelChange?: (label: string | null) => void;
+   /**
+    * Identifies the image being shown. Changing it re-arms the confidence slider
+    * for the new image; without it the panel cannot tell a new image apart from
+    * an edit to the current one.
+    */
+   imageKey?: string | null;
 }
 
 export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
@@ -124,6 +143,9 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
    onAnnotationUpdate,
    deleteAnnotations,
    handleFilterAnnotations,
+   activeDrawLabel = null,
+   onActiveDrawLabelChange,
+   imageKey = null,
 }) => {
    const config = VARIANT_CONFIG[variant];
 
@@ -139,12 +161,47 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
    const [activeLabels, setActiveLabels] = useState<string[]>([]);
    const [activeFlags, setActiveFlags] = useState<string[]>([]);
    const itemRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
-   const [confidence, setConfidence] = useState<number>(0.3);
+   /**
+    * Lowest score present on this image, which is where the confidence filter
+    * starts so that nothing is hidden on arrival.
+    *
+    * It used to default to a fixed 0.30. Detectors — and SAM3, whose own
+    * detection confidence is adjustable in its dialog — routinely return boxes
+    * below that, so an image could open looking empty, or missing most of its
+    * annotations, with no indication that a filter was responsible.
+    */
+   const scoreFloor = useMemo(() => {
+      const scored = annotations
+         .map((a) => a.score)
+         .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+      if (scored.length === 0) return 0;
+      // Rounded down to the slider's step so the lowest-scoring annotation is on
+      // the visible side of the threshold rather than exactly on it.
+      return Math.max(0, Math.floor(Math.min(...scored) * 100) / 100);
+   }, [annotations]);
+
+   const [confidence, setConfidence] = useState<number>(scoreFloor);
+   /** Cleared on every image change, so a manual threshold lasts only as long as the image it was set for. */
+   const confidenceTouched = useRef(false);
+   /** Last floor seen for this image, so a newly arrived lower score is detectable. */
+   const previousFloor = useRef<number | null>(null);
    const [nms, setNms] = useState<number>(0.95);
 
    // Flag options – starts with defaults, user can add more at runtime
    const [flagOptions, setFlagOptions] = useState(DEFAULT_FLAGS);
    const [newFlagInput, setNewFlagInput] = useState<string>("");
+
+   // Free-text entry for a label that does not exist on any annotation yet.
+   const [newLabelInput, setNewLabelInput] = useState<string>("");
+
+   /**
+    * Pending bulk deletion awaiting confirmation. Bulk deletes are irreversible
+    * and can wipe an entire session's work, so they never fire straight from a
+    * click — the dialog states exactly how many items will go and from where.
+    */
+   const [pendingBulkDelete, setPendingBulkDelete] = useState<
+      { kind: "label"; label: string } | { kind: "all" } | null
+   >(null);
 
    // Flag menu state
    const [flagMenuAnchor, setFlagMenuAnchor] = useState<null | HTMLElement>(null);
@@ -156,6 +213,32 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
    useEffect(() => {
       handleFilterAnnotations?.(confidence, activeLabels, activeFlags);
    }, [confidence, activeLabels, activeFlags]);
+
+   // A new image gets its own threshold; a deliberate one does not follow the user around.
+   useEffect(() => {
+      confidenceTouched.current = false;
+      previousFloor.current = null;
+   }, [imageKey]);
+
+   // Track the floor until the slider is moved by hand. This also catches
+   // annotations that arrive after the image does — an async import, or a SAM3
+   // prediction returning something below the current threshold.
+   //
+   // A hand-set threshold is still overridden when the floor DROPS, i.e. when
+   // something has just arrived that scores below everything seen on this image
+   // so far. Without that, moving the slider once latched it for the rest of the
+   // image: prompting again at a lower confidence brought the new boxes in
+   // underneath the threshold, where they were filtered out on arrival with
+   // nothing to say so — the slider appeared stuck and the results lost. A
+   // threshold the user raised is left alone as long as nothing new undercuts it.
+   useEffect(() => {
+      const floorDropped = previousFloor.current !== null && scoreFloor < previousFloor.current;
+      previousFloor.current = scoreFloor;
+      if (!confidenceTouched.current || floorDropped) {
+         if (floorDropped) confidenceTouched.current = false;
+         setConfidence(scoreFloor);
+      }
+   }, [scoreFloor, imageKey]);
 
    useEffect(() => {
       setSelectedId(selectedBoxId);
@@ -191,6 +274,26 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
    const deleteBoxes = (ids: string[]) => {
       setBoxes((prev) => prev.filter((a) => !ids.includes(a.id)));
       deleteAnnotations(ids);
+   };
+
+   const idsForBulkDelete = (): string[] => {
+      if (!pendingBulkDelete) return [];
+      return pendingBulkDelete.kind === "all"
+         ? boxes.map((b) => b.id)
+         : boxes.filter((b) => b.label === pendingBulkDelete.label).map((b) => b.id);
+   };
+
+   const confirmBulkDelete = () => {
+      const ids = idsForBulkDelete();
+      if (ids.length > 0) {
+         deleteBoxes(ids);
+         // Anything that was selected may have just been removed.
+         setSelectedIds([]);
+         setSelectedId(undefined);
+         onSelectedBoxIdsChange?.([]);
+         onSelectedBoxChange(undefined);
+      }
+      setPendingBulkDelete(null);
    };
 
    const deleteSelected = () => {
@@ -254,6 +357,30 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
       setFlagTargetId(null);
    };
 
+   /**
+    * Arms a label for new annotations. Clicking the armed label again disarms it,
+    * which puts the canvas back to prompting for a label per annotation.
+    */
+   const armLabel = (label: string | null) => {
+      onActiveDrawLabelChange?.(activeDrawLabel === label ? null : label);
+   };
+
+   /**
+    * Registers a label the dataset does not contain yet and arms it, so a brand
+    * new class can be drawn without first having to label one annotation by hand.
+    */
+   const addLabel = () => {
+      const trimmed = newLabelInput.trim();
+      if (!trimmed) return;
+      // Match case-insensitively so "Person" doesn't become a second class
+      // alongside an existing "person".
+      const existing = availableLabels.find((l) => l.toLowerCase() === trimmed.toLowerCase());
+      const label = existing ?? trimmed;
+      if (!existing) setAvailableLabels((prev) => [...prev, label]);
+      onActiveDrawLabelChange?.(label);
+      setNewLabelInput("");
+   };
+
    const addFlag = () => {
       const trimmed = newFlagInput.trim();
       if (!trimmed) return;
@@ -287,6 +414,96 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
       >
          {/* ── Filters (label, flag, confidence) – scrollable so annotations are never hidden ── */}
          <Box sx={{ flexShrink: 1, overflow: "auto", minHeight: 0 }}>
+
+         {/* ── Label to assign to new annotations ── */}
+         {onActiveDrawLabelChange && (
+            <>
+               <Box>
+                  <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+                     <Typography variant="subtitle1" fontWeight={700} sx={{ letterSpacing: 0.5, textTransform: "uppercase", fontSize: "0.78rem", color: "text.secondary" }}>
+                        Label for new {config.itemNoun}s
+                     </Typography>
+                     {activeDrawLabel && (
+                        <Tooltip title="Stop auto-labelling — you will be asked for a label each time">
+                           <Chip
+                              label="Auto"
+                              size="small"
+                              onDelete={() => onActiveDrawLabelChange(null)}
+                              sx={{
+                                 height: 20,
+                                 fontSize: "0.68rem",
+                                 fontWeight: 700,
+                                 backgroundColor: getLabelColor(activeDrawLabel),
+                                 color: "#fff",
+                                 "& .MuiChip-deleteIcon": { color: "rgba(255,255,255,0.8)" },
+                              }}
+                           />
+                        </Tooltip>
+                     )}
+                  </Stack>
+
+                  {availableLabels.length > 0 && (
+                     <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
+                        {availableLabels.map((label) => {
+                           const color = getLabelColor(label);
+                           const armed = activeDrawLabel === label;
+                           return (
+                              <Tooltip
+                                 key={label}
+                                 title={armed
+                                    ? `New ${config.itemNoun}s are labelled "${label}" — click to turn off`
+                                    : `Label new ${config.itemNoun}s "${label}" automatically`}
+                              >
+                                 <Chip
+                                    label={label}
+                                    size="medium"
+                                    onClick={() => armLabel(label)}
+                                    sx={{
+                                       fontWeight: 600,
+                                       fontSize: "0.82rem",
+                                       borderRadius: "8px",
+                                       border: `2px ${armed ? "solid" : "dashed"} ${color}`,
+                                       backgroundColor: armed ? color : "transparent",
+                                       color: armed ? "#fff" : color,
+                                       transition: "all 0.15s ease",
+                                       "&:hover": { backgroundColor: color, color: "#fff", opacity: 0.9 },
+                                    }}
+                                 />
+                              </Tooltip>
+                           );
+                        })}
+                     </Box>
+                  )}
+
+                  {/* ── Add a label the dataset doesn't have yet ── */}
+                  <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.75 }}>
+                     <TextField
+                        size="small"
+                        placeholder="New label name…"
+                        value={newLabelInput}
+                        onChange={(e) => setNewLabelInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") addLabel(); }}
+                        sx={{ flex: 1, "& .MuiInputBase-input": { fontSize: "0.82rem", py: 0.5 } }}
+                     />
+                     <Tooltip title="Add this label and use it for new annotations">
+                        <span>
+                           <IconButton size="small" onClick={addLabel} disabled={!newLabelInput.trim()} color="primary">
+                              <AddIcon fontSize="small" />
+                           </IconButton>
+                        </span>
+                     </Tooltip>
+                  </Stack>
+
+                  <Typography variant="caption" sx={{ display: "block", mt: 0.5, color: "text.disabled" }}>
+                     {activeDrawLabel
+                        ? `New ${config.itemNoun}s will be labelled "${activeDrawLabel}" without prompting.`
+                        : `Pick a label to skip the prompt when you add a new ${config.itemNoun}.`}
+                  </Typography>
+               </Box>
+
+               <Divider />
+            </>
+         )}
 
          {/* ── Label filter section ── */}
          <Box>
@@ -409,11 +626,16 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
                   {confidence.toFixed(2)}
                </Typography>
             </Stack>
+            <Typography variant="caption" sx={{ display: "block", mb: 0.5, color: "text.secondary" }}>
+               {confidenceTouched.current && confidence > scoreFloor
+                  ? `Hiding ${config.itemNoun}s scoring below ${confidence.toFixed(2)}.`
+                  : `Showing everything on this image (lowest score ${scoreFloor.toFixed(2)}).`}
+            </Typography>
             <Slider
                value={confidence}
                min={0} max={1} step={0.01}
                valueLabelDisplay="auto"
-               onChange={(_, v) => setConfidence(v as number)}
+               onChange={(_, v) => { confidenceTouched.current = true; setConfidence(v as number); }}
                size="small"
             />
             <Tooltip title={config.removeBelowTooltip(confidence.toFixed(2))}>
@@ -473,9 +695,23 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
                <Typography variant="subtitle1" fontWeight={700} sx={{ letterSpacing: 0.5, textTransform: "uppercase", fontSize: "0.78rem", color: "text.secondary" }}>
                   {config.listTitle}
                </Typography>
-               <Typography variant="caption" color="text.secondary">
-                  {visibleBoxes.length} / {boxes.length}
-               </Typography>
+               <Stack direction="row" spacing={0.5} alignItems="center">
+                  <Typography variant="caption" color="text.secondary">
+                     {visibleBoxes.length} / {boxes.length}
+                  </Typography>
+                  {boxes.length > 0 && (
+                     <Tooltip title={`Delete every ${config.itemNoun} on this image`}>
+                        <IconButton
+                           size="small"
+                           color="error"
+                           onClick={() => setPendingBulkDelete({ kind: "all" })}
+                           sx={{ p: 0.25 }}
+                        >
+                           <DeleteSweepIcon fontSize="small" />
+                        </IconButton>
+                     </Tooltip>
+                  )}
+               </Stack>
             </Stack>
 
             {/* Bulk action bar – visible when ≥1 item is multi-selected */}
@@ -545,6 +781,15 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
                                     color: "#fff",
                                  }}
                               />
+                              <Tooltip title={`Delete all "${label}" ${config.itemNoun}s on this image`}>
+                                 <IconButton
+                                    size="small"
+                                    onClick={(e) => { e.stopPropagation(); setPendingBulkDelete({ kind: "label", label }); }}
+                                    sx={{ p: 0.25, color: "rgba(255,255,255,0.85)", "&:hover": { color: "#fff", backgroundColor: "rgba(0,0,0,0.15)" } }}
+                                 >
+                                    <DeleteSweepIcon sx={{ fontSize: "1rem" }} />
+                                 </IconButton>
+                              </Tooltip>
                            </Box>
 
                            {/* Group items */}
@@ -714,6 +959,44 @@ export const AnnotationDetails: React.FC<AnnotationDetailsProps> = ({
                Clear flag
             </MenuItem>
          </Menu>
+
+         {/* ── Bulk delete confirmation ──
+             Deliberately a blocking dialog with an exact count: these actions
+             cannot be undone and can discard an entire image's annotations. ── */}
+         <Dialog open={Boolean(pendingBulkDelete)} onClose={() => setPendingBulkDelete(null)} maxWidth="xs" fullWidth>
+            <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+               <WarningAmberIcon color="warning" />
+               {pendingBulkDelete?.kind === "all"
+                  ? `Delete all ${config.listTitle.toLowerCase()}?`
+                  : `Delete all "${pendingBulkDelete?.kind === "label" ? pendingBulkDelete.label : ""}"?`}
+            </DialogTitle>
+            <DialogContent>
+               <Typography variant="body2">
+                  {(() => {
+                     const n = idsForBulkDelete().length;
+                     const noun = `${config.itemNoun}${n === 1 ? "" : "s"}`;
+                     return pendingBulkDelete?.kind === "all"
+                        ? `This removes all ${n} ${noun} from the image currently open. Other images are not affected.`
+                        : `This removes ${n} ${noun} labelled "${pendingBulkDelete?.kind === "label" ? pendingBulkDelete.label : ""}" from the image currently open. Other labels and other images are not affected.`;
+                  })()}
+               </Typography>
+               <Typography variant="body2" sx={{ mt: 1.5, fontWeight: 700, color: "warning.dark" }}>
+                  This cannot be undone. The change is only written to disk when you save.
+               </Typography>
+            </DialogContent>
+            <DialogActions>
+               <Button onClick={() => setPendingBulkDelete(null)}>Cancel</Button>
+               <Button
+                  variant="contained"
+                  color="error"
+                  startIcon={<DeleteSweepIcon />}
+                  onClick={confirmBulkDelete}
+                  disabled={idsForBulkDelete().length === 0}
+               >
+                  Delete {idsForBulkDelete().length}
+               </Button>
+            </DialogActions>
+         </Dialog>
 
          {/* ── Bulk label edit dialog ── */}
          <Dialog open={bulkEditOpen} onClose={() => setBulkEditOpen(false)} maxWidth="xs" fullWidth>

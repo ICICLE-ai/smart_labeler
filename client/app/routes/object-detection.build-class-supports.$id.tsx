@@ -7,7 +7,8 @@ import React, { useEffect, useState } from "react";
 import { useCookies } from "react-cookie";
 import { SubmitButton } from "~/components/formik-mantine";
 import { HeroTitle } from "~/components/HeroTitle/HeroTitle";
-import { allowed_systems, DEFAULT_SYSTEM, fetchAndReturnData, SubmitData } from "~/utils/utils";
+import { allowed_systems, DEFAULT_SYSTEM, describeJobFailure, fetchAndReturnData, SubmitData, SubmitJob } from "~/utils/utils";
+import { verifyJobPaths } from "~/utils/tapisAccess";
 import { ModelSelector } from "~/components/ModelSelector/ModelSelector";
 import { usePipeline } from "~/context/PipelineContext";
 import FormikTapisFileWrapper from "~/components/FileExplorer/FormikTapisFileWrapper";
@@ -104,7 +105,7 @@ const GenerateClassSupports: React.FC = () => {
       return () => clearInterval(intervalId);
    }, [jobId]);
 
-   const handleSubmit = (values: any): void => {
+   const handleSubmit = async (values: any): Promise<void> => {
       if (isDemo) {
          notifyJobSubmitted();
          alert("Demo mode: Job simulated successfully. This pipeline is for demonstration purposes — no real job was submitted.");
@@ -133,35 +134,51 @@ const GenerateClassSupports: React.FC = () => {
          return;
       }
 
-      SubmitData(
-         `/generate_class_supports/${pipeid}`,
-         {
-            srcImgDir: values["srcImgDir"],
-            annotationFilePath: values["annotationFilePath"],
-            system: system,
-            model_ids: selectedModelIds.join(","),
-            cropSize: 1024,
-            device: device,
-            outputDir: values["outputDir"],
-            method: method,
-            name: name,
-            newPatra: true,
-            crop_sizes: cropSizes
-         },
-         cookie["tapis-token"]["access_token"])
-         .then((res) => {
-            if (!res) {
-               alert("Failed to submit class supports generation job");
-               return;
-            }
-            notifyJobSubmitted();
-            alert("Class supports generation job submitted successfully");
-            navigate(`/object-detection/optimize-patch-size/${pipeid}`);
-         })
-         .catch((err) => {
-            console.error(err);
-            alert("Failed to submit class supports generation job");
-         });
+      const token = cookie["tapis-token"]["access_token"];
+
+      // Confirm the paths are usable before dispatching. The job reads the images
+      // and annotations, so those must exist and be readable; the output
+      // directory is created by the job, so only a permission problem blocks.
+      const pathProblem = await verifyJobPaths(system, [
+         { label: "Source Image Directory", path: values["srcImgDir"] },
+         { label: "Annotation File Path", path: values["annotationFilePath"] },
+         { label: "Output Directory", path: values["outputDir"], allowMissing: true },
+      ], token);
+      if (pathProblem) {
+         alert(pathProblem);
+         return;
+      }
+
+      try {
+         const res = await SubmitJob(
+            `/generate_class_supports/${pipeid}`,
+            {
+               srcImgDir: values["srcImgDir"],
+               annotationFilePath: values["annotationFilePath"],
+               system: system,
+               model_ids: selectedModelIds.join(","),
+               cropSize: 1024,
+               device: device,
+               outputDir: values["outputDir"],
+               method: method,
+               name: name,
+               newPatra: true,
+               crop_sizes: cropSizes
+            },
+            token);
+         if (!res.ok) {
+            // Nothing was queued, so neither announce it nor move the user on
+            // to the step that waits for a job that does not exist.
+            alert(describeJobFailure("The class support generation job", res));
+            return;
+         }
+         notifyJobSubmitted();
+         alert("Class supports generation job submitted successfully");
+         navigate(`/object-detection/optimize-patch-size/${pipeid}`);
+      } catch (err) {
+         console.error(err);
+         alert(`The class support generation job was NOT submitted.\n\n${err instanceof Error ? err.message : String(err)}`);
+      }
    };
 
    return (
@@ -202,7 +219,7 @@ const GenerateClassSupports: React.FC = () => {
                   method: "Image",
                   name: "Generate Support embeddings",
                }}
-               onSubmit={(values) => handleSubmit(values)}
+               onSubmit={async (values) => { await handleSubmit(values); }}
             >
                <form style={{ width: "100%" }}>
                   <Stack>

@@ -1,5 +1,5 @@
 export { FileExplorer } from "./FileExplorer";
-export type { FileExplorerProps } from "./FileExplorer";
+export type { FileExplorerProps, FileAnnotationStat } from "./FileExplorer";
 
 export { FileExplorerWrapper } from "./FileExplorerWrapper";
 export type { FileExplorerWrapperProps, TapisFileEntry, TapisSelectMode } from "./FileExplorerWrapper";
@@ -13,6 +13,9 @@ export type { TapisDirectoryFieldProps } from "./TapisDirectoryField";
 export { SubmitButton } from "./SubmitButton";
 
 export {
+   TapisError,
+   describeTapisFailure,
+   humanizeServerText,
    configureTapisFileExplorer,
    sanitizePath,
    getImage,
