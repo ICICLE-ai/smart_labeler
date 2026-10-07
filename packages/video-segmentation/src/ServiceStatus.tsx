@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import { Alert, AlertTitle, Box, Button, Chip, CircularProgress, Stack, Typography } from "@mui/material";
-import { checkHealth, getVideoServiceBaseUrl, Sam3VideoError, type ServiceHealth } from "./sam3VideoClient";
+import { checkHealth, getVideoServiceBaseUrl, Sam3VideoError, signIn, type ServiceHealth } from "./sam3VideoClient";
 
 export type ServiceState = "checking" | "up" | "down";
 
 export interface ServiceStatusProps {
    /** Reported upward so the workspace can disable actions that cannot work while the service is unreachable. */
    onStateChange?: (state: ServiceState) => void;
+   /**
+    * Tapis token, exchanged for the gateway's session cookie before anything
+    * else is called. Deployments with no gateway in front ignore it.
+    */
+   tapisToken?: string;
 }
 
 /**
@@ -17,15 +22,20 @@ export interface ServiceStatusProps {
  * was tried, and whether it is in mock mode (placeholder masks) or still
  * loading model weights.
  */
-export function ServiceStatus({ onStateChange }: ServiceStatusProps) {
+export function ServiceStatus({ onStateChange, tapisToken = "" }: ServiceStatusProps) {
    const [state, setState] = useState<ServiceState>("checking");
    const [health, setHealth] = useState<ServiceHealth | null>(null);
    const [error, setError] = useState<string | null>(null);
+   const [username, setUsername] = useState<string | null>(null);
 
    const run = useCallback(() => {
       setState("checking");
       setError(null);
-      checkHealth()
+      // Sign in first: with the auth gateway in front, every other call needs
+      // the session cookie this establishes. A deployment without the gateway
+      // reports no user and carries on unauthenticated.
+      signIn(tapisToken)
+         .then((who) => { setUsername(who); return checkHealth(); })
          .then((h) => {
             setHealth(h);
             setState("up");
@@ -37,7 +47,7 @@ export function ServiceStatus({ onStateChange }: ServiceStatusProps) {
             setError(e instanceof Sam3VideoError ? e.message : e instanceof Error ? e.message : String(e));
             onStateChange?.("down");
          });
-   }, [onStateChange]);
+   }, [onStateChange, tapisToken]);
 
    useEffect(() => { run(); }, [run]);
 
@@ -82,6 +92,9 @@ export function ServiceStatus({ onStateChange }: ServiceStatusProps) {
    return (
       <Stack direction="row" spacing={1} alignItems="center" sx={{ px: 0.5, py: 1, flexWrap: "wrap", rowGap: 1 }}>
          <Chip size="small" color="success" variant="outlined" label="GPU service connected" sx={{ fontWeight: 600 }} />
+         {username && (
+            <Chip size="small" variant="outlined" label={`Signed in as ${username}`} sx={{ fontWeight: 600 }} />
+         )}
          {sam3?.mock && (
             <Chip
                size="small"

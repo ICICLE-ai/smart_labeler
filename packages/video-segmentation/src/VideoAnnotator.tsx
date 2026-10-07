@@ -12,7 +12,8 @@ import {
    ImageCanvas, segmentationEngine, type SegmentationAnnotation,
 } from "@icicle-ai/image-annotation-canvas";
 import {
-   cancelTrackJob, getTrackJob, getUpload, listChunks, Sam3VideoError, startTrack, subscribeTrackJob,
+   cancelTrackJob, getTrackJob, getUpload, listChunks, Sam3VideoError, setAuthToken, startTrack,
+   subscribeTrackJob,
 } from "./sam3VideoClient";
 import { ObjectPanel } from "./ObjectPanel";
 import { FrameBrowser, type LoadedFrame } from "./FrameBrowser";
@@ -81,6 +82,10 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
    const [stalled, setStalled] = useState(false);
    /** Set once the restore pass has run, so the save effect cannot write over saved state with empty initial state. */
    const restoredRef = useRef(false);
+
+   // Registered before anything else runs: a request that comes back 401
+   // (no session yet, or an expired one) re-signs-in with this and retries.
+   setAuthToken(tapisToken);
 
    const report = useCallback((e: unknown, fallback: string) => {
       const message = e instanceof Sam3VideoError || e instanceof Error ? e.message : String(e);
@@ -418,7 +423,7 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
       return (
          <Box sx={{ maxWidth: 900, mx: "auto", p: 3 }}>
             <WorkflowSteps activeStep={0} />
-            <ServiceStatus onStateChange={setServiceState} />
+            <ServiceStatus onStateChange={setServiceState} tapisToken={tapisToken} />
             <VideoUpload onUploaded={handleUploaded} token={tapisToken} disabled={serviceState === "down"} />
             <Snackbar
                open={Boolean(error)}
@@ -435,7 +440,7 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
    return (
       <Box sx={{ p: 2, maxWidth: 1800, mx: "auto" }}>
          <WorkflowSteps activeStep={activeStep} />
-         <ServiceStatus onStateChange={setServiceState} />
+         <ServiceStatus onStateChange={setServiceState} tapisToken={tapisToken} />
 
          <Grid container spacing={2} sx={{ mt: 0.5 }}>
             {/* ── Left: frame browser + canvas ── */}
