@@ -4,6 +4,7 @@ import {
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
+import LayersClearIcon from "@mui/icons-material/LayersClear";
 import EditIcon from "@mui/icons-material/Edit";
 import CheckIcon from "@mui/icons-material/Check";
 import { objectColorCss, nextObjectId, type VideoObject } from "./utils";
@@ -15,6 +16,11 @@ export interface ObjectPanelProps {
    onActiveObjectChange: (id: number | null) => void;
    /** How many frames currently carry a mask for each object, for a quick glance at coverage. */
    maskCountByObject: Map<number, number>;
+   /** The frame on screen, named in the remove-mask tooltip. */
+   currentFrame: number;
+   /** Objects carrying a mask on that frame, which can therefore be removed from it. */
+   objectsOnCurrentFrame: Set<number>;
+   onRemoveMaskOnCurrentFrame: (objId: number) => void;
    disabled?: boolean;
 }
 
@@ -25,7 +31,8 @@ export interface ObjectPanelProps {
  * canvas are attached to, regardless of which tool drew them.
  */
 export function ObjectPanel({
-   objects, onObjectsChange, activeObjectId, onActiveObjectChange, maskCountByObject, disabled,
+   objects, onObjectsChange, activeObjectId, onActiveObjectChange, maskCountByObject,
+   currentFrame, objectsOnCurrentFrame, onRemoveMaskOnCurrentFrame, disabled,
 }: ObjectPanelProps) {
    const [editingId, setEditingId] = useState<number | null>(null);
    const [editingLabel, setEditingLabel] = useState("");
@@ -63,7 +70,8 @@ export function ObjectPanel({
 
          {objects.length === 0 && (
             <Typography variant="body2" color="text.secondary" sx={{ px: 0.5 }}>
-               Add an object, then annotate it on one or more keyframes.
+               Draw a region on the frame and you will be asked to name it — objects appear here as you go.
+               You can also add one up front.
             </Typography>
          )}
 
@@ -114,7 +122,17 @@ export function ObjectPanel({
                            </IconButton>
                         </Tooltip>
                      )}
-                     <Tooltip title="Delete object">
+                     {objectsOnCurrentFrame.has(obj.id) && (
+                        <Tooltip title={`Remove this object's mask on frame ${currentFrame}`}>
+                           <IconButton
+                              size="small"
+                              onClick={(e) => { e.stopPropagation(); onRemoveMaskOnCurrentFrame(obj.id); }}
+                           >
+                              <LayersClearIcon fontSize="small" />
+                           </IconButton>
+                        </Tooltip>
+                     )}
+                     <Tooltip title="Delete object and all its masks">
                         <IconButton size="small" onClick={(e) => { e.stopPropagation(); deleteObject(obj.id); }}>
                            <DeleteIcon fontSize="small" />
                         </IconButton>

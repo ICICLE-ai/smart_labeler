@@ -10,6 +10,7 @@ import { configureVideoSegmentation } from "@icicle-ai/video-segmentation";
 let _baseUrl = "http://127.0.0.1:11112";
 let _sam3Endpoint = "https://sam3-sailab.nrp-nautilus.io";
 let _sam3VideoUrl = "http://127.0.0.1:2129";
+let _sam3VideoAuth = "none";
 let _tapisBase = "https://icicleai.tapis.io";
 let _annotatorType: string | null = null;
 
@@ -39,6 +40,7 @@ export const initConfig = (env: RuntimeEnv) => {
    _baseUrl = env.apiBaseUrl;
    _sam3Endpoint = env.sam3Endpoint;
    _sam3VideoUrl = env.sam3VideoUrl;
+   _sam3VideoAuth = (env.sam3VideoAuth ?? "none").toLowerCase();
    if (env.tapisBaseUrl) _tapisBase = env.tapisBaseUrl;
    if (env.allowedSystems) allowed_systems = JSON.parse(env.allowedSystems);
    if (env.embedders) EMBEDDERS = env.embedders.split(",");
@@ -56,7 +58,11 @@ export const initConfig = (env: RuntimeEnv) => {
    });
    configureImageAnnotator({ apiBaseUrl: _baseUrl });
    // Needs the Tapis base URL too: exports can be saved straight onto an HPC system.
-   configureVideoSegmentation({ baseUrl: _sam3VideoUrl, tapisBaseUrl: _tapisBase });
+   configureVideoSegmentation({
+      baseUrl: _sam3VideoUrl,
+      tapisBaseUrl: _tapisBase,
+      gatewayAuth: _sam3VideoAuth === "gateway",
+   });
    // Patra and the Tapis vault are reached through this app's own backend rather
    // than directly: a direct browser call is cross-origin and neither upstream
    // sends CORS headers for it.
@@ -64,9 +70,41 @@ export const initConfig = (env: RuntimeEnv) => {
    configureTapisVault({ proxy: { baseUrl: _baseUrl } });
 };
 
+/**
+ * True when this page is running inside an iframe.
+ *
+ * Accessing `window.top` across origins throws, which is itself the answer:
+ * a cross-origin parent means we are embedded (e.g. the Tapis portal).
+ */
+export const isEmbedded = (): boolean => {
+   if (typeof window === "undefined") return false;
+   try {
+      return window.self !== window.top;
+   } catch {
+      return true;
+   }
+};
+
+/**
+ * Whether the browser will let this page use cookies/storage here. In a
+ * cross-site iframe, third-party cookie restrictions mean the Tapis session
+ * cookie this app depends on is often unavailable — which looks like being
+ * silently signed out rather than an error.
+ */
+export const storageAvailable = (): boolean => {
+   try {
+      window.localStorage.setItem("__probe__", "1");
+      window.localStorage.removeItem("__probe__");
+      return true;
+   } catch {
+      return false;
+   }
+};
+
 export const getBaseURL = () => _baseUrl;
 export const getSam3Endpoint = () => _sam3Endpoint;
 export const getSam3VideoUrl = () => _sam3VideoUrl;
+export const getSam3VideoAuth = () => _sam3VideoAuth;
 export const getTapisBaseURL = () => _tapisBase;
 export const getAnnotatorType = () => _annotatorType;
 
@@ -111,6 +149,17 @@ const RETRY_DELAYS_MS = [400, 1200];
 export const fetchAndReturnData = async (
    url: string,
    token: string | null,
+   opts?: {
+      /**
+       * Receives the HTTP status of the final attempt, or null when the request
+       * never reached the server.
+       *
+       * Without this the caller only ever sees `null` and cannot tell an expired
+       * session from a backend that is down — so an expired token was reported
+       * as a network problem, sending people to check the wrong thing.
+       */
+      onStatus?: (status: number | null) => void;
+   },
 ): Promise<any> => {
    for (let attempt = 0; ; attempt++) {
       let response: Response | null = null;
@@ -122,11 +171,12 @@ export const fetchAndReturnData = async (
          response = null;   // network-level failure; treated as transient
       }
 
-      if (response?.ok) return response.json();
+      if (response?.ok) { opts?.onStatus?.(response.status); return response.json(); }
 
       const retriable = response === null || TRANSIENT_STATUSES.has(response.status);
       if (!retriable || attempt >= RETRY_DELAYS_MS.length) {
          if (response && !response.ok) console.warn(`GET ${url} failed with ${response.status}`);
+         opts?.onStatus?.(response?.status ?? null);
          return null;
       }
       await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));

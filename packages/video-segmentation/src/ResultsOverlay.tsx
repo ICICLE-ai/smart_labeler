@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Alert, Box, Chip, CircularProgress, Paper, Stack, Typography } from "@mui/material";
+import {
+   Alert, Box, Chip, CircularProgress, Paper, Stack, ToggleButton, ToggleButtonGroup, Typography,
+} from "@mui/material";
+import LayersIcon from "@mui/icons-material/Layers";
+import CompareIcon from "@mui/icons-material/Compare";
 import { getTrackFrame, Sam3VideoError } from "./sam3VideoClient";
 import type { TrackFrameObject } from "./types";
 import type { LoadedFrame } from "./FrameBrowser";
@@ -56,8 +60,11 @@ interface FetchedMasks {
    objects: TrackFrameObject[];
 }
 
+type View = "overlay" | "split";
+
 /**
- * Overlays tracked masks on a frame, colored per object id.
+ * Review of a tracked frame, either with the masks composited on top or beside
+ * the untouched frame for comparison.
  *
  * Both inputs arrive asynchronously and independently: the frame JPEG from the
  * frame browser's cache, the masks from the track job. Each is tagged with the
@@ -71,6 +78,7 @@ export function ResultsOverlay({ jobId, frameIdx, frame }: ResultsOverlayProps) 
    const canvasRef = useRef<HTMLCanvasElement>(null);
    const [masks, setMasks] = useState<FetchedMasks | null>(null);
    const [error, setError] = useState<string | null>(null);
+   const [view, setView] = useState<View>("overlay");
    const drawTokenRef = useRef(0);
 
    // Fetch this frame's masks. Tagged with the frame they were requested for.
@@ -90,7 +98,8 @@ export function ResultsOverlay({ jobId, frameIdx, frame }: ResultsOverlayProps) 
    const masksReady = masks?.frameIdx === frameIdx;
    const inSync = framePixelsReady && masksReady;
 
-   // Draw only once image and masks both belong to `frameIdx`.
+   // Draw only once image and masks both belong to `frameIdx`. `view` is a
+   // dependency because switching it remounts the canvas.
    useEffect(() => {
       const canvas = canvasRef.current;
       if (!canvas || !inSync || !frame || !masks) return;
@@ -118,37 +127,102 @@ export function ResultsOverlay({ jobId, frameIdx, frame }: ResultsOverlayProps) 
          .catch((e) => {
             if (token === drawTokenRef.current) setError(e instanceof Error ? e.message : String(e));
          });
-   }, [inSync, frame, masks]);
+   }, [inSync, frame, masks, view]);
 
    const present = masks?.objects.filter((o) => o.present) ?? [];
+
+   /** Covers whichever panes are on screen while the two halves catch up. */
+   const busyOverlay = !inSync && (
+      <Box
+         sx={{
+            position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+            alignItems: "center", justifyContent: "center", gap: 1.5,
+            bgcolor: "rgba(0,0,0,0.45)", color: "common.white",
+         }}
+      >
+         <CircularProgress size={28} sx={{ color: "common.white" }} />
+         <Typography variant="body2">
+            {framePixelsReady ? "Loading masks for this frame…" : "Loading frame…"}
+         </Typography>
+      </Box>
+   );
+
+   const paneLabel = (text: string, muted = false) => (
+      <Typography
+         variant="caption"
+         sx={{
+            display: "block", mb: 0.5, fontWeight: 700, letterSpacing: "0.06em",
+            textTransform: "uppercase", color: muted ? "text.secondary" : "primary.main",
+         }}
+      >
+         {text}
+      </Typography>
+   );
 
    return (
       <Box>
          {error && <Alert severity="error" sx={{ mb: 1 }} onClose={() => setError(null)}>{error}</Alert>}
 
-         <Paper variant="outlined" sx={{ position: "relative", borderRadius: 2, overflow: "hidden", bgcolor: "grey.900" }}>
-            <canvas ref={canvasRef} style={{ width: "100%", height: "auto", display: "block" }} />
-            {!inSync && (
-               <Box
-                  sx={{
-                     position: "absolute",
-                     inset: 0,
-                     display: "flex",
-                     flexDirection: "column",
-                     alignItems: "center",
-                     justifyContent: "center",
-                     gap: 1.5,
-                     bgcolor: "rgba(0,0,0,0.45)",
-                     color: "common.white",
-                  }}
-               >
-                  <CircularProgress size={28} sx={{ color: "common.white" }} />
-                  <Typography variant="body2">
-                     {framePixelsReady ? "Loading masks for this frame…" : "Loading frame…"}
-                  </Typography>
+         <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+            <Typography variant="caption" color="text.secondary">
+               Frame {frameIdx}
+               {present.length > 0 && ` · ${present.length} object${present.length === 1 ? "" : "s"} tracked`}
+            </Typography>
+            <ToggleButtonGroup
+               size="small"
+               value={view}
+               exclusive
+               onChange={(_, v: View | null) => v && setView(v)}
+            >
+               <ToggleButton value="overlay">
+                  <LayersIcon fontSize="small" sx={{ mr: 0.5 }} /> Overlay
+               </ToggleButton>
+               <ToggleButton value="split">
+                  <CompareIcon fontSize="small" sx={{ mr: 0.5 }} /> Side by side
+               </ToggleButton>
+            </ToggleButtonGroup>
+         </Stack>
+
+         {view === "overlay" ? (
+            <Paper variant="outlined" sx={{ position: "relative", borderRadius: 2, overflow: "hidden", bgcolor: "grey.900" }}>
+               <canvas ref={canvasRef} style={{ width: "100%", height: "auto", display: "block" }} />
+               {busyOverlay}
+            </Paper>
+         ) : (
+            // Equal columns so the two frames are the same scale and a drifted
+            // mask can be judged against the pixels it is supposed to cover.
+            // Stacks on a narrow screen rather than shrinking both to nothing.
+            <Box
+               sx={{
+                  display: "grid",
+                  gap: 1.5,
+                  gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                  alignItems: "start",
+               }}
+            >
+               <Box sx={{ minWidth: 0 }}>
+                  {paneLabel("Original", true)}
+                  <Paper variant="outlined" sx={{ position: "relative", borderRadius: 2, overflow: "hidden", bgcolor: "grey.900" }}>
+                     {/* A plain <img> rather than a second canvas: nothing is
+                         composited here, so there is nothing to draw. */}
+                     {framePixelsReady && frame ? (
+                        <Box component="img" src={frame.url} alt={`Frame ${frameIdx}, unannotated`}
+                           sx={{ width: "100%", height: "auto", display: "block" }} />
+                     ) : (
+                        <Box sx={{ width: "100%", aspectRatio: "16 / 9" }} />
+                     )}
+                     {busyOverlay}
+                  </Paper>
                </Box>
-            )}
-         </Paper>
+               <Box sx={{ minWidth: 0 }}>
+                  {paneLabel("Tracked")}
+                  <Paper variant="outlined" sx={{ position: "relative", borderRadius: 2, overflow: "hidden", bgcolor: "grey.900" }}>
+                     <canvas ref={canvasRef} style={{ width: "100%", height: "auto", display: "block" }} />
+                     {busyOverlay}
+                  </Paper>
+               </Box>
+            </Box>
+         )}
 
          <Stack direction="row" spacing={1} sx={{ mt: 1.5, flexWrap: "wrap", rowGap: 1, alignItems: "center" }}>
             {masksReady && masks!.objects.length === 0 && (
@@ -170,11 +244,6 @@ export function ResultsOverlay({ jobId, frameIdx, frame }: ResultsOverlayProps) 
                   }}
                />
             ))}
-            {masksReady && present.length > 0 && (
-               <Typography variant="caption" color="text.secondary" sx={{ ml: "auto" }}>
-                  Masks shown for frame {masks!.frameIdx}
-               </Typography>
-            )}
          </Stack>
       </Box>
    );

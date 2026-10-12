@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 import type {
    ChunksResponse,
+   DatasetExportJob,
    PrepareChunkResponse,
    TrackFrameResult,
    TrackJob,
@@ -24,12 +25,29 @@ export interface VideoSegmentationConfig {
    baseUrl?: string;
    /** Tapis base URL, used when saving exports to an HPC system. */
    tapisBaseUrl?: string;
+   /**
+    * Set only when `baseUrl` points at the authenticating gateway rather than
+    * the SAM3 service itself.
+    *
+    * It must stay off for a direct connection. The service answers with
+    * `Access-Control-Allow-Origin: *` and no `Access-Control-Allow-Credentials`,
+    * and a browser refuses a credentialed request against a wildcard origin —
+    * so sending cookies to the bare service makes every call fail CORS rather
+    * than merely being unnecessary.
+    */
+   gatewayAuth?: boolean;
 }
 
 let _baseUrl = "http://127.0.0.1:2129";
 let _tapisBaseUrl = "https://icicleai.tapis.io";
 /** Held so an expired session can be renewed without the caller noticing. */
 let _tapisToken = "";
+/** Whether to send cookies — only valid against the gateway. See `gatewayAuth`. */
+let _gatewayAuth = false;
+
+export function usesGatewayAuth(): boolean {
+   return _gatewayAuth;
+}
 
 /** Supplies the token used to (re-)establish a session with the auth gateway. */
 export function setAuthToken(token: string): void {
@@ -39,6 +57,7 @@ export function setAuthToken(token: string): void {
 export function configureVideoSegmentation(cfg: VideoSegmentationConfig): void {
    if (cfg.baseUrl) _baseUrl = cfg.baseUrl.replace(/\/+$/, "");
    if (cfg.tapisBaseUrl) _tapisBaseUrl = cfg.tapisBaseUrl.replace(/\/+$/, "");
+   if (cfg.gatewayAuth !== undefined) _gatewayAuth = cfg.gatewayAuth;
 }
 
 export function getVideoServiceBaseUrl(): string {
@@ -70,10 +89,28 @@ export class Sam3VideoError extends Error {
    }
 }
 
+/**
+ * A request that never produced a response.
+ *
+ * `fetch` cannot tell these cases apart — a browser reports a CORS refusal as
+ * an indistinguishable network failure, deliberately, so that a page learns
+ * nothing about a cross-origin server it is not allowed to read. The service
+ * may therefore be perfectly healthy and answering 200 while this fires, so the
+ * message has to raise that possibility rather than blame the network outright.
+ */
 function unreachableError(detail: string): Sam3VideoError {
+   const remote = !_baseUrl.includes("127.0.0.1") && !_baseUrl.includes("localhost");
    return new Sam3VideoError(
-      `Could not reach the SAM3 Video Service at ${_baseUrl} — ${detail}. ` +
-      `Check that the service is running, and if it is on an HPC GPU node, that your SSH tunnel is still open.`,
+      `No response from the SAM3 Video Service at ${_baseUrl} — ${detail}.\n\n` +
+      `The browser cannot tell a service that is down from one whose answer it was not allowed ` +
+      `to read, so check both:\n` +
+      `• The service may be refusing this page's origin (${
+         typeof window !== "undefined" ? window.location.origin : "this page"
+      }). It must be listed in the service's allowed origins — a wildcard does not work ` +
+      `alongside credentials. The gateway logs every origin it turns away.\n` +
+      (remote
+         ? `• The service may be unreachable. Check it is deployed and healthy.`
+         : `• The service may not be running, or its SSH tunnel may have closed.`),
       { unreachable: true },
    );
 }
@@ -111,7 +148,7 @@ async function request(
    // expired — on first load, or after sitting idle past the TTL. Re-establish
    // it from the Tapis token and retry once, so callers never have to think
    // about session lifetime. `allowReauth` stops /auth/session recursing.
-   if (response.status === 401 && allowReauth && _tapisToken) {
+   if (response.status === 401 && allowReauth && _gatewayAuth && _tapisToken) {
       try {
          await signIn(_tapisToken);
       } catch {
@@ -134,10 +171,14 @@ async function rawRequest(
    signal?.addEventListener("abort", onCallerAbort);
 
    try {
-      // `credentials: "include"` so the gateway's session cookie travels on
-      // cross-origin calls. Without it the browser silently omits the cookie
-      // and every request comes back 401.
-      return await fetch(`${_baseUrl}${path}`, { ...init, credentials: "include", signal: controller.signal });
+      // Cookies travel only when the gateway is in front; against the bare
+      // service a credentialed request is refused outright by the browser,
+      // because the service replies with a wildcard allowed origin.
+      return await fetch(`${_baseUrl}${path}`, {
+         ...init,
+         credentials: _gatewayAuth ? "include" : "omit",
+         signal: controller.signal,
+      });
    } catch (e) {
       // A caller-initiated abort is not a service failure — hand it back as-is
       // so navigation/cancellation paths can ignore it.
@@ -178,6 +219,8 @@ export function currentUser(): string | null {
  */
 export async function signIn(tapisToken: string): Promise<string | null> {
    _tapisToken = tapisToken ?? "";
+   // Nothing to sign in to, and the attempt itself would fail CORS.
+   if (!_gatewayAuth) { _signedInAs = null; return null; }
    const response = await request("/auth/session", {
       method: "POST",
       headers: { "X-Tapis-Token": tapisToken ?? "" },
@@ -248,8 +291,9 @@ export function uploadVideo(
    return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `${_baseUrl}/uploads`);
-      // Carries the gateway's session cookie, as `credentials: "include"` does for fetch.
-      xhr.withCredentials = true;
+      // Carries the gateway's session cookie, as fetch's credentials mode does.
+      // Left off for a direct connection, where it would fail CORS.
+      xhr.withCredentials = _gatewayAuth;
       xhr.upload.onprogress = (e) => {
          if (e.lengthComputable) onProgress?.(e.loaded / e.total);
       };
@@ -430,7 +474,8 @@ export function subscribeTrackJob(
    try {
       // withCredentials is the whole reason the gateway authenticates by cookie:
       // EventSource cannot send an Authorization or X-Tapis-Token header.
-      es = new EventSource(`${_baseUrl}/track-jobs/${jobId}/events`, { withCredentials: true });
+      es = new EventSource(`${_baseUrl}/track-jobs/${jobId}/events`,
+         { withCredentials: _gatewayAuth });
       es.onmessage = (ev) => {
          if (stopped) return;
          try {
@@ -460,4 +505,97 @@ export function subscribeTrackJob(
       es?.close();
       if (pollTimer) clearTimeout(pollTimer);
    };
+}
+
+// ---------------------------------------------------------------------------
+// Dataset export to HPC
+// ---------------------------------------------------------------------------
+// Served by the auth gateway, not the video service: the transfer is hundreds
+// of megabytes and must not pass through the browser, and only the gateway
+// holds both the shared data volume and the caller's identity. These calls
+// therefore require gateway auth to be configured.
+
+export class DatasetExportUnavailable extends Sam3VideoError {
+   constructor() {
+      super(
+         "Exporting a dataset to HPC needs the authenticating gateway, which this deployment is not using. " +
+         "Point SAM3_VIDEO_URL at the gateway and set SAM3_VIDEO_AUTH=gateway.",
+      );
+      this.name = "DatasetExportUnavailable";
+   }
+}
+
+export interface StartDatasetExportOptions {
+   uploadId: string;
+   /** Include a finished tracking job to ship its masks and COCO alongside the frames. */
+   trackJobId?: string | null;
+   system: string;
+   destDir: string;
+   filename: string;
+   /** Tapis token — the gateway writes to HPC as the caller. */
+   tapisToken: string;
+}
+
+export async function startDatasetExport(opts: StartDatasetExportOptions): Promise<DatasetExportJob> {
+   if (!_gatewayAuth) throw new DatasetExportUnavailable();
+   return asJson(
+      await request("/exports", {
+         method: "POST",
+         headers: { "Content-Type": "application/json", "X-Tapis-Token": opts.tapisToken },
+         body: JSON.stringify({
+            upload_id: opts.uploadId,
+            track_job_id: opts.trackJobId ?? null,
+            system: opts.system,
+            dest_dir: opts.destDir,
+            filename: opts.filename,
+         }),
+      }),
+   );
+}
+
+export async function getDatasetExport(exportId: string, signal?: AbortSignal): Promise<DatasetExportJob> {
+   if (!_gatewayAuth) throw new DatasetExportUnavailable();
+   return asJson(await request(`/exports/${exportId}`, {}, { signal }));
+}
+
+export async function cancelDatasetExport(exportId: string): Promise<DatasetExportJob> {
+   if (!_gatewayAuth) throw new DatasetExportUnavailable();
+   return asJson(await request(`/exports/${exportId}`, { method: "DELETE" }));
+}
+
+/**
+ * Polls an export to completion. Polled rather than streamed because the export
+ * outlives the page: it keeps running on the gateway whether or not anyone is
+ * watching, so re-attaching by id is what matters, not a persistent connection.
+ */
+export function watchDatasetExport(
+   exportId: string,
+   onUpdate: (job: DatasetExportJob) => void,
+   onError?: (err: Sam3VideoError) => void,
+): () => void {
+   const TERMINAL = new Set(["done", "failed", "cancelled"]);
+   let stopped = false;
+   let timer: ReturnType<typeof setTimeout> | null = null;
+   let failures = 0;
+
+   const poll = async () => {
+      if (stopped) return;
+      try {
+         const job = await getDatasetExport(exportId);
+         if (stopped) return;
+         failures = 0;
+         onUpdate(job);
+         if (TERMINAL.has(job.status)) return;
+      } catch (e) {
+         if (stopped) return;
+         if (++failures >= 3) {
+            onError?.(e instanceof Sam3VideoError ? e : new Sam3VideoError(String(e)));
+            return;
+         }
+      }
+      if (!stopped) timer = setTimeout(poll, 2000);
+   };
+   poll();
+
+   return () => { stopped = true; if (timer) clearTimeout(timer); };
 }

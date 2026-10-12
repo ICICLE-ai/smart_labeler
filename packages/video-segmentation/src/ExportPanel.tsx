@@ -18,6 +18,36 @@ export interface ExportPanelProps {
 
 type Artifact = "video" | "coco";
 
+/**
+ * Turns an export failure into something the user can act on.
+ *
+ * The overlay render is the fragile one: it decodes every frame and then insists
+ * on one image per frame of the count recorded at upload, so a container whose
+ * metadata overstates its length by a frame aborts the whole video — even though
+ * the masks themselves are complete and the other exports work.
+ */
+function explainExportFailure(e: unknown, artifact: Artifact): string {
+   const raw = e instanceof Error ? e.message : String(e);
+   const missing = /Missing extracted frame (\d+)/i.exec(raw);
+   if (missing && artifact === "video") {
+      return (
+         `The annotated video could not be assembled: the service expected a frame ${missing[1]} that this ` +
+         `file does not actually contain. The video's own metadata overstates how many frames it has, which ` +
+         `is common after a trim or re-encode.\n\n` +
+         `Your tracking results are unaffected — the COCO JSON and the per-frame mask PNGs are complete and ` +
+         `can be downloaded now. Rendering the overlay needs a fix in the GPU service's exporter, which ` +
+         `currently trusts the recorded frame count instead of what it decoded.`
+      );
+   }
+   if (/ffmpeg not found/i.test(raw)) {
+      return `The GPU service has no ffmpeg available, so it cannot render video. On OSC: module load ffmpeg/6.1.1.\n\nService said: ${raw}`;
+   }
+   if (/No masks found/i.test(raw)) {
+      return `There are no saved masks for this job yet, so there is nothing to export.\n\nService said: ${raw}`;
+   }
+   return raw;
+}
+
 /** Downloads a blob through a throwaway anchor. */
 function downloadBlob(blob: Blob, filename: string) {
    const url = URL.createObjectURL(blob);
@@ -57,7 +87,7 @@ export function ExportPanel({ jobId, stem, token }: ExportPanelProps) {
          if (artifact === "video") downloadBlob(await getVideoBlob(), videoName);
          else downloadBlob(await getCocoBlob(), cocoName);
       } catch (e) {
-         setError(e instanceof Error ? e.message : String(e));
+         setError(explainExportFailure(e, artifact));
       } finally {
          setBusy(null);
       }
@@ -142,7 +172,11 @@ export function ExportPanel({ jobId, stem, token }: ExportPanelProps) {
             </Box>
          </Stack>
 
-         {error && <Alert severity="error" sx={{ mt: 1.5 }} onClose={() => setError(null)}>{error}</Alert>}
+         {error && (
+            <Alert severity="error" sx={{ mt: 1.5 }} onClose={() => setError(null)}>
+               <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", fontSize: "0.82rem" }}>{error}</Typography>
+            </Alert>
+         )}
 
          {saveTarget && (
             <SaveToHpcDialog

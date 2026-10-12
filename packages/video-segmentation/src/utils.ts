@@ -29,3 +29,20 @@ export interface VideoObject {
 export function nextObjectId(objects: VideoObject[]): number {
    return objects.reduce((max, o) => Math.max(max, o.id), 0) + 1;
 }
+
+/**
+ * Elapsed time at a frame, as mm:ss.mmm.
+ *
+ * Derived from the frame index, never the other way round. On a
+ * variable-frame-rate recording the average fps makes this an approximation, so
+ * it is for the reader's orientation only — every call to the service is
+ * addressed by frame index, which is exact.
+ */
+export function frameTimecode(frameIdx: number, fps: number | undefined): string | null {
+   if (!fps || !Number.isFinite(fps) || fps <= 0) return null;
+   const totalSeconds = frameIdx / fps;
+   const minutes = Math.floor(totalSeconds / 60);
+   const seconds = Math.floor(totalSeconds % 60);
+   const millis = Math.round((totalSeconds - Math.floor(totalSeconds)) * 1000);
+   return `${minutes}:${String(seconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
+}

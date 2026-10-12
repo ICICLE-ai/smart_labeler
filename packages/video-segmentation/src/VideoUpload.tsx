@@ -3,6 +3,7 @@ import {
    Alert, AlertTitle, Box, Button, LinearProgress, Paper, Stack, Tab, Tabs, TextField, Tooltip, Typography,
 } from "@mui/material";
 import CloudUploadIcon from "@mui/icons-material/CloudUpload";
+import StopCircleIcon from "@mui/icons-material/StopCircle";
 import StorageIcon from "@mui/icons-material/Storage";
 import ComputerIcon from "@mui/icons-material/Computer";
 import FolderOpenIcon from "@mui/icons-material/FolderOpen";
@@ -81,6 +82,10 @@ export function VideoUpload({ onUploaded, token = "", disabled }: VideoUploadPro
    const [failure, setFailure] = useState<{ title: string; body: string } | null>(null);
    const [fileName, setFileName] = useState<string | null>(null);
    const inputRef = useRef<HTMLInputElement>(null);
+   /** Aborts whichever transfer is in flight — the HPC read or the upload itself. */
+   const abortRef = useRef<AbortController | null>(null);
+   /** Distinguishes a user cancel from a real error, so cancelling stays quiet. */
+   const cancelledRef = useRef(false);
 
    // HPC picker state
    const [system, setSystem] = useState<string>(DEFAULT_SYSTEM);
@@ -91,16 +96,34 @@ export function VideoUpload({ onUploaded, token = "", disabled }: VideoUploadPro
 
    const runUpload = (file: File) => {
       setPhase({ kind: "upload", fraction: 0, label: `Uploading ${file.name} to the GPU service` });
-      return uploadVideo(file, (f) =>
-         setPhase({ kind: "upload", fraction: f, label: `Uploading ${file.name} to the GPU service` }),
+      return uploadVideo(
+         file,
+         (f) => setPhase({ kind: "upload", fraction: f, label: `Uploading ${file.name} to the GPU service` }),
+         abortRef.current?.signal,
       )
          .then((meta) => { setPhase(null); onUploaded(meta); })
-         .catch((e) => { setPhase(null); setFailure(explainUploadFailure(e)); });
+         .catch((e) => {
+            setPhase(null);
+            // A cancel the user asked for is not a failure to report back at them.
+            if (cancelledRef.current) { cancelledRef.current = false; return; }
+            setFailure(explainUploadFailure(e));
+         });
+   };
+
+   /** Stops the transfer. Nothing is registered with the service, so there is nothing to clean up. */
+   const cancelTransfer = () => {
+      cancelledRef.current = true;
+      abortRef.current?.abort();
+      abortRef.current = null;
+      setPhase(null);
+      setFailure(null);
    };
 
    const handleLocalFile = (file: File) => {
       setFailure(null);
       setFileName(file.name);
+      cancelledRef.current = false;
+      abortRef.current = new AbortController();
       void runUpload(file);
    };
 
@@ -110,14 +133,19 @@ export function VideoUpload({ onUploaded, token = "", disabled }: VideoUploadPro
       const name = path.split("/").filter(Boolean).at(-1) ?? "video.mp4";
       setFailure(null);
       setFileName(name);
+      cancelledRef.current = false;
+      abortRef.current = new AbortController();
       try {
          setPhase({ kind: "download", fraction: 0, label: `Reading ${name} from ${system}` });
-         const blob = await fetchHpcFile({ system, path, token }, (fraction) =>
-            setPhase({ kind: "download", fraction, label: `Reading ${name} from ${system}` }),
+         const blob = await fetchHpcFile(
+            { system, path, token },
+            (fraction) => setPhase({ kind: "download", fraction, label: `Reading ${name} from ${system}` }),
+            abortRef.current.signal,
          );
          await runUpload(new File([blob], name, { type: blob.type || "video/mp4" }));
       } catch (e) {
          setPhase(null);
+         if (cancelledRef.current) { cancelledRef.current = false; return; }
          setFailure(explainUploadFailure(e));
       }
    };
@@ -255,10 +283,15 @@ export function VideoUpload({ onUploaded, token = "", disabled }: VideoUploadPro
          {phase && (
             <Stack spacing={0.75} sx={{ mt: 2 }}>
                <LinearProgress variant="determinate" value={Math.round(phase.fraction * 100)} />
-               <Typography variant="caption" color="text.secondary" align="center">
-                  {phase.label} — {Math.round(phase.fraction * 100)}%
-                  {phase.kind === "download" ? " (step 1 of 2)" : fileName && source === "hpc" ? " (step 2 of 2)" : ""}
-               </Typography>
+               <Stack direction="row" spacing={1} alignItems="center" justifyContent="center">
+                  <Typography variant="caption" color="text.secondary">
+                     {phase.label} — {Math.round(phase.fraction * 100)}%
+                     {phase.kind === "download" ? " (step 1 of 2)" : fileName && source === "hpc" ? " (step 2 of 2)" : ""}
+                  </Typography>
+                  <Button size="small" color="error" startIcon={<StopCircleIcon />} onClick={cancelTransfer}>
+                     Stop
+                  </Button>
+               </Stack>
             </Stack>
          )}
 

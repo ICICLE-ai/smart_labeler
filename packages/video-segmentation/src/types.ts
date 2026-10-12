@@ -103,3 +103,23 @@ export interface TrackFrameResult {
    status: TrackJobStatus;
    objects: TrackFrameObject[];
 }
+
+/** An asynchronous dataset export running on the gateway. */
+export interface DatasetExportJob {
+   export_id: string;
+   status: "queued" | "running" | "done" | "failed" | "cancelled";
+   /** "extracting" | "archiving" | "uploading", or empty once finished. */
+   phase: string;
+   progress: number;
+   frames_total: number;
+   frames_done: number;
+   bytes_total: number;
+   bytes_sent: number;
+   upload_id: string;
+   track_job_id: string | null;
+   /** Where it is being written, as system:path/filename. */
+   destination: string;
+   error: string | null;
+   created_at: number;
+   finished_at: number | null;
+}

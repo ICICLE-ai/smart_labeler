@@ -7,6 +7,7 @@ import NavigateNextIcon from "@mui/icons-material/NavigateNext";
 import BookmarkIcon from "@mui/icons-material/Bookmark";
 import type { ChunkPlan } from "./types";
 import { chunkFrameUrl, fetchFrameObjectUrl, prepareChunk, Sam3VideoError } from "./sam3VideoClient";
+import { frameTimecode } from "./utils";
 
 /** How many frames on either side of the current one to keep warm. */
 const PREFETCH_RADIUS = 4;
@@ -43,6 +44,8 @@ export interface FrameBrowserProps {
    onFrameReady: (frame: LoadedFrame | null) => void;
    /** Raised for failures the user needs to know about (chunk prepare / frame fetch). */
    onError?: (message: string) => void;
+   /** Average frame rate, used only to show elapsed time beside the frame number. */
+   fps?: number;
    disabled?: boolean;
 }
 
@@ -66,6 +69,7 @@ export function FrameBrowser({
    keyframeIndices,
    onFrameReady,
    onError,
+   fps,
    disabled,
 }: FrameBrowserProps) {
    const chunkForFrame = useCallback(
@@ -277,6 +281,7 @@ export function FrameBrowser({
    // The readout follows the thumb while dragging, so the number tracks the hand
    // even though no frame is fetched until release.
    const displayFrame = scrubFrame ?? currentFrame;
+   const timecode = frameTimecode(displayFrame, fps);
 
    const handleJump = () => {
       const target = Number(jumpValue);
@@ -314,9 +319,21 @@ export function FrameBrowser({
                      <NavigateBeforeIcon />
                   </IconButton>
                </Tooltip>
-               <Typography variant="body2" sx={{ minWidth: 110, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>
-                  Frame <strong>{displayFrame}</strong> / {lastFrame}
-               </Typography>
+               <Box sx={{ minWidth: 132, textAlign: "center" }}>
+                  <Typography variant="body2" sx={{ fontVariantNumeric: "tabular-nums", lineHeight: 1.2 }}>
+                     Frame <strong>{displayFrame}</strong> / {lastFrame}
+                  </Typography>
+                  {timecode && (
+                     <Tooltip title="Elapsed time from the start of the video. Approximate on variable-frame-rate recordings — frame numbers are the exact reference.">
+                        <Typography
+                           variant="caption"
+                           sx={{ color: "text.secondary", fontVariantNumeric: "tabular-nums", cursor: "help" }}
+                        >
+                           ~{timecode}
+                        </Typography>
+                     </Tooltip>
+                  )}
+               </Box>
                <Tooltip title="Next frame">
                   <IconButton size="small" onClick={() => step(1)} disabled={disabled || currentFrame >= lastFrame}>
                      <NavigateNextIcon />

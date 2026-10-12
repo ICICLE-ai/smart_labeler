@@ -21,8 +21,10 @@ import { TrackControls } from "./TrackControls";
 import { ResultsOverlay } from "./ResultsOverlay";
 import { VideoUpload } from "./VideoUpload";
 import { ExportPanel } from "./ExportPanel";
+import { DatasetExportPanel } from "./DatasetExportPanel";
 import { ServiceStatus, type ServiceState } from "./ServiceStatus";
 import { WorkflowSteps } from "./WorkflowSteps";
+import { AssignMaskDialog } from "./AssignMaskDialog";
 import type { ChunkPlan, KeyframePrompt, TrackJob, UploadMeta } from "./types";
 import type { VideoObject } from "./utils";
 import {
@@ -76,6 +78,18 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
    const [error, setError] = useState<string | null>(null);
    const [notice, setNotice] = useState<string | null>(null);
    const [pendingReset, setPendingReset] = useState<PendingReset>(null);
+   /**
+    * A region drawn before it was assigned to an object. Held here until the
+    * user says what it is; the canvas has already painted it, so it must end up
+    * either recorded against an object or cleared.
+    */
+   const [pendingMask, setPendingMask] = useState<{ frameIdx: number; points: { x: number; y: number }[] } | null>(null);
+   /**
+    * Bumped to hand the canvas a fresh `annotations` array. The canvas keeps its
+    * own copy and only re-syncs when that prop's identity changes, so this is
+    * what removes a discarded region it has already drawn.
+    */
+   const [canvasNonce, setCanvasNonce] = useState(0);
    const unsubscribeRef = useRef<(() => void) | null>(null);
    /** Last time the job reported something new, for spotting a job that has stopped progressing. */
    const jobProgressRef = useRef<{ signature: string; at: number }>({ signature: "", at: Date.now() });
@@ -194,8 +208,10 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
    const displayedAnnotations = useMemo(() => {
       if (shownFrameIdx === null) return NO_MASKS;
       const objMap = keyframeMasks.get(shownFrameIdx);
-      return objMap ? [...objMap.values()] : NO_MASKS;
-   }, [keyframeMasks, shownFrameIdx]);
+      // A fresh array even when empty, so bumping canvasNonce always re-syncs.
+      return objMap ? [...objMap.values()] : [];
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, [keyframeMasks, shownFrameIdx, canvasNonce]);
 
    const activeObject = objects.find((o) => o.id === activeObjectId) ?? null;
 
@@ -216,24 +232,46 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
    // mask is attached to the object selected in the panel — identity comes from
    // "select object, then annotate", not from the label a tool happened to set.
    // Writes land on the frame on screen, which is what the user drew on.
-   const handleAddition = (added: SegmentationAnnotation[]) => {
-      if (!added.length || shownFrameIdx === null) return;
-      if (activeObjectId == null) {
-         setError("Select an object in the Objects panel first — a mask has to belong to one.");
-         return;
-      }
-      const points = added[0].points;
-      mutateFrame(shownFrameIdx, (objMap) => {
-         objMap.set(activeObjectId, {
-            id: objKeyId(activeObjectId),
-            label: activeObject?.label ?? `object_${activeObjectId}`,
-            points,
-         });
+   const assignMaskToObject = (
+      frameIdx: number,
+      object: VideoObject,
+      points: { x: number; y: number }[],
+   ) => {
+      // An object named in the dialog may not exist yet.
+      setObjects((prev) => (prev.some((o) => o.id === object.id) ? prev : [...prev, object]));
+      setActiveObjectId(object.id);
+      mutateFrame(frameIdx, (objMap) => {
+         objMap.set(object.id, { id: objKeyId(object.id), label: object.label, points });
          return objMap;
       });
+   };
+
+   const handleAddition = (added: SegmentationAnnotation[]) => {
+      if (!added.length || shownFrameIdx === null) return;
+      const points = added[0].points;
       if (added.length > 1) {
-         setNotice(`Kept the first of ${added.length} masks — one mask per object per frame.`);
+         setNotice(`Kept the first of ${added.length} regions — one mask per object per frame.`);
       }
+
+      // With an object selected the intent is unambiguous, so record it straight
+      // away. Otherwise ask, rather than stranding a region nothing owns.
+      if (activeObjectId != null && activeObject) {
+         assignMaskToObject(shownFrameIdx, activeObject, points);
+      } else {
+         setPendingMask({ frameIdx: shownFrameIdx, points });
+      }
+   };
+
+   /** Clear a region the canvas has drawn but nothing owns. */
+   const discardPendingMask = () => {
+      setPendingMask(null);
+      setCanvasNonce((n) => n + 1);
+   };
+
+   /** Remove one object's mask from the frame on screen. */
+   const removeMaskOnCurrentFrame = (objId: number) => {
+      if (shownFrameIdx === null) return;
+      mutateFrame(shownFrameIdx, (objMap) => { objMap.delete(objId); return objMap; });
    };
 
    const handleUpdate = (id: string, updates: Partial<SegmentationAnnotation>) => {
@@ -486,22 +524,24 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
                   keyframeIndices={keyframeIndices}
                   onFrameReady={setFrame}
                   onError={setError}
+                  fps={uploadMeta.fps}
                   disabled={jobActive}
                />
 
                <Box sx={{ mt: 2 }}>
                   {mode === "annotate" ? (
                      <>
-                        {activeObjectId == null && objects.length > 0 && (
+                        {objects.length === 0 ? (
                            <Alert severity="info" sx={{ mb: 1.5 }}>
-                              Select an object on the right, then draw or click on the frame to annotate it.
+                              <strong>Draw a region on the frame</strong> with the polygon tool or a SAM3 click —
+                              you will be asked which object it is once you have drawn it.
                            </Alert>
-                        )}
-                        {objects.length === 0 && (
+                        ) : activeObjectId == null ? (
                            <Alert severity="info" sx={{ mb: 1.5 }}>
-                              Add an object on the right to start annotating — every mask belongs to one tracked object.
+                              Draw a region and you will be asked which object it belongs to. Select an object on
+                              the right first to skip that question and annotate it directly.
                            </Alert>
-                        )}
+                        ) : null}
                         {job?.status === "done" && (
                            <Alert severity="warning" sx={{ mb: 1.5 }}>
                               You are editing keyframes after a completed run. Track again to apply these corrections,
@@ -526,7 +566,12 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
                               onSelection={(id) => {
                                  // Clicking a mask selects its object, keeping the
                                  // panel and the canvas talking about the same thing.
-                                 if (id) setActiveObjectId(objIdFromKey(id));
+                                 // Only our own `obj-N` ids carry an object; anything
+                                 // else would parse to NaN.
+                                 if (id && id.startsWith("obj-")) {
+                                    const objId = objIdFromKey(id);
+                                    if (objects.some((o) => o.id === objId)) setActiveObjectId(objId);
+                                 }
                               }}
                               onUpdate={handleUpdate}
                               deleteAnnotations={handleDelete}
@@ -539,7 +584,10 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
                               tapisToken={tapisToken}
                               sam3Endpoint={sam3Endpoint}
                               pipeId={pipeid}
-                              defaultLabel={activeObject?.label}
+                              // Always non-empty so the canvas creates the region and
+                              // hands it straight to us; its own label prompt would mint
+                              // an annotation with an id no object can own.
+                              defaultLabel={activeObject?.label ?? "unassigned region"}
                            />
                         ) : (
                            <Paper
@@ -584,6 +632,9 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
                      activeObjectId={activeObjectId}
                      onActiveObjectChange={setActiveObjectId}
                      maskCountByObject={maskCountByObject}
+                     currentFrame={currentFrame}
+                     objectsOnCurrentFrame={new Set([...(keyframeMasks.get(currentFrame)?.keys() ?? [])])}
+                     onRemoveMaskOnCurrentFrame={removeMaskOnCurrentFrame}
                      disabled={jobActive}
                   />
                   <Divider />
@@ -603,6 +654,14 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
                         <ExportPanel jobId={job.job_id} stem={exportStem} token={tapisToken} />
                      </>
                   )}
+                  <Divider />
+                  <DatasetExportPanel
+                     uploadId={uploadMeta.upload_id}
+                     trackJobId={job?.status === "done" ? job.job_id : null}
+                     stem={exportStem}
+                     token={tapisToken}
+                     storageKey={`video-segmentation-export:${pipeid}`}
+                  />
                   <Divider />
                   <Box sx={{ p: 2 }}>
                      <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>Start again</Typography>
@@ -641,6 +700,21 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
                </Paper>
             </Grid>
          </Grid>
+
+         {/* ── Assign a freshly drawn region to an object ── */}
+         <AssignMaskDialog
+            open={pendingMask !== null}
+            frameIdx={pendingMask?.frameIdx ?? 0}
+            objects={objects}
+            objectsWithMaskHere={new Set(
+               pendingMask ? [...(keyframeMasks.get(pendingMask.frameIdx)?.keys() ?? [])] : [],
+            )}
+            onAssign={(object) => {
+               if (pendingMask) assignMaskToObject(pendingMask.frameIdx, object, pendingMask.points);
+               setPendingMask(null);
+            }}
+            onDiscard={discardPendingMask}
+         />
 
          {/* ── Confirmation for destructive actions ── */}
          <Dialog open={pendingReset !== null} onClose={() => setPendingReset(null)} maxWidth="xs" fullWidth>

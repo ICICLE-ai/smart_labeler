@@ -5,7 +5,9 @@ export { ServiceStatus } from "./ServiceStatus";
 export type { ServiceStatusProps, ServiceState } from "./ServiceStatus";
 
 export { ExportPanel } from "./ExportPanel";
+export { DatasetExportPanel } from "./DatasetExportPanel";
 export type { ExportPanelProps } from "./ExportPanel";
+export type { DatasetExportPanelProps } from "./DatasetExportPanel";
 
 export { SaveToHpcDialog } from "./SaveToHpcDialog";
 export type { SaveToHpcDialogProps } from "./SaveToHpcDialog";
@@ -15,12 +17,14 @@ export type { FrameBrowserProps, LoadedFrame } from "./FrameBrowser";
 
 export {
    configureVideoSegmentation, getVideoServiceBaseUrl, getTapisBaseUrl, Sam3VideoError, checkHealth,
-   signIn, signOut, setAuthToken, currentUser,
+   signIn, signOut, setAuthToken, currentUser, usesGatewayAuth,
    uploadVideo, getUpload, listChunks, prepareChunk, chunkFrameUrl, singleFrameUrl, fetchFrameObjectUrl,
    startTrack, getTrackJob, cancelTrackJob, getTrackFrame, trackMaskPngUrl, trackCocoUrl, trackVideoUrl,
    fetchTrackVideo, fetchTrackCoco, subscribeTrackJob,
+   startDatasetExport, getDatasetExport, cancelDatasetExport, watchDatasetExport,
+   DatasetExportUnavailable,
 } from "./sam3VideoClient";
-export type { VideoSegmentationConfig, ServiceHealth } from "./sam3VideoClient";
+export type { VideoSegmentationConfig, ServiceHealth, StartDatasetExportOptions } from "./sam3VideoClient";
 
 export { saveToHpc, fetchHpcFile, HpcSaveError } from "./hpcClient";
 
@@ -32,6 +36,7 @@ export type { KeyframeMasks, ResumeState, PersistedKeyframe, PersistedMask } fro
 export type {
    UploadMeta, ChunkPlan, ChunksResponse, PrepareChunkResponse, MaskInput, KeyframeObjectPrompt,
    KeyframePrompt, TrackRequest, TrackJobStatus, TrackJob, TrackFrameObject, TrackFrameResult,
+   DatasetExportJob,
 } from "./types";
 
 export { objectColorCss, objectColorRgb, nextObjectId } from "./utils";
