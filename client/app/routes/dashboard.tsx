@@ -22,7 +22,7 @@ import {
   Title,
   Tooltip,
 } from "@mantine/core";
-import { IconSearch, IconAlertCircle, IconEdit, IconInfoCircle, IconPlus, IconRocket, IconTrash, IconUpload, IconX, IconCheck, IconFile, IconUsers } from "@tabler/icons-react";
+import { IconPhoto, IconVideo, IconSearch, IconAlertCircle, IconEdit, IconInfoCircle, IconPlus, IconRocket, IconTrash, IconUpload, IconX, IconCheck, IconFile, IconUsers } from "@tabler/icons-react";
 import { useLoaderData, useNavigate } from "@remix-run/react";
 import { Formik } from "formik";
 import { useEffect, useRef, useState } from "react";
@@ -57,16 +57,28 @@ export default function DashBoardPage() {
   const loaded = useLoaderData<Pipeline[]>();
   const [pipelines, setPipelines] = useState<Pipeline[]>(loaded ?? []);
   const [loadingPipelines, setLoadingPipelines] = useState(!loaded || loaded.length === 0);
-  const [pipelinesError, setPipelinesError] = useState(false);
+  /** null = fine. "auth" = the session expired; "other" = the backend could not be read. */
+  const [pipelinesError, setPipelinesError] = useState<null | "auth" | "other">(null);
   const [cookie] = useCookies(["tapis-token"]);
   const navigate = useNavigate();
   const { tapisBaseUrl, annotatorType } = useAppConfig();
 
   const token = cookie["tapis-token"]?.["access_token"] ?? "";
   const activeType = (annotatorType?.toUpperCase() ?? null) as TYPE | null;
+
+  /**
+   * A SEGMENTATION deployment covers image *and* video segmentation.
+   *
+   * They share a frontend rather than getting one deployment each: the two
+   * differ only in which workspace a pipeline opens into, and the pipeline's own
+   * `type` already carries that. So this instance lists both kinds, offers both
+   * when creating, and routes each to its own flow.
+   */
+  const isSegmentationFamily = activeType === TYPE.SEGMENTATION;
   const typeLabel =
     activeType === TYPE.DETECTION ? "Detection" :
     activeType === TYPE.SEGMENTATION ? "Segmentation" :
+    activeType === TYPE.VIDEO_SEGMENTATION ? "Video Segmentation & Tracking" :
     "Annotation";
 
   const fetchPipelines = (silent = false) => {
@@ -75,16 +87,16 @@ export default function DashBoardPage() {
       return;
     }
     if (!silent) setLoadingPipelines(true);
-    setPipelinesError(false);
-    fetchAndReturnData("/pipes", token)
+    setPipelinesError(null);
+    // The status is captured so an expired session can be named as such rather
+    // than reported as a network problem.
+    let status: number | null = null;
+    fetchAndReturnData("/pipes", token, { onStatus: (s) => { status = s; } })
       .then((res) => {
-        if (res) {
-          setPipelines(res);
-        } else {
-          setPipelinesError(true);
-        }
+        if (res) setPipelines(res);
+        else setPipelinesError(status === 401 || status === 403 ? "auth" : "other");
       })
-      .catch(() => setPipelinesError(true))
+      .catch(() => setPipelinesError("other"))
       .finally(() => setLoadingPipelines(false));
   };
 
@@ -124,6 +136,8 @@ export default function DashBoardPage() {
     if (createdPipeId) {
       if (createType === TYPE.SEGMENTATION) {
         navigate(`/annotation/image-annotator/${createdPipeId}`);
+      } else if (createType === TYPE.VIDEO_SEGMENTATION) {
+        navigate(`/video-segmentation/${createdPipeId}`);
       } else {
         navigate(`/object-detection/image-annotator/${createdPipeId}`);
       }
@@ -288,20 +302,34 @@ export default function DashBoardPage() {
   const userPipelines = pipelines.filter((p) => !p.is_demo);
   const detectionPipelines = userPipelines.filter((p) => !p.type || p.type === TYPE.DETECTION);
   const segmentationPipelines = userPipelines.filter((p) => p.type === TYPE.SEGMENTATION);
+  const videoPipelines = userPipelines.filter((p) => p.type === TYPE.VIDEO_SEGMENTATION);
   const allDemoPipelines = pipelines.filter((p) => p.is_demo);
+  const typesInScope: (string | undefined)[] = isSegmentationFamily
+    ? [TYPE.SEGMENTATION, TYPE.VIDEO_SEGMENTATION]
+    : activeType
+      ? [activeType]
+      : [];
   const demoPipelines = activeType
-    ? allDemoPipelines.filter((p) => !p.type || p.type === activeType)
+    ? allDemoPipelines.filter((p) => !p.type || typesInScope.includes(p.type))
     : allDemoPipelines;
 
   const filterBySearch = (list: Pipeline[]) =>
     q ? list.filter((p) => (p.name ?? "").toLowerCase().includes(q) || String(p.pid).includes(q)) : list;
 
-  const goRoute = (p: Pipeline) =>
-    (p.type ?? activeType) === TYPE.SEGMENTATION
-      ? `/annotation/image-annotator/${p.pid}`
-      : `/object-detection/image-annotator/${p.pid}`;
-  const activePipelines = activeType === TYPE.SEGMENTATION ? segmentationPipelines : detectionPipelines;
-  const emptyLabel = activeType === TYPE.SEGMENTATION ? "No segmentation pipelines yet." : "No detection pipelines yet.";
+  const goRoute = (p: Pipeline) => {
+    const type = p.type ?? activeType;
+    if (type === TYPE.SEGMENTATION) return `/annotation/image-annotator/${p.pid}`;
+    if (type === TYPE.VIDEO_SEGMENTATION) return `/video-segmentation/${p.pid}`;
+    return `/object-detection/image-annotator/${p.pid}`;
+  };
+  const activePipelines =
+    activeType === TYPE.SEGMENTATION ? segmentationPipelines :
+    activeType === TYPE.VIDEO_SEGMENTATION ? videoPipelines :
+    detectionPipelines;
+  const emptyLabel =
+    activeType === TYPE.SEGMENTATION ? "No segmentation pipelines yet." :
+    activeType === TYPE.VIDEO_SEGMENTATION ? "No video pipelines yet." :
+    "No detection pipelines yet.";
 
   if (loadingPipelines) {
     return (
@@ -372,6 +400,18 @@ export default function DashBoardPage() {
         )}
 
         {pipelinesError ? (
+          pipelinesError === "auth" ? (
+          <Alert color="orange" variant="light" mb="md" title="Your session has expired">
+            <Text size="sm" mb="sm">
+              Tapis no longer accepts your sign-in, so your pipelines cannot be listed. Sign in again and they
+              will come back — nothing has been lost. Any tracking job you started is still running on the
+              server, and your annotation work is saved in this browser.
+            </Text>
+            <Button size="xs" variant="light" color="orange" onClick={() => window.location.reload()}>
+              Reload to sign in
+            </Button>
+          </Alert>
+          ) : (
           <Alert color="red" variant="light" mb="md" title="Failed to load pipelines">
             <Text size="sm" mb="sm">
               Could not fetch your pipelines. This can happen if the server is warming up or there was a network error.
@@ -380,6 +420,89 @@ export default function DashBoardPage() {
               Retry
             </Button>
           </Alert>
+          )
+        ) : isSegmentationFamily ? (
+          // A segmentation deployment holds both kinds of pipeline, so they are
+          // split by the medium they annotate rather than listed together —
+          // the two open into different workspaces and are not interchangeable.
+          <>
+            <TextInput
+              leftSection={<IconSearch size={14} />}
+              placeholder="Search pipelines by name or ID…"
+              value={search}
+              onChange={(e) => setSearch(e.currentTarget.value)}
+              mb="md"
+              style={{ maxWidth: 340 }}
+            />
+            <Tabs defaultValue="images" keepMounted={false}>
+              <Tabs.List mb="md">
+                <Tabs.Tab
+                  value="images"
+                  leftSection={<IconPhoto size={15} />}
+                  rightSection={<Badge size="xs" variant="light">{segmentationPipelines.length}</Badge>}
+                >
+                  Images
+                </Tabs.Tab>
+                <Tabs.Tab
+                  value="videos"
+                  leftSection={<IconVideo size={15} />}
+                  rightSection={<Badge size="xs" variant="light">{videoPipelines.length}</Badge>}
+                >
+                  Videos
+                </Tabs.Tab>
+              </Tabs.List>
+
+              {([
+                ["images", segmentationPipelines, "No image segmentation pipelines yet."],
+                ["videos", videoPipelines, "No video segmentation pipelines yet."],
+              ] as const).map(([value, list, empty]) => (
+                <Tabs.Panel value={value} key={value}>
+                  {filterBySearch(list).length === 0 ? (
+                    <Card withBorder radius="md" p="xl" ta="center">
+                      <Text c="dimmed" size="lg">{q ? "No matching pipelines." : empty}</Text>
+                      {!q && (
+                        <Button leftSection={<IconPlus size={16} />} mt="md" onClick={openCreate}>
+                          New Pipeline
+                        </Button>
+                      )}
+                    </Card>
+                  ) : (
+                    <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
+                      {filterBySearch(list).map((p) => (
+                        <PipelineCard
+                          key={p.pid}
+                          pipeline={p}
+                          onGo={() => navigate(goRoute(p))}
+                          onRename={() => openRename(p)}
+                          onDelete={() => handleDelete(p.pid)}
+                          deleting={deletingId === p.pid}
+                        />
+                      ))}
+                    </SimpleGrid>
+                  )}
+                </Tabs.Panel>
+              ))}
+            </Tabs>
+
+            {demoPipelines.length > 0 && (
+              <>
+                <Text fw={500} size="sm" c="dimmed" mt="xl" mb="sm">Demo Pipelines</Text>
+                <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
+                  {filterBySearch(demoPipelines).map((p) => (
+                    <PipelineCard
+                      key={p.pid}
+                      pipeline={p}
+                      onGo={() => navigate(goRoute(p))}
+                      onRename={() => openRename(p)}
+                      onDelete={() => handleDelete(p.pid)}
+                      deleting={deletingId === p.pid}
+                      readOnly
+                    />
+                  ))}
+                </SimpleGrid>
+              </>
+            )}
+          </>
         ) : activeType ? (
           // Single-type mode: flat list filtered to the configured annotator type
           <>
@@ -441,6 +564,9 @@ export default function DashBoardPage() {
               <Tabs.Tab value="segmentation" rightSection={<Badge size="xs" variant="light">{segmentationPipelines.length}</Badge>}>
                 Segmentation
               </Tabs.Tab>
+              <Tabs.Tab value="video" rightSection={<Badge size="xs" variant="light">{videoPipelines.length}</Badge>}>
+                Video
+              </Tabs.Tab>
               {demoPipelines.length > 0 && (
                 <Tabs.Tab value="demo" rightSection={<Badge size="xs" variant="light" color="gray">{demoPipelines.length}</Badge>}>
                   Demo
@@ -496,6 +622,30 @@ export default function DashBoardPage() {
                       key={p.pid}
                       pipeline={p}
                       onGo={() => navigate(`/annotation/image-annotator/${p.pid}`)}
+                      onRename={() => openRename(p)}
+                      onDelete={() => handleDelete(p.pid)}
+                      deleting={deletingId === p.pid}
+                    />
+                  ))}
+                </SimpleGrid>
+              )}
+            </Tabs.Panel>
+
+            <Tabs.Panel value="video">
+              {filterBySearch(videoPipelines).length === 0 ? (
+                <Card withBorder radius="md" p="xl" ta="center">
+                  <Text c="dimmed" size="lg">{q ? "No matching pipelines." : "No video pipelines yet."}</Text>
+                  {!q && (
+                    <Button leftSection={<IconPlus size={16} />} mt="md" onClick={openCreate}>New Pipeline</Button>
+                  )}
+                </Card>
+              ) : (
+                <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
+                  {filterBySearch(videoPipelines).map((p) => (
+                    <PipelineCard
+                      key={p.pid}
+                      pipeline={p}
+                      onGo={() => navigate(`/video-segmentation/${p.pid}`)}
                       onRename={() => openRename(p)}
                       onDelete={() => handleDelete(p.pid)}
                       deleting={deletingId === p.pid}
@@ -590,21 +740,42 @@ export default function DashBoardPage() {
                 </Text>
               </Alert>
             )}
-            {!activeType && (
+            {isSegmentationFamily ? (
+              // Asked as a medium rather than a "pipeline type": the choice the
+              // user is making is images or video, and it cannot be changed
+              // afterwards because it decides which workspace the pipeline opens.
+              <Select
+                label="What will you annotate?"
+                description="This fixes the workspace for the pipeline and cannot be changed later."
+                data={[
+                  { value: TYPE.SEGMENTATION, label: "Images — segment individual images" },
+                  { value: TYPE.VIDEO_SEGMENTATION, label: "Video — segment and track through a video" },
+                ]}
+                value={createType}
+                onChange={(v) => setCreateType((v as TYPE) ?? TYPE.SEGMENTATION)}
+                allowDeselect={false}
+                required
+              />
+            ) : !activeType ? (
               <Select
                 label="Pipeline Type"
                 data={[
                   { value: TYPE.DETECTION, label: "Detection" },
                   { value: TYPE.SEGMENTATION, label: "Segmentation" },
+                  { value: TYPE.VIDEO_SEGMENTATION, label: "Video Segmentation & Tracking" },
                 ]}
                 value={createType}
                 onChange={(v) => setCreateType((v as TYPE) ?? TYPE.DETECTION)}
                 required
               />
-            )}
+            ) : null}
             <Textarea
               label="Description"
-              placeholder={`What will this pipeline ${activeType === TYPE.SEGMENTATION ? "segment" : "detect"}?`}
+              placeholder={`What will this pipeline ${
+                createType === TYPE.VIDEO_SEGMENTATION ? "track"
+                  : createType === TYPE.SEGMENTATION ? "segment"
+                    : "detect"
+              }?`}
               value={createDesc}
               onChange={(e) => setCreateDesc(e.currentTarget.value)}
               autosize

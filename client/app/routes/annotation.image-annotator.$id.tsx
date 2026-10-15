@@ -8,18 +8,26 @@
 import { ImageAnnotator } from "@icicle-ai/image-annotator";
 import { useLoaderData } from "@remix-run/react";
 import { useCookies } from "react-cookie";
-import { getSam3Endpoint } from "~/utils/utils";
+import { PipelineTypeGuard } from "~/components/PipelineTypeGuard/PipelineTypeGuard";
+import { getSam3Endpoint, TYPE } from "~/utils/utils";
 
 const ImageAnnotation = () => {
    const { pipeid } = useLoaderData<{ pipeid: string }>();
    const [cookie] = useCookies(["tapis-token"]);
 
+   const token = cookie["tapis-token"]?.["access_token"] ?? "";
+
+   // This route serves image segmentation; a video pipeline belongs in the
+   // video workspace, and the guard offers that rather than silently falling
+   // back to the detection tools.
    return (
-      <ImageAnnotator
-         pipeid={pipeid}
-         tapisToken={cookie["tapis-token"]?.["access_token"] ?? ""}
-         sam3Endpoint={getSam3Endpoint()}
-      />
+      <PipelineTypeGuard pipeid={pipeid} token={token} expected={TYPE.SEGMENTATION}>
+         <ImageAnnotator
+            pipeid={pipeid}
+            tapisToken={token}
+            sam3Endpoint={getSam3Endpoint()}
+         />
+      </PipelineTypeGuard>
    );
 };
 

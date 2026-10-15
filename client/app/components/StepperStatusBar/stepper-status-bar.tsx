@@ -343,7 +343,14 @@ const StepperStatusBar = ({
 
       const step = steps.find((s) => s.id === stepId);
       const updated = stepsData.map((s) => ({ ...s, selected: s.id === stepId }));
-      window.localStorage.setItem(pipeId, JSON.stringify(updated));
+      try {
+         window.localStorage.setItem(pipeId, JSON.stringify(updated));
+      } catch (e) {
+         // Throws outright when storage is unavailable — a cross-site iframe with
+         // third-party storage blocked, or private browsing. Remembering which
+         // step was open is a convenience; losing it must not block navigation.
+         console.error("Could not remember the selected step:", e);
+      }
       navigate(step?.url + `/${pipeId}`);
    };
 

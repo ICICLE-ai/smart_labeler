@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="650" viewBox="0 0 1100 650" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#455a64"/>
+    </marker>
+  </defs>
+
+  <rect width="1100" height="650" fill="#ffffff"/>
+
+  <!-- Direct connection (alternative), routed over the top -->
+  <path d="M180,60 V30 H945 V58" fill="none" stroke="#455a64" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+  <text x="562" y="22" font-size="12" fill="#37474f" text-anchor="middle">Direct connection — SSH tunnel to GPU node, :2129  (SAM3_VIDEO_AUTH=none)</text>
+
+  <!-- Browser -->
+  <rect x="30" y="60" width="300" height="400" rx="10" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+  <text x="180" y="88" font-size="15" font-weight="700" fill="#0d47a1" text-anchor="middle">Browser</text>
+  <text x="180" y="107" font-size="12" fill="#1565c0" text-anchor="middle">Smart Labeler client (Remix)</text>
+  <text x="50" y="135" font-size="12" fill="#263238">• Dashboard — Images / Videos tabs</text>
+  <text x="50" y="155" font-size="12" fill="#263238">• PipelineTypeGuard</text>
+  <text x="50" y="175" font-size="12" fill="#263238">• Route /video-segmentation/:id</text>
+
+  <rect x="45" y="195" width="270" height="250" rx="8" fill="#ffffff" stroke="#1565c0" stroke-width="1.2"/>
+  <text x="180" y="218" font-size="13" font-weight="700" fill="#0d47a1" text-anchor="middle">@icicle-ai/video-segmentation</text>
+  <text x="60" y="246" font-size="12" fill="#263238"><tspan font-weight="600">VideoAnnotator</tspan> — 5-step workspace</text>
+  <text x="70" y="264" font-size="11" fill="#546e7a">upload · objects · keyframes · track · export</text>
+  <text x="60" y="292" font-size="12" fill="#263238"><tspan font-weight="600">sam3VideoClient</tspan> — every service call</text>
+  <text x="70" y="310" font-size="11" fill="#546e7a">timeouts · re-auth on 401 · SSE / polling</text>
+  <text x="60" y="338" font-size="12" fill="#263238"><tspan font-weight="600">hpcClient</tspan> — Tapis Files</text>
+  <text x="70" y="356" font-size="11" fill="#546e7a">HPC video download · MP4 / COCO save</text>
+  <text x="60" y="384" font-size="12" fill="#263238"><tspan font-weight="600">workspaceState</tspan> — resume</text>
+  <text x="70" y="402" font-size="11" fill="#546e7a">objects + keyframe masks in localStorage</text>
+  <text x="60" y="428" font-size="11" fill="#546e7a">Reuses image-annotation-canvas for drawing</text>
+
+  <!-- Browser -> Gateway -->
+  <line x1="330" y1="150" x2="468" y2="150" stroke="#455a64" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="400" y="127" font-size="11" fill="#37474f" text-anchor="middle">HTTPS (gateway)</text>
+  <text x="400" y="141" font-size="11" fill="#37474f" text-anchor="middle">cookie + X-Tapis-Token</text>
+
+  <!-- Auth gateway -->
+  <rect x="470" y="80" width="250" height="180" rx="10" fill="#fff8e1" stroke="#ef8f00" stroke-width="1.5"/>
+  <text x="595" y="108" font-size="15" font-weight="700" fill="#e65100" text-anchor="middle">Auth gateway</text>
+  <text x="595" y="126" font-size="12" fill="#ef6c00" text-anchor="middle">(optional)</text>
+  <text x="488" y="154" font-size="12" fill="#263238">• Tapis token → session cookie</text>
+  <text x="488" y="174" font-size="12" fill="#263238">• Renews expired sessions</text>
+  <text x="488" y="194" font-size="12" fill="#263238">• Origin allow-list (CORS)</text>
+  <text x="488" y="214" font-size="12" fill="#263238">• Dataset export jobs (/exports)</text>
+  <text x="488" y="234" font-size="12" fill="#263238">• Shares data volume with service</text>
+
+  <!-- Gateway -> Service -->
+  <line x1="720" y1="150" x2="818" y2="150" stroke="#455a64" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="769" y="141" font-size="11" fill="#37474f" text-anchor="middle">proxy</text>
+
+  <!-- SAM3 Video Service -->
+  <rect x="820" y="60" width="250" height="250" rx="10" fill="#ede7f6" stroke="#4527a0" stroke-width="1.5"/>
+  <text x="945" y="88" font-size="15" font-weight="700" fill="#311b92" text-anchor="middle">SAM3 Video Service</text>
+  <text x="945" y="107" font-size="12" fill="#4527a0" text-anchor="middle">GPU node</text>
+  <text x="838" y="138" font-size="12" fill="#263238">• /uploads — decode video</text>
+  <text x="838" y="160" font-size="12" fill="#263238">• Chunked frame extraction</text>
+  <text x="852" y="176" font-size="11" fill="#546e7a">~1000 frames per chunk</text>
+  <text x="838" y="198" font-size="12" fill="#263238">• Tracking jobs (one at a time)</text>
+  <text x="852" y="214" font-size="11" fill="#546e7a">progress over SSE</text>
+  <text x="838" y="236" font-size="12" fill="#263238">• Annotated MP4 / COCO render</text>
+  <text x="838" y="258" font-size="12" fill="#263238">• /health — ready / mock / loading</text>
+  <text x="945" y="290" font-size="11" fill="#546e7a" text-anchor="middle">SAM3 video tracker</text>
+
+  <!-- Browser -> Tapis Files -->
+  <path d="M330,430 H560 V498" fill="none" stroke="#455a64" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="445" y="422" font-size="11" fill="#37474f" text-anchor="middle">video download · MP4 / COCO save</text>
+
+  <!-- Gateway -> Tapis Files -->
+  <line x1="650" y1="260" x2="650" y2="498" stroke="#455a64" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="660" y="372" font-size="11" fill="#37474f">dataset .tar</text>
+  <text x="660" y="386" font-size="11" fill="#37474f">(written as the caller)</text>
+
+  <!-- Tapis Files API -->
+  <rect x="470" y="500" width="250" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1.5"/>
+  <text x="595" y="532" font-size="15" font-weight="700" fill="#1b5e20" text-anchor="middle">Tapis Files API</text>
+  <text x="595" y="552" font-size="12" fill="#2e7d32" text-anchor="middle">multipart upload / download</text>
+
+  <!-- Tapis -> HPC -->
+  <line x1="720" y1="540" x2="818" y2="540" stroke="#455a64" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <!-- HPC storage -->
+  <rect x="820" y="500" width="250" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1.5"/>
+  <text x="945" y="532" font-size="15" font-weight="700" fill="#1b5e20" text-anchor="middle">HPC storage</text>
+  <text x="945" y="552" font-size="12" fill="#2e7d32" text-anchor="middle">Pitzer · Expanse · Ascend · Cardinal</text>
+
+  <!-- Browser -> Smart Labeler server -->
+  <line x1="100" y1="460" x2="100" y2="518" stroke="#455a64" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <rect x="30" y="520" width="140" height="70" rx="10" fill="#eceff1" stroke="#546e7a" stroke-width="1.5"/>
+  <text x="100" y="547" font-size="13" font-weight="700" fill="#263238" text-anchor="middle">Smart Labeler</text>
+  <text x="100" y="563" font-size="13" font-weight="700" fill="#263238" text-anchor="middle">server</text>
+  <text x="100" y="580" font-size="11" fill="#546e7a" text-anchor="middle">pipelines &amp; type</text>
+
+  <!-- Browser -> SAM3 image endpoint -->
+  <line x1="260" y1="460" x2="260" y2="518" stroke="#455a64" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <rect x="190" y="520" width="140" height="70" rx="10" fill="#ede7f6" stroke="#4527a0" stroke-width="1.5"/>
+  <text x="260" y="547" font-size="13" font-weight="700" fill="#311b92" text-anchor="middle">SAM3 image</text>
+  <text x="260" y="563" font-size="13" font-weight="700" fill="#311b92" text-anchor="middle">endpoint</text>
+  <text x="260" y="580" font-size="11" fill="#546e7a" text-anchor="middle">keyframe clicks</text>
+
+  <!-- Legend -->
+  <line x1="470" y1="620" x2="510" y2="620" stroke="#455a64" stroke-width="1.6"/>
+  <text x="518" y="624" font-size="11" fill="#37474f">request (gateway deployment)</text>
+  <line x1="770" y1="620" x2="810" y2="620" stroke="#455a64" stroke-width="1.6" stroke-dasharray="6 5"/>
+  <text x="818" y="624" font-size="11" fill="#37474f">alternative: direct connection</text>
+</svg>
