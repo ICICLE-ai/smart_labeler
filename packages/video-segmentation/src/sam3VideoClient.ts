@@ -74,6 +74,8 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 const PREPARE_TIMEOUT_MS = 180_000;
 /** Rendering the annotated MP4 happens on the first request and walks every frame. */
 const RENDER_TIMEOUT_MS = 900_000;
+/** A transport failure arriving later than this is treated as a proxy timeout rather than a refused or dead connection. */
+const SLOW_FAILURE_MS = 25_000;
 
 export class Sam3VideoError extends Error {
    /** HTTP status, when the request reached the service and it answered. */
@@ -98,10 +100,30 @@ export class Sam3VideoError extends Error {
  * may therefore be perfectly healthy and answering 200 while this fires, so the
  * message has to raise that possibility rather than blame the network outright.
  */
-function unreachableError(detail: string): Sam3VideoError {
+function unreachableError(
+   detail: string,
+   { path, elapsedMs }: { path?: string; elapsedMs?: number } = {},
+): Sam3VideoError {
    const remote = !_baseUrl.includes("127.0.0.1") && !_baseUrl.includes("localhost");
+   const where = path ? ` (${path.split("?")[0]})` : "";
+   // A failure that arrives only after a long wait is not a refused origin or a
+   // dead service — those fail at once. It is a proxy in front of the service
+   // (e.g. the cluster ingress) giving up on a slow request and answering with
+   // its own error page, which carries no CORS headers and so reads as a
+   // network failure too.
+   if (elapsedMs !== undefined && elapsedMs >= SLOW_FAILURE_MS) {
+      return new Sam3VideoError(
+         `The SAM3 Video Service at ${_baseUrl} stopped responding after ${Math.round(elapsedMs / 1000)}s` +
+         `${where} — ${detail}.\n\n` +
+         `A request that fails only after a long wait was most likely cut off by a proxy in front of the ` +
+         `service (such as the cluster ingress) whose timeout is shorter than the work takes — preparing ` +
+         `a chunk's frames or rendering a video can run for minutes. Retrying may succeed if the service ` +
+         `finished the work in the meantime; otherwise the proxy's timeout needs raising.`,
+         { unreachable: true },
+      );
+   }
    return new Sam3VideoError(
-      `No response from the SAM3 Video Service at ${_baseUrl} — ${detail}.\n\n` +
+      `No response from the SAM3 Video Service at ${_baseUrl}${where} — ${detail}.\n\n` +
       `The browser cannot tell a service that is down from one whose answer it was not allowed ` +
       `to read, so check both:\n` +
       `• The service may be refusing this page's origin (${
@@ -165,6 +187,7 @@ async function rawRequest(
    { timeoutMs = DEFAULT_TIMEOUT_MS, signal }: { timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<Response> {
    const controller = new AbortController();
+   const startedAt = Date.now();
    let timedOut = false;
    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
    const onCallerAbort = () => controller.abort();
@@ -194,8 +217,8 @@ async function rawRequest(
       // A caller-initiated abort is not a service failure — hand it back as-is
       // so navigation/cancellation paths can ignore it.
       if (signal?.aborted) throw e;
-      if (timedOut) throw unreachableError(`no response within ${Math.round(timeoutMs / 1000)}s`);
-      throw unreachableError("the request could not be completed");
+      if (timedOut) throw unreachableError(`no response within ${Math.round(timeoutMs / 1000)}s`, { path });
+      throw unreachableError("the request could not be completed", { path, elapsedMs: Date.now() - startedAt });
    } finally {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onCallerAbort);
