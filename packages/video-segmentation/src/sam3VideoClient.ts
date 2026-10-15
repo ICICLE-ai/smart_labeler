@@ -174,8 +174,19 @@ async function rawRequest(
       // Cookies travel only when the gateway is in front; against the bare
       // service a credentialed request is refused outright by the browser,
       // because the service replies with a wildcard allowed origin.
+      //
+      // The token also goes on every request behind the gateway, not just at
+      // sign-in. Embedded in another site — a Tapis iframe — the session cookie
+      // is third-party and the browser drops it, so sign-in succeeds and every
+      // request after it arrives anonymous. A header is immune to that; the
+      // cookie stays for `EventSource`, which cannot send one.
+      const headers = new Headers(init.headers ?? {});
+      if (_gatewayAuth && _tapisToken && !headers.has("X-Tapis-Token")) {
+         headers.set("X-Tapis-Token", _tapisToken);
+      }
       return await fetch(`${_baseUrl}${path}`, {
          ...init,
+         headers,
          credentials: _gatewayAuth ? "include" : "omit",
          signal: controller.signal,
       });
@@ -294,6 +305,8 @@ export function uploadVideo(
       // Carries the gateway's session cookie, as fetch's credentials mode does.
       // Left off for a direct connection, where it would fail CORS.
       xhr.withCredentials = _gatewayAuth;
+      // And the token, for the embedded case where the cookie never arrives.
+      if (_gatewayAuth && _tapisToken) xhr.setRequestHeader("X-Tapis-Token", _tapisToken);
       xhr.upload.onprogress = (e) => {
          if (e.lengthComputable) onProgress?.(e.loaded / e.total);
       };
