@@ -1,212 +1,220 @@
 """
-proposal/embedding_utils.py  –  Unified embedding interface.
+generate_proposals.py  –  CLI entry point for proposal generation.
 
-Supported backends
-------------------
-  bioclip  – BioCLIP  (ViT-B/16 CLIP, dim=512)
-  dinov3   – DINOv3   (ViT-L pooler_output, dim=1024 default)
-  owlv2    – OWLv2    (vision backbone pooler_output, dim=1024)
+Supported proposers (backends):
+  sam3   – SAM3 tiled inference  (sam3_proposal.py)
+  owlv2  – OWLv2 tiled inference (owlv2_proposal.py)
 
-Design principles
------------------
-- ALL backends produce embeddings in the SAME space used by class_supports_utils.py.
-  This is the fundamental contract: class supports and proposals MUST share the
-  same vector space for cosine similarity to be valid.
+Supported embedders:
+  owlv2  – OWLv2 embeddings (native anchor features or re-crop)
+  dinov3 – DINOv3 embeddings
+  bioclip – BioCLIP embeddings
 
-- OWLv2: uses `owlv2.vision_model.pooler_output` (dim=1024) — NOT class_predictor
-  (dim=512). Both supports and proposals use this identical path.
+Constraints:
+  - If proposer is 'sam3', OWLv2 cannot be used as an embedder
+  - If proposer is 'owlv2', OWLv2 can be used as embedder (native features)
 
-- Tensors remain on GPU throughout batch loops; a single .cpu() call happens
-  once after concatenation, minimising CPU<->GPU transfers.
-
-- Models are loaded once per process. Instantiate with get_embedder() and reuse.
-
-Public API
-----------
-get_embedder(backend, **kwargs) -> BaseEmbedder
-BaseEmbedder.embed(images)      -> Tensor (N, D) CPU float32 L2-normed
-BaseEmbedder.embed_boxes(image, boxes) -> Tensor (N, D) CPU float32 L2-normed
+Usage:
+    python generate_proposals.py --proposers sam3 owlv2 --image_dir ./images --embedders owlv2 dinov3 bioclip --output_dir ./output
+    python generate_proposals.py --proposers sam3 --image_dir ./images --embedders dinov3 bioclip --output_dir ./output
 """
 
-from __future__ import annotations
-
+import argparse
 import logging
+import os
 import sys
-from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Union
+import json
+import time
+import numpy as np
 
-logger = logging.getLogger(__name__)
-
-import torch
-import torch.nn.functional as F
-from PIL import Image
-
-_ROOT = Path(__file__).resolve().parents[1]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
-DEVICE      = "cuda" if torch.cuda.is_available() else "cpu"
-TORCH_DTYPE = torch.float16 if torch.cuda.is_available() else torch.float32
+# Locate shared image_discovery module (works locally and in containers).
+_SL_ROOT = Path(__file__).resolve().parent
+for _candidate in (_SL_ROOT, _SL_ROOT.parent):
+    if (_candidate / "image_discovery.py").is_file():
+        if str(_candidate) not in sys.path:
+            sys.path.insert(0, str(_candidate))
+        break
+from image_discovery import discover_images, path_key_map
 
 
-# ---------------------------------------------------------------------------
-# Base class
-# ---------------------------------------------------------------------------
-
-class BaseEmbedder(ABC):
-
-    @abstractmethod
-    def embed(self, images: Union[Image.Image, List[Image.Image]]) -> torch.Tensor:
-        """Return CPU float32 L2-normed tensor (N, D)."""
-
-    def embed_boxes(self, image: Image.Image, boxes: List[List[float]]) -> torch.Tensor:
-        """Crop boxes from image and embed. Returns (N, D) CPU float32."""
-        crops = []
-        for box in boxes:
-            x1, y1, x2, y2 = map(int, box)
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(image.width, x2), min(image.height, y2)
-            crops.append(image.crop((x1, y1, x2, y2)) if x2 > x1 and y2 > y1
-                         else Image.new("RGB", (1, 1)))
-        return self.embed(crops)
-
-    @staticmethod
-    def _normalise(t: torch.Tensor) -> torch.Tensor:
-        return F.normalize(t.float(), dim=-1)
+PROPOSERS = ["sam3", "owlv2"]
+EMBEDDERS = ["owlv2", "dinov3", "bioclip"]
 
 
-# ---------------------------------------------------------------------------
-# BioCLIP  (dim=512)
-# ---------------------------------------------------------------------------
-
-class BioCLIPEmbedder(BaseEmbedder):
-    """
-    BioCLIP via bioclip.predict.BaseClassifier.
-    Output dim: 512 (ViT-B/16 CLIP image encoder).
-    """
-
-    def __init__(self, batch_size: int = 32, **_):
-        from bioclip.predict import BaseClassifier  # type: ignore
-        self.batch_size = batch_size
-        self._clf = BaseClassifier(device=DEVICE)
-        self._clf.model.eval()
-        logger.info(f"Loaded BioCLIP ViT-B/16 on {DEVICE} | dim=512")
-
-    def embed(self, images: Union[Image.Image, List[Image.Image]]) -> torch.Tensor:
-        if not isinstance(images, list):
-            images = [images]
-        all_embs = []
-        with torch.no_grad():
-            for i in range(0, len(images), self.batch_size):
-                emb = self._clf.create_image_features(
-                    images[i: i + self.batch_size], normalize=False
-                )  # (B, 512) on model device
-                all_embs.append(emb)
-        # Single normalise + single .cpu() transfer
-        return self._normalise(torch.cat(all_embs, dim=0)).cpu()
+def get_proposer(name):
+    if name == "sam3":
+        from sam3_proposal import generate_proposals_tiled
+        return generate_proposals_tiled
+    elif name == "owlv2":
+        from owlv2_proposal import generate_proposals_tiled
+        return generate_proposals_tiled
+    else:
+        raise ValueError(f"Unknown proposer '{name}'. Choose from: {PROPOSERS}")
 
 
-# ---------------------------------------------------------------------------
-# DINOv3  (dim=1024 for vitl, 384 for vits)
-# ---------------------------------------------------------------------------
+if __name__ == "__main__":
 
-class DINOv3Embedder(BaseEmbedder):
-    """
-    DINOv3 via HuggingFace AutoModel (pooler_output).
-    Default model: facebook/dinov3-vitl16-pretrain-lvd1689m (dim=1024).
+    parser = argparse.ArgumentParser(
+        description="Generate object proposals with tiled inference for multiple proposers and embedders"
+    )
+    parser.add_argument("--proposers",     type=str,   nargs="+", default=["sam3"],
+                        choices=PROPOSERS,
+                        help="Proposal backends to use (default: sam3). Can specify multiple: --proposers sam3 owlv2")
+    parser.add_argument("--image_dir",     type=str,   required=True,
+                        help="Directory containing images to process")
+    parser.add_argument("--output_dir",    type=str,   default="output",
+                        help="Directory to save results (default: output)")
+    parser.add_argument("--confidence",    type=float, default=0.1,
+                        help="Confidence threshold (default: 0.1)")
+    parser.add_argument("--is_sahi",       action="store_true", default=False,
+                        help="Enable SAHI (Sliced Aided Hyper Inference) for tiling (default: False, process whole image)")
+    parser.add_argument("--tile_size",     type=int,   default=960,
+                        help="Tile size in pixels (only used with --is_sahi) (default: 960)")
+    parser.add_argument("--overlap_ratio", type=float, default=0.2,
+                        help="Overlap ratio between tiles (only used with --is_sahi) (default: 0.2)")
+    parser.add_argument("--batch_size",    type=int,   default=4,
+                        help="Tiles per inference batch (default: 8)")
+    parser.add_argument("--nms_iou",       type=float, default=0.5,
+                        help="IoU threshold for stitching NMS (default: 0.5)")
+    parser.add_argument("--text_prompt",   type=str,   default="visual",
+                        help="Text prompt for the model (default: 'visual')")
+    parser.add_argument("--embedders",     type=str,   nargs="+", default=["owlv2"],
+                        choices=EMBEDDERS,
+                        help="Embedding models for per-box features (default: owlv2). "
+                             "Can specify multiple: --embedders owlv2 dinov3 bioclip. "
+                             "Note: If proposer is 'sam3', OWLv2 cannot be used as embedder.")
+    parser.add_argument("--model_id",      type=str,   default=None,
+                        help="HuggingFace model ID override for the chosen backend")
+    parser.add_argument("--log_level",     type=str,   default="INFO",
+                        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                        help="Logging verbosity (default: INFO). Use DEBUG to see per-batch progress.")
 
-    The model_id MUST match what class_supports_utils uses so that
-    supports and proposals share the same embedding space.
-    """
+    args = parser.parse_args()
 
-    DEFAULT_MODEL_ID = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper()),
+        format="%(asctime)s | %(levelname)-8s | %(name)-30s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    logger = logging.getLogger(__name__)
 
-    def __init__(self, model_id: str = DEFAULT_MODEL_ID, batch_size: int = 32, **_):
-        from transformers import AutoImageProcessor, AutoModel  # type: ignore
-        self.batch_size = batch_size
-        self._processor = AutoImageProcessor.from_pretrained(model_id)
-        self._model = AutoModel.from_pretrained(model_id).to(DEVICE).eval()
-        dim = self._model.config.hidden_size
-        logger.info(f"Loaded {model_id} on {DEVICE} | dim={dim}")
+    # Validation: SAM3 proposer cannot use OWLv2 embedder - remove it and continue
+    if "sam3" in args.proposers and "owlv2" in args.embedders:
+        logger.warning("OWLv2 embedder cannot be used with SAM3 proposer. Removing OWLv2 from embedders.")
+        args.embedders = [e for e in args.embedders if e != "owlv2"]
+        if not args.embedders:
+            logger.error("No valid embedders left after removing OWLv2. Use --embedders dinov3 bioclip.")
+            sys.exit(1)
 
-    def embed(self, images: Union[Image.Image, List[Image.Image]]) -> torch.Tensor:
-        if not isinstance(images, list):
-            images = [images]
-        all_embs = []
-        with torch.no_grad():
-            for i in range(0, len(images), self.batch_size):
-                pv = self._processor(
-                    images=images[i: i + self.batch_size], return_tensors="pt"
-                )["pixel_values"].to(DEVICE)
-                out = self._model(pixel_values=pv)
-                all_embs.append(out.pooler_output)  # (B, D) stays on GPU
-        return self._normalise(torch.cat(all_embs, dim=0)).cpu()
+    # Auto-enable: If OWLv2 is a proposer, ensure OWLv2 is an embedder for it
+    if "owlv2" in args.proposers and "owlv2" not in args.embedders:
+        logger.info("OWLv2 proposer detected — adding OWLv2 as embedder automatically.")
+        args.embedders = list(args.embedders) + ["owlv2"]
 
+    os.makedirs(args.output_dir, exist_ok=True)
 
-# ---------------------------------------------------------------------------
-# OWLv2  (vision backbone, dim=1024)
-# ---------------------------------------------------------------------------
+    image_dir = Path(args.image_dir)
+    discovered      = discover_images(image_dir)
+    image_files     = [p for p, _ in discovered]
+    rel_key_by_path = path_key_map(discovered)
 
-class OWLv2Embedder(BaseEmbedder):
-    """
-    OWLv2 image embeddings using owlv2.vision_model.pooler_output (dim=1024).
+    logger.info(f"Found {len(image_files)} images under {image_dir} (recursive)")
+    if not image_files:
+        subdirs = sorted(p.name for p in image_dir.iterdir() if p.is_dir())
+        if subdirs:
+            logger.warning(
+                "No images found. Subfolders present: %s",
+                ", ".join(subdirs[:10]),
+            )
+        sys.exit(1)
+    logger.info(f"Proposers: {', '.join(args.proposers)}")
+    logger.info(f"Embedders: {', '.join(args.embedders)}")
+    logger.info(f"SAHI: {args.is_sahi}")
 
-    We bypass class_predictor entirely — that head projects into a 512-dim
-    text-alignment space unsuitable for image-to-image cosine similarity.
-    Using pooler_output ensures supports and proposals are in the same space.
-    """
+    # Only use tiling parameters if SAHI is enabled
+    tile_size = args.tile_size if args.is_sahi else None
+    overlap_ratio = args.overlap_ratio if args.is_sahi else None
 
-    DEFAULT_MODEL_ID = "google/owlv2-large-patch14-ensemble"
+    extra_kwargs = {}
+    if args.model_id:
+        extra_kwargs["model_id"] = args.model_id
 
-    def __init__(self, model_id: str = DEFAULT_MODEL_ID, batch_size: int = 16, **_):
-        from transformers import Owlv2Processor, Owlv2ForObjectDetection  # type: ignore
-        self.batch_size = batch_size
-        self._processor = Owlv2Processor.from_pretrained(model_id)
-        self._model = (
-            Owlv2ForObjectDetection
-            .from_pretrained(model_id, torch_dtype=TORCH_DTYPE)
-            .to(DEVICE)
-            .eval()
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+
+    pipeline_start = time.time()
+
+    # Process each proposer
+    for proposer in args.proposers:
+        logger.info(f"--- Proposer: {proposer} ---")
+        proposer_start = time.time()
+
+        generate_proposals_tiled = get_proposer(proposer)
+
+        results = generate_proposals_tiled(
+            image_paths=image_files,
+            text_prompt=args.text_prompt,
+            confidence_threshold=args.confidence,
+            is_sahi=args.is_sahi,
+            tile_size=tile_size,
+            overlap_ratio=overlap_ratio,
+            batch_size=args.batch_size,
+            nms_iou_threshold=args.nms_iou,
+            embedding_backend=args.embedders[0],  # Start with first embedder for initial proposals
+            **extra_kwargs,
         )
-        logger.info(f"Loaded {model_id} on {DEVICE} | vision backbone pooler_output dim=1024")
 
-    def embed(self, images: Union[Image.Image, List[Image.Image]]) -> torch.Tensor:
-        if not isinstance(images, list):
-            images = [images]
-        all_embs = []
-        with torch.no_grad():
-            for i in range(0, len(images), self.batch_size):
-                pv = self._processor(
-                    images=images[i: i + self.batch_size], return_tensors="pt"
-                )["pixel_values"].to(DEVICE, dtype=TORCH_DTYPE)
-                # Vision backbone only — pooler_output (B, 1024)
-                out = self._model.owlv2.vision_model(pixel_values=pv)
-                all_embs.append(out.pooler_output.float())  # keep on GPU
-        return self._normalise(torch.cat(all_embs, dim=0)).cpu()
+        # For each embedder, generate embeddings
+        for embedder in args.embedders:
+            logger.info(f"Generating embeddings with {embedder}...")
 
+            all_data        = {}   # merged dict fed to np.savez
+            all_annotations = []   # list of per-box annotation dicts
 
-# ---------------------------------------------------------------------------
-# Factory
-# ---------------------------------------------------------------------------
+            for image_path, det in results.items():
+                rel_key = rel_key_by_path.get(
+                    str(Path(image_path).resolve()),
+                    Path(image_path).name,
+                )
+                if det is None:
+                    logger.debug(f"No detections for {rel_key}")
+                    continue
 
-_BACKEND_MAP = {
-    "bioclip": BioCLIPEmbedder,
-    "dinov3":  DINOv3Embedder,
-    "owlv2":   OWLv2Embedder,
-}
-BACKENDS = list(_BACKEND_MAP.keys())
+                features = det["features"]
+                boxes    = det["boxes"]
+                scores   = det["scores"]
 
+                all_data[f"{rel_key}_features"] = features
+                all_data[f"{rel_key}_boxes"]    = boxes
+                all_data[f"{rel_key}_scores"]   = scores
 
-def get_embedder(backend: str, **kwargs) -> BaseEmbedder:
-    """
-    Instantiate and return an embedder for the given backend.
+                for i in range(len(scores)):
+                    all_annotations.append({
+                        "image_path":    rel_key,
+                        "bounding_box":  boxes[i].tolist() if hasattr(boxes[i], "tolist") else list(boxes[i]),
+                        "score":         float(scores[i]),
+                        "class":         str(float(scores[i])),   # placeholder class name
+                    })
 
-    Args:
-        backend : 'bioclip' | 'dinov3' | 'owlv2'
-        **kwargs: Forwarded to the embedder (e.g. model_id, batch_size).
-    """
-    key = backend.lower()
-    if key not in _BACKEND_MAP:
-        raise ValueError(f"Unknown backend '{backend}'. Choose from: {BACKENDS}")
-    return _BACKEND_MAP[key](**kwargs)
+            # Write combined .npz and JSON for this proposer-embedder combination
+            features_dir = Path(args.output_dir) / "proposals/tensors"
+            boxes_dir    = Path(args.output_dir) / "proposals/generated_boxes"
+            features_dir.mkdir(parents=True, exist_ok=True)
+            boxes_dir.mkdir(parents=True, exist_ok=True)
+
+            npz_path  = features_dir / f"features_{embedder}_{proposer}_{timestamp}.npz"
+            json_path = boxes_dir    / f"generated_boxes_{embedder}_{proposer}_{timestamp}.json"
+
+            if all_data:
+                np.savez(npz_path, **all_data)
+                logger.info(f"Saved features ({len(all_data) // 3} images) → {npz_path}")
+
+            with open(json_path, "w") as f:
+                json.dump({"annotations": all_annotations}, f, indent=2)
+            logger.info(f"Saved {len(all_annotations)} box annotations → {json_path}")
+
+        elapsed = time.time() - proposer_start
+        logger.info(f"Proposer '{proposer}' finished in {elapsed:.1f}s")
+
+    total_elapsed = time.time() - pipeline_start
+    logger.info(f"All proposers and embedders processed successfully in {total_elapsed:.1f}s")
