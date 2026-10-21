@@ -2,7 +2,7 @@
   name: Video Segmentation & Tracking
   owner: Hari Subramoni
   primaryThrust: core/AI4CI
-  targetIcicleRelease: 2026-11 # TODO: confirm target ICICLE release
+  targetIcicleRelease: 2026-10 # TODO: confirm target ICICLE release
   hasDependentComponents:
     - related_to: icicleai-tapisui-extension:0.1.0
       relationship_type: DependsOn
