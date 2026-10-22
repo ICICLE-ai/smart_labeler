@@ -8,6 +8,7 @@ import MovieIcon from "@mui/icons-material/Movie";
 import DataObjectIcon from "@mui/icons-material/DataObject";
 import { fetchTrackCoco, fetchTrackVideo } from "./sam3VideoClient";
 import { SaveToHpcDialog } from "./SaveToHpcDialog";
+import { downloadBlob } from "./utils";
 
 export interface ExportPanelProps {
    jobId: string;
@@ -46,16 +47,6 @@ function explainExportFailure(e: unknown, artifact: Artifact): string {
       return `There are no saved masks for this job yet, so there is nothing to export.\n\nService said: ${raw}`;
    }
    return raw;
-}
-
-/** Downloads a blob through a throwaway anchor. */
-function downloadBlob(blob: Blob, filename: string) {
-   const url = URL.createObjectURL(blob);
-   const a = document.createElement("a");
-   a.href = url;
-   a.download = filename;
-   a.click();
-   setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
 /**

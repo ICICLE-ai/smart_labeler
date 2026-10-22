@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import {
-   Alert, Box, Chip, CircularProgress, Paper, Stack, ToggleButton, ToggleButtonGroup, Typography,
+   Alert, Box, Button, Chip, CircularProgress, Paper, Stack, ToggleButton, ToggleButtonGroup, Tooltip, Typography,
 } from "@mui/material";
 import LayersIcon from "@mui/icons-material/Layers";
 import CompareIcon from "@mui/icons-material/Compare";
+import DownloadIcon from "@mui/icons-material/Download";
 import { getTrackFrame, Sam3VideoError } from "./sam3VideoClient";
 import type { TrackFrameObject } from "./types";
 import type { LoadedFrame } from "./FrameBrowser";
-import { objectColorCss, objectColorRgb } from "./utils";
+import { downloadBlob, downloadHref, objectColorCss, objectColorRgb } from "./utils";
 
 const MASK_ALPHA = 170;
 
@@ -46,12 +47,35 @@ async function tintMask(
    return canvas;
 }
 
+/**
+ * The frame with every present object's mask composited on top, at the frame's
+ * native resolution. Every mask is tinted before any is drawn, so the result
+ * never holds a partial set of objects.
+ */
+async function composeFrame(frameUrl: string, objects: TrackFrameObject[]): Promise<HTMLCanvasElement> {
+   const img = await loadImage(frameUrl);
+   const canvas = document.createElement("canvas");
+   canvas.width = img.naturalWidth;
+   canvas.height = img.naturalHeight;
+   const ctx = canvas.getContext("2d")!;
+   ctx.drawImage(img, 0, 0);
+   const layers = await Promise.all(
+      objects
+         .filter((o) => o.present && o.png_b64)
+         .map((o) => tintMask(o.png_b64!, objectColorRgb(o.obj_id), canvas.width, canvas.height)),
+   );
+   layers.forEach((layer) => ctx.drawImage(layer, 0, 0));
+   return canvas;
+}
+
 export interface ResultsOverlayProps {
    jobId: string;
    /** The frame the user is looking at. */
    frameIdx: number;
    /** The loaded frame image, carrying the index it belongs to. */
    frame: LoadedFrame | null;
+   /** Base name for downloaded frames, usually the uploaded video's name without its extension. */
+   stem?: string;
 }
 
 /** Masks fetched for one specific frame. Kept together so they can never be drawn against another frame. */
@@ -74,12 +98,13 @@ type View = "overlay" | "split";
  * Read-only by design — correcting a frame hands it back to the annotation
  * canvas rather than editing here.
  */
-export function ResultsOverlay({ jobId, frameIdx, frame }: ResultsOverlayProps) {
+export function ResultsOverlay({ jobId, frameIdx, frame, stem = "video" }: ResultsOverlayProps) {
    const canvasRef = useRef<HTMLCanvasElement>(null);
    const [masks, setMasks] = useState<FetchedMasks | null>(null);
    const [error, setError] = useState<string | null>(null);
    const [view, setView] = useState<View>("overlay");
    const drawTokenRef = useRef(0);
+   const [savingMasked, setSavingMasked] = useState(false);
 
    // Fetch this frame's masks. Tagged with the frame they were requested for.
    useEffect(() => {
@@ -105,24 +130,12 @@ export function ResultsOverlay({ jobId, frameIdx, frame }: ResultsOverlayProps) 
       if (!canvas || !inSync || !frame || !masks) return;
       const token = ++drawTokenRef.current;
 
-      loadImage(frame.url)
-         .then(async (img) => {
+      composeFrame(frame.url, masks.objects)
+         .then((composed) => {
             if (token !== drawTokenRef.current) return;
-            canvas.width = img.naturalWidth;
-            canvas.height = img.naturalHeight;
-            const ctx = canvas.getContext("2d")!;
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(img, 0, 0);
-
-            // Tint every mask before drawing any, so a slow decode cannot leave
-            // the frame showing a partial set of objects.
-            const layers = await Promise.all(
-               masks.objects
-                  .filter((o) => o.present && o.png_b64)
-                  .map((o) => tintMask(o.png_b64!, objectColorRgb(o.obj_id), canvas.width, canvas.height)),
-            );
-            if (token !== drawTokenRef.current) return;
-            layers.forEach((layer) => ctx.drawImage(layer, 0, 0));
+            canvas.width = composed.width;
+            canvas.height = composed.height;
+            canvas.getContext("2d")!.drawImage(composed, 0, 0);
          })
          .catch((e) => {
             if (token === drawTokenRef.current) setError(e instanceof Error ? e.message : String(e));
@@ -130,6 +143,28 @@ export function ResultsOverlay({ jobId, frameIdx, frame }: ResultsOverlayProps) 
    }, [inSync, frame, masks, view]);
 
    const present = masks?.objects.filter((o) => o.present) ?? [];
+
+   const downloadOriginal = () => {
+      if (!framePixelsReady || !frame) return;
+      downloadHref(frame.url, `${stem}_frame_${frameIdx}.jpg`);
+   };
+
+   // Composed afresh rather than read off the on-screen canvas, which may still
+   // be mid-draw or hold a previous frame while scrubbing.
+   const downloadMasked = async () => {
+      if (!inSync || !frame || !masks) return;
+      setSavingMasked(true);
+      try {
+         const composed = await composeFrame(frame.url, masks.objects);
+         const blob = await new Promise<Blob | null>((resolve) => composed.toBlob(resolve, "image/png"));
+         if (!blob) throw new Error("The annotated frame could not be encoded.");
+         downloadBlob(blob, `${stem}_frame_${masks.frameIdx}_masks.png`);
+      } catch (e) {
+         setError(e instanceof Error ? e.message : String(e));
+      } finally {
+         setSavingMasked(false);
+      }
+   };
 
    /** Covers whichever panes are on screen while the two halves catch up. */
    const busyOverlay = !inSync && (
@@ -163,11 +198,29 @@ export function ResultsOverlay({ jobId, frameIdx, frame }: ResultsOverlayProps) 
       <Box>
          {error && <Alert severity="error" sx={{ mb: 1 }} onClose={() => setError(null)}>{error}</Alert>}
 
-         <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+         <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1, flexWrap: "wrap", rowGap: 1 }}>
             <Typography variant="caption" color="text.secondary">
                Frame {frameIdx}
                {present.length > 0 && ` · ${present.length} object${present.length === 1 ? "" : "s"} tracked`}
             </Typography>
+            <Box sx={{ flex: 1 }} />
+            <Tooltip title="Download this frame as extracted from the video, without masks">
+               <span>
+                  <Button size="small" variant="outlined" startIcon={<DownloadIcon />}
+                     onClick={downloadOriginal} disabled={!framePixelsReady}>
+                     Original
+                  </Button>
+               </span>
+            </Tooltip>
+            <Tooltip title="Download this frame with the tracked masks drawn on it (PNG)">
+               <span>
+                  <Button size="small" variant="outlined"
+                     startIcon={savingMasked ? <CircularProgress size={14} /> : <DownloadIcon />}
+                     onClick={downloadMasked} disabled={!inSync || savingMasked}>
+                     With masks
+                  </Button>
+               </span>
+            </Tooltip>
             <ToggleButtonGroup
                size="small"
                value={view}
