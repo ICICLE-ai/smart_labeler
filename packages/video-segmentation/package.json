@@ -1,6 +1,6 @@
 {
   "name": "@icicle-ai/video-segmentation",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Video segmentation & tracking mode — upload a video, annotate keyframes with the existing image-annotation canvas, and track every object through the whole video via the SAM3 Video Service.",
   "license": "MIT",
   "type": "module",
@@ -25,30 +25,30 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@icicle-ai/image-annotation-canvas": "*",
-    "@icicle-ai/annotation-details": "*",
-    "@icicle-ai/tapis-file-explorer": "*"
+    "@icicle-ai/annotation-details": "^0.2.0",
+    "@icicle-ai/image-annotation-canvas": "^0.2.0",
+    "@icicle-ai/tapis-file-explorer": "^0.2.0"
   },
   "peerDependencies": {
+    "@mantine/core": "^7.0.0",
+    "@mui/icons-material": "^5.0.0 || ^6.0.0 || ^7.0.0",
+    "@mui/material": "^5.0.0 || ^6.0.0 || ^7.0.0",
     "react": "^18.0.0",
     "react-dom": "^18.0.0",
-    "@mui/material": "^5.0.0 || ^6.0.0 || ^7.0.0",
-    "@mui/icons-material": "^5.0.0 || ^6.0.0 || ^7.0.0",
-    "@mantine/core": "^7.0.0",
     "react-zoom-pan-pinch": "^3.0.0"
   },
   "devDependencies": {
-    "react": "^18.2.1",
-    "react-dom": "^18.2.0",
-    "@mui/material": "^7.3.1",
-    "@mui/icons-material": "^7.3.1",
     "@mantine/core": "^7.10.0",
-    "formik": "^2.4.6",
-    "react-zoom-pan-pinch": "^3.7.0",
+    "@mui/icons-material": "^7.3.1",
+    "@mui/material": "^7.3.1",
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.1",
-    "typescript": "^5.6.3",
-    "tsup": "^8.3.5"
+    "formik": "^2.4.6",
+    "react": "^18.2.1",
+    "react-dom": "^18.2.0",
+    "react-zoom-pan-pinch": "^3.7.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.3"
   },
   "keywords": [
     "react",
@@ -60,7 +60,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/ICICLE-ai/smart_labeler.git",
+    "url": "git+https://github.com/ICICLE-ai/smart_labeler.git",
     "directory": "packages/video-segmentation"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
   }
 }

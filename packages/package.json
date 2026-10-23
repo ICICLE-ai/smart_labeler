@@ -13,7 +13,11 @@
   "scripts": {
     "build": "npm run build --workspaces",
     "typecheck": "npm run typecheck --workspaces",
-    "clean": "npm run clean --workspaces"
+    "clean": "npm run clean --workspaces",
+    "version:all": "npm version --workspaces --no-git-tag-version",
+    "pin-deps": "node scripts/pin-workspace-deps.mjs",
+    "release:dry": "npm run pin-deps && npm run build && npm publish --workspaces --dry-run",
+    "release": "npm run pin-deps && npm run build && npm publish --workspaces"
   },
   "devDependencies": {
     "typescript": "^5.6.3",
