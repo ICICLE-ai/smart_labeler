@@ -33,6 +33,7 @@ import {
    mergeSegmentationForSave,
    importSegmentationJson,
    importSegmentationFromCoco,
+   looksLikeSegmentationDefaultJson,
 } from "./segmentationIO";
 import { humanizeServerText } from "@icicle-ai/tapis-file-explorer";
 import {
@@ -189,8 +190,9 @@ function fileTotals(json: any, isCoco: boolean, isSegmentation: boolean) {
          const name = categoryName.get(a?.category_id);
          if (typeof name === "string") labels.add(name);
       }
-   } else if (isSegmentation) {
-      const entries = json?.files ?? [];
+   } else if (isSegmentation && Array.isArray(json?.files)) {
+      // The older segmentation shape; current files are flat rows, counted below.
+      const entries = json.files;
       images = new Set(entries.map((f: any) => f?.filename).filter(Boolean)).size;
       for (const f of entries) {
          for (const m of f?.masks ?? []) {
@@ -787,9 +789,9 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({ pipeid, tapisTok
       try {
          const parsed = JSON.parse(await readFileText(file));
          const isCoco = Array.isArray(parsed?.images) && Array.isArray(parsed?.annotations);
-         // Masks arrive either as COCO annotations or as this app's own
-         // { files: [{ masks: [...] }] } shape; anything else has nothing to read.
-         if (!isCoco && !Array.isArray(parsed?.files)) {
+         // Masks arrive as COCO, as default JSON (flat `annotations` rows with a
+         // `segmentation` polygon), or in the older { files: [{ masks }] } shape.
+         if (!isCoco && !looksLikeSegmentationDefaultJson(parsed)) {
             if (announce) setImportSummary({
                ok: false, images: 0, annotations: 0, labels: [], appliedImages: 0, appliedAnnotations: 0,
                error: "This file contains no segmentation masks, so there is nothing to import.",

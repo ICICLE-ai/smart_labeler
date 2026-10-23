@@ -24,27 +24,92 @@ function dedupeMasks(masks: SegmentationAnnotation[]): SegmentationAnnotation[] 
    });
 }
 
+/** [x1, y1, x2, y2] extent of a polygon — the detection format's `bounding_box`. */
+function polygonBox(points: { x: number; y: number }[]): [number, number, number, number] {
+   const xs = points.map((p) => p.x);
+   const ys = points.map((p) => p.y);
+   return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
+
+// Default JSON is the detection format — one flat row per annotation keyed by
+// image_path — with the polygon added as `segmentation: [[x, y], ...]`. It is
+// also what the SAM3 segmentation pipeline writes, so a pipeline's output, a
+// saved annotation file and a detection file all share one shape.
 export function exportSegmentationJson(
    fileToMasksMap: Map<string, SegmentationFileAnnotations>,
    files: string[],
    srcImgDir: string = ""
 ): object {
-   const fileEntries = files.map((filePath) => {
-      const fa = fileToMasksMap.get(filePath);
-      return {
-         filename: toRelativeFilename(filePath, srcImgDir),
-         width: fa?.width ?? 0,
-         height: fa?.height ?? 0,
-         masks: (fa?.masks ?? []).map(({ id, label, points, score, flag }) => ({
-            id,
-            label,
-            points,
-            ...(score !== undefined ? { score } : {}),
+   const annotations: any[] = [];
+   files.forEach((filePath) => {
+      (fileToMasksMap.get(filePath)?.masks ?? []).forEach(({ label, points, score, flag }) => {
+         if (points.length === 0) return;
+         annotations.push({
+            image_path: toRelativeFilename(filePath, srcImgDir),
+            class: label,
+            bounding_box: polygonBox(points),
+            score,
+            segmentation: points.map((p) => [p.x, p.y]),
             ...(flag ? { flag } : {}),
+         });
+      });
+   });
+   return { annotations };
+}
+
+interface DefaultJsonEntry {
+   path: string;
+   width: number;
+   height: number;
+   masks: SegmentationAnnotation[];
+}
+
+/**
+ * Reads either default-JSON shape, one entry per image row:
+ * - the current flat `{ annotations: [{ image_path, class, segmentation }] }`, and
+ * - the older `{ files: [{ filename, width, height, masks }] }` this app wrote
+ *   before, so annotation files saved with it still load.
+ */
+function readDefaultJson(json: any): DefaultJsonEntry[] {
+   if (Array.isArray(json?.files)) {
+      return (json.files as any[]).map((entry) => ({
+         path: entry.filename ?? "",
+         width: entry.width ?? 0,
+         height: entry.height ?? 0,
+         masks: (entry.masks ?? []).map((m: any) => ({
+            id: m.id ?? `${Date.now()}-${Math.random()}`,
+            label: m.label ?? "mask",
+            points: m.points ?? [],
+            ...(m.score !== undefined ? { score: m.score } : {}),
+            ...(m.flag ? { flag: m.flag } : {}),
          })),
-      };
-   }).filter((e) => e.masks.length > 0);
-   return { version: "1.0", type: "segmentation", files: fileEntries };
+      }));
+   }
+   return ((json?.annotations ?? []) as any[]).flatMap((a) => {
+      const points = (Array.isArray(a?.segmentation) ? a.segmentation : [])
+         .filter((p: any) => Array.isArray(p) && p.length >= 2)
+         .map(([x, y]: number[]) => ({ x, y }));
+      // A row with no polygon is a detection box, not a mask.
+      if (points.length < 3) return [];
+      return [{
+         path: a.image_path ?? "",
+         width: 0,
+         height: 0,
+         masks: [{
+            id: `${Date.now()}-${Math.random()}`,
+            label: a.class ?? "mask",
+            points,
+            ...(a.score !== undefined ? { score: a.score } : {}),
+            ...(a.flag ? { flag: a.flag } : {}),
+         }],
+      }];
+   });
+}
+
+/** True when a document is either default-JSON segmentation shape. COCO also has
+ *  an `annotations` array, so test for COCO first. */
+export function looksLikeSegmentationDefaultJson(json: any): boolean {
+   return Array.isArray(json?.files) || Array.isArray(json?.annotations);
 }
 
 export function exportSegmentationToCoco(
@@ -152,20 +217,11 @@ export function segJsonToRelMap(
          map.set(meta.rel, fa);
       });
    } else {
-      (json?.files ?? []).forEach((entry: any) => {
-         const rel = keyFor(entry.filename ?? "");
-         map.set(rel, {
-            name: rel,
-            width: entry.width ?? 0,
-            height: entry.height ?? 0,
-            masks: (entry.masks ?? []).map((m: any) => ({
-               id: m.id ?? `${Date.now()}-${Math.random()}`,
-               label: m.label ?? "mask",
-               points: m.points ?? [],
-               ...(m.score !== undefined ? { score: m.score } : {}),
-               ...(m.flag ? { flag: m.flag } : {}),
-            })),
-         });
+      readDefaultJson(json).forEach((entry) => {
+         const rel = keyFor(entry.path);
+         const fa = map.get(rel) ?? { name: rel, width: entry.width, height: entry.height, masks: [] };
+         fa.masks.push(...entry.masks);
+         map.set(rel, fa);
       });
    }
    return map;
@@ -203,28 +259,20 @@ export function importSegmentationJson(
    srcImgDir: string = ""
 ): Map<string, SegmentationFileAnnotations> {
    const map = new Map<string, SegmentationFileAnnotations>();
-   if (!json?.files) return map;
    const resolveFileIndex = buildFileIndexResolver(files, srcImgDir);
-   (json.files as any[]).forEach((entry) => {
-      const fileIdx = resolveFileIndex(entry.filename);
+   readDefaultJson(json).forEach((entry) => {
+      const fileIdx = resolveFileIndex(entry.path);
       if (fileIdx === undefined) return;
       const matchedPath = files[fileIdx];
-      // Two entries can resolve to one image when an older file spelled that
-      // image's path two ways — append then dedupe rather than letting the second
-      // entry silently drop the first.
+      // Several entries resolve to one image: one per mask in the flat format,
+      // and in older files one image spelled two ways — append then dedupe
+      // rather than letting a later entry silently drop an earlier one.
       const existing = map.get(matchedPath);
-      const masks: SegmentationAnnotation[] = (entry.masks ?? []).map((m: any) => ({
-         id: m.id ?? Date.now().toString(),
-         label: m.label ?? "mask",
-         points: m.points ?? [],
-         ...(m.score !== undefined ? { score: m.score } : {}),
-         ...(m.flag ? { flag: m.flag } : {}),
-      }));
       map.set(matchedPath, {
-         name: entry.filename,
-         width: entry.width ?? existing?.width ?? 0,
-         height: entry.height ?? existing?.height ?? 0,
-         masks: dedupeMasks([...(existing?.masks ?? []), ...masks]),
+         name: entry.path,
+         width: entry.width || existing?.width || 0,
+         height: entry.height || existing?.height || 0,
+         masks: dedupeMasks([...(existing?.masks ?? []), ...entry.masks]),
       });
    });
    return map;

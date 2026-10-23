@@ -16,6 +16,7 @@ import { createFetchSam3Client } from "./sam3Client";
 import {
    CanvasMode,
    type BaseAnnotation,
+   type AdditionSource,
    type CanvasEngine,
    type EngineContext,
    type Sam3Client,
@@ -48,7 +49,11 @@ interface ImageCanvasProps<T extends BaseAnnotation> {
    annotations: T[] | [];
    generatedAnnotations?: T[] | [];
    isEditable?: boolean;
-   onAddition?: (annotations: T[]) => void;
+   /**
+    * Called with annotations the user just created. `source` says which tool made
+    * them — a text prompt can return many unrelated regions, a click refines one.
+    */
+   onAddition?: (annotations: T[], source: AdditionSource) => void;
    selectedAnnotationId: string | null;
    selectedAnnotationIds?: string[];
    onSelection: (id: string | null) => void;
@@ -276,7 +281,7 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
          const created = engine.createFromDialog(pending, preset, annotations);
          if (created) {
             setAnnotations((prev) => [...prev, created]);
-            props.onAddition?.([created]);
+            props.onAddition?.([created], "manual");
          }
          return;
       }
@@ -393,7 +398,7 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
       const created = engine.createFromDialog(pendingAnnotation, labelValue, annotations);
       if (created) {
          setAnnotations((prev) => [...prev, created]);
-         props.onAddition?.([created]);
+         props.onAddition?.([created], "manual");
       }
       setPendingAnnotation(null);
       setLabelValue("");

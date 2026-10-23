@@ -15,6 +15,7 @@ export type {
    Coords,
    Sam3Config,
    Sam3Client,
+   AdditionSource,
    EngineContext,
    DrawState,
    CanvasEngine,

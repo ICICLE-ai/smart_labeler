@@ -16,7 +16,8 @@ const DEFAULT_SAMPLE = `{
       "image_path": "subfolder/image1.jpg",
       "class": "donkey",
       "bounding_box": [x1, y1, x2, y2],
-      "score": 0.93
+      "score": 0.93,
+      "segmentation": [[x, y], ...]   ← segmentation masks only
     }
   ]
 }`;

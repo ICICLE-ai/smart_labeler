@@ -10,7 +10,7 @@ import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
 import VideoFileIcon from "@mui/icons-material/VideoFile";
 import DownloadIcon from "@mui/icons-material/Download";
 import {
-   createUploadSam3Client, ImageCanvas, segmentationEngine, type SegmentationAnnotation,
+   createUploadSam3Client, ImageCanvas, segmentationEngine, type AdditionSource, type SegmentationAnnotation,
 } from "@icicle-ai/image-annotation-canvas";
 import {
    cancelTrackJob, getTrackJob, getUpload, listChunks, Sam3VideoError, setAuthToken, startTrack,
@@ -27,7 +27,7 @@ import { ServiceStatus, type ServiceState } from "./ServiceStatus";
 import { WorkflowSteps } from "./WorkflowSteps";
 import { AssignMaskDialog } from "./AssignMaskDialog";
 import type { ChunkPlan, KeyframePrompt, TrackJob, UploadMeta } from "./types";
-import { downloadHref, type VideoObject } from "./utils";
+import { downloadHref, nextObjectId, type VideoObject } from "./utils";
 import {
    deserializeKeyframes, loadResumeState, objIdFromKey, objKeyId, saveResumeState, serializeKeyframes,
    type KeyframeMasks,
@@ -260,8 +260,35 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
       });
    };
 
-   const handleAddition = (added: SegmentationAnnotation[]) => {
+   const handleAddition = (added: SegmentationAnnotation[], source: AdditionSource) => {
       if (!added.length || shownFrameIdx === null) return;
+
+      // A text prompt finds every matching instance ("person" → each person),
+      // so each region is a new object of its own. Folding them into the
+      // selected object would overwrite its mask and drop all but one.
+      if (source === "sam3-text") {
+         const firstId = nextObjectId(objects);
+         const created = added.map((ann, i) => ({
+            id: firstId + i,
+            label: ann.label || activeObject?.label || "object",
+         }));
+         setObjects((prev) => [...prev, ...created]);
+         setActiveObjectId(firstId);
+         mutateFrame(shownFrameIdx, (objMap) => {
+            created.forEach((obj, i) =>
+               objMap.set(obj.id, { id: objKeyId(obj.id), label: obj.label, points: added[i].points }),
+            );
+            return objMap;
+         });
+         setNotice(
+            created.length === 1
+               ? `Added 1 new object "${created[0].label}".`
+               : `Added ${created.length} new objects for "${created[0].label}".`,
+         );
+         return;
+      }
+
+      // A click or a drawn polygon is one region, meant for the selected object.
       const points = added[0].points;
       if (added.length > 1) {
          setNotice(`Kept the first of ${added.length} regions — one mask per object per frame.`);

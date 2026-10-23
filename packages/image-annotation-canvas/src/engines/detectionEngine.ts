@@ -314,7 +314,7 @@ const sam3ClickHandler: CanvasActionHandler = {
                // onAddition stores the boxes in the originating file's map slot
                // (captured in this closure at request time); if that file is still
                // displayed, the canvas syncs back through props.
-               ctx.onAddition?.(newAnnotations);
+               ctx.onAddition?.(newAnnotations, "sam3-click");
             }
          })
          .catch((err: any) => {
@@ -450,7 +450,7 @@ export const detectionEngine: CanvasEngine<Annotation> = {
                // onAddition stores the boxes in the originating file's map slot
                // (captured in this closure at request time); if that file is still
                // displayed, the canvas syncs back through props.
-               ctx.onAddition?.(newAnnotations);
+               ctx.onAddition?.(newAnnotations, "sam3-text");
             }
          })
          .catch((err: any) => {
