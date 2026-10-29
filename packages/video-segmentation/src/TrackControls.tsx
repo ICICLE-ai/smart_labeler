@@ -1,6 +1,6 @@
 import { useState } from "react";
 import {
-   Alert, Box, Button, Chip, FormControlLabel, LinearProgress, Stack, Switch, TextField, Tooltip, Typography,
+   Alert, Box, Button, Chip, CircularProgress, FormControlLabel, LinearProgress, Stack, Switch, TextField, Tooltip, Typography,
 } from "@mui/material";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import CancelIcon from "@mui/icons-material/Cancel";
@@ -31,6 +31,7 @@ export function TrackControls({
    const [both, setBoth] = useState(true);
 
    const isActive = job?.status === "queued" || job?.status === "running";
+   const cancelling = isActive && !!job?.cancel_requested;
    const lastFrame = Math.max(0, frameCount - 1);
 
    const rangeError = rangeOnly
@@ -226,11 +227,12 @@ export function TrackControls({
                      fullWidth
                      color="error"
                      variant="outlined"
-                     startIcon={<CancelIcon />}
+                     startIcon={cancelling ? <CircularProgress size={14} color="inherit" /> : <CancelIcon />}
                      onClick={onCancel}
+                     disabled={cancelling}
                      sx={{ mt: 1 }}
                   >
-                     Cancel
+                     {cancelling ? "Cancelling…" : "Cancel"}
                   </Button>
                )}
             </Box>

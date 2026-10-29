@@ -13,7 +13,7 @@ import {
    createUploadSam3Client, ImageCanvas, segmentationEngine, type AdditionSource, type SegmentationAnnotation,
 } from "@icicle-ai/image-annotation-canvas";
 import {
-   cancelTrackJob, getTrackJob, getUpload, listChunks, Sam3VideoError, setAuthToken, startTrack,
+   cancelTrackJob, getTrackJob, getUpload, listChunks, Sam3VideoError, setAuthToken, setPipelineId, startTrack,
    subscribeTrackJob,
 } from "./sam3VideoClient";
 import { ObjectPanel } from "./ObjectPanel";
@@ -101,6 +101,7 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
    // Registered before anything else runs: a request that comes back 401
    // (no session yet, or an expired one) re-signs-in with this and retries.
    setAuthToken(tapisToken);
+   setPipelineId(pipeid);
 
    const report = useCallback((e: unknown, fallback: string) => {
       const message = e instanceof Sam3VideoError || e instanceof Error ? e.message : String(e);
@@ -294,9 +295,13 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
          setNotice(`Kept the first of ${added.length} regions — one mask per object per frame.`);
       }
 
-      // With an object selected the intent is unambiguous, so record it straight
-      // away. Otherwise ask, rather than stranding a region nothing owns.
-      if (activeObjectId != null && activeObject) {
+      // With an object selected that has no mask on this frame yet, the intent is
+      // unambiguous, so record it straight away. If it already has one, a second
+      // region is most likely another instance (car 2 after car 1), and silently
+      // replacing car 1's mask would lose it — so ask, as we do with nothing selected.
+      const activeHasMaskHere =
+         activeObjectId != null && (keyframeMasks.get(shownFrameIdx)?.has(activeObjectId) ?? false);
+      if (activeObjectId != null && activeObject && !activeHasMaskHere) {
          assignMaskToObject(shownFrameIdx, activeObject, points);
       } else {
          setPendingMask({ frameIdx: shownFrameIdx, points });

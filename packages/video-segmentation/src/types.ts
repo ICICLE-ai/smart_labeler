@@ -83,6 +83,8 @@ export interface TrackJob {
    /** obj_id (as string key) -> label */
    objects: Record<string, string>;
    error: string | null;
+   /** Cancel was asked for; a running job stops at the worker's next check. Absent on older services. */
+   cancel_requested?: boolean;
    created_at: number;
    finished_at: number | null;
 }

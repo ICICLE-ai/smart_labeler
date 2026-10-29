@@ -72,6 +72,37 @@ interface ProposalClassMapping {
     class_support_file: string;
 }
 
+/**
+ * What looking for generated files in a folder turned up. Kept so the page can
+ * say why nothing is offered: a folder that does not exist, a listing that
+ * failed and a job that has not finished all used to read "Not available yet".
+ */
+interface FileListing {
+    dir: string;
+    outcome: "found" | "empty" | "missing" | "error";
+    /** HTTP status for "error"; subfolder names for "empty". */
+    detail?: string;
+}
+
+/** One line explaining an unsuccessful listing, naming the folder looked in. */
+const describeListing = (what: string, listing: FileListing | null, jobName: string): string => {
+    if (!listing) return `No ${what} yet — they appear here once the ${jobName} finishes.`;
+    switch (listing.outcome) {
+        case "missing":
+            return `No ${what} found: the folder ${listing.dir} does not exist. ` +
+                `If the ${jobName} has finished, its output was written somewhere else.`;
+        case "error":
+            return `Could not list ${listing.dir} (${listing.detail}). The ${what} may be there; try reloading.`;
+        case "empty":
+            return listing.detail
+                ? `${listing.dir} has no files, only the folders ${listing.detail}. ` +
+                  `The ${what} may be inside one of them.`
+                : `${listing.dir} is empty — the ${what} appear here once the ${jobName} finishes.`;
+        default:
+            return "";
+    }
+};
+
 const ConfigureClassification: React.FC = () => {
     const [name, setName] = useState<string>("Classify objects");
     const [system, setSystem] = useState<string>(DEFAULT_SYSTEM);
@@ -85,6 +116,8 @@ const ConfigureClassification: React.FC = () => {
     const [proposalFileOptions, setProposalFileOptions] = useState<{ label: string; value: string }[]>([]);
     const [loadingClassFiles, setLoadingClassFiles] = useState(false);
     const [loadingProposalFiles, setLoadingProposalFiles] = useState(false);
+    const [classListing, setClassListing] = useState<FileListing | null>(null);
+    const [proposalListing, setProposalListing] = useState<FileListing | null>(null);
 
     const [configurations, setConfigurations] = useState<ClassificationConfig[]>([]);
     const [currentConfigurationId, setCurrentConfigurationId] = useState<string | null>(null);
@@ -108,17 +141,42 @@ const ConfigureClassification: React.FC = () => {
 
 
     // Fetch files from a directory
-    const fetchFilesFromDir = async (dirPath: string, setOptions: any, setLoading: any) => {
+    const fetchFilesFromDir = async (
+        dirPath: string,
+        setOptions: any,
+        setLoading: any,
+        setListing: (listing: FileListing) => void,
+    ) => {
         if (!dirPath || !system) {
             return;
         }
         setLoading(true);
+        const token = cookie["tapis-token"]["access_token"];
         try {
             const encodedPath = encodeURIComponent(dirPath);
+            let status: number | null = null;
             const res = await fetchAndReturnData(
                 `/get_files/${pipeid}/${system}?dir=${encodedPath}`,
-                cookie["tapis-token"]["access_token"]
+                token,
+                { onStatus: (s) => { status = s; } },
             );
+
+            if (!res) {
+                setListing(status === 404
+                    ? { dir: dirPath, outcome: "missing" }
+                    : { dir: dirPath, outcome: "error", detail: status ? `HTTP ${status}` : "no response" });
+                return;
+            }
+
+            // A folder holding only subfolders lists as no files at all; name
+            // them, since output one level deeper than expected looks identical.
+            if (Array.isArray(res.files) && res.files.length === 0) {
+                const contents = await fetchAndReturnData(
+                    `/get-dir-contents/${pipeid}/${system}?dir=${encodedPath}`, token,
+                ).catch(() => null);
+                const dirs: string[] = (contents?.dirs ?? []).map((d: any) => d.name).filter(Boolean);
+                setListing({ dir: dirPath, outcome: "empty", detail: dirs.length ? dirs.join(", ") : undefined });
+            }
 
             if (res && res.files && Array.isArray(res.files)) {
                 const fileList = res.files
@@ -133,9 +191,11 @@ const ConfigureClassification: React.FC = () => {
                     });
                 console.log(`Fetched files from ${dirPath}:`, fileList);    
                 setOptions(fileList);
+                if (fileList.length > 0) setListing({ dir: dirPath, outcome: "found" });
             }
         } catch (error) {
             console.error("Error fetching files:", error);
+            setListing({ dir: dirPath, outcome: "error", detail: error instanceof Error ? error.message : String(error) });
         } finally {
             setLoading(false);
         }
@@ -195,7 +255,7 @@ const ConfigureClassification: React.FC = () => {
     useEffect(() => {
         if (classSupportOutputDir && system) {
             const classDir = `${classSupportOutputDir}/class_supports/tensors`;
-            fetchFilesFromDir(classDir, setClassFileOptions, setLoadingClassFiles);
+            fetchFilesFromDir(classDir, setClassFileOptions, setLoadingClassFiles, setClassListing);
         }
     }, [classSupportOutputDir, system]);
 
@@ -203,7 +263,7 @@ const ConfigureClassification: React.FC = () => {
     useEffect(() => {
         if (proposalOutputDir && system) {
             const proposalDir = `${proposalOutputDir}/proposals/tensors`;
-            fetchFilesFromDir(proposalDir, setProposalFileOptions, setLoadingProposalFiles);
+            fetchFilesFromDir(proposalDir, setProposalFileOptions, setLoadingProposalFiles, setProposalListing);
         }
     }, [proposalOutputDir, system]);
 
@@ -553,18 +613,29 @@ const ConfigureClassification: React.FC = () => {
                                     </Button>
                                 </Group>
 
-                                {filesPending && (
+                                {filesPending && !loadingProposalFiles && !loadingClassFiles && (
                                     <Alert
                                         icon={<IconInfoCircle size={16} />}
-                                        color="blue"
+                                        // Blue only while it may just be waiting on a job; a folder
+                                        // that is missing or would not list is something to fix.
+                                        color={[proposalListing, classListing].some(
+                                            (l) => l?.outcome === "missing" || l?.outcome === "error"
+                                        ) ? "orange" : "blue"}
                                         variant="light"
                                         mb="sm"
                                     >
-                                        {proposalFileOptions.length === 0 && classFileOptions.length === 0
-                                            ? "Neither the proposal tensors nor the class support tensors are available yet. They appear here once those jobs finish."
-                                            : proposalFileOptions.length === 0
-                                                ? "No proposal tensor files yet — they appear here once the proposal generation job finishes."
-                                                : "No class support tensor files yet — they appear here once the class support job finishes."}
+                                        <Stack gap={4}>
+                                            {proposalFileOptions.length === 0 && (
+                                                <Text size="sm">
+                                                    {describeListing("proposal tensor files", proposalListing, "proposal generation job")}
+                                                </Text>
+                                            )}
+                                            {classFileOptions.length === 0 && (
+                                                <Text size="sm">
+                                                    {describeListing("class support tensor files", classListing, "class support job")}
+                                                </Text>
+                                            )}
+                                        </Stack>
                                     </Alert>
                                 )}
 
