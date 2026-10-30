@@ -8,11 +8,12 @@ import VisibilityIcon from "@mui/icons-material/Visibility";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
 import VideoFileIcon from "@mui/icons-material/VideoFile";
+import DownloadIcon from "@mui/icons-material/Download";
 import {
-   ImageCanvas, segmentationEngine, type SegmentationAnnotation,
+   createUploadSam3Client, ImageCanvas, segmentationEngine, type AdditionSource, type SegmentationAnnotation,
 } from "@icicle-ai/image-annotation-canvas";
 import {
-   cancelTrackJob, getTrackJob, getUpload, listChunks, Sam3VideoError, setAuthToken, startTrack,
+   cancelTrackJob, getTrackJob, getUpload, listChunks, Sam3VideoError, setAuthToken, setPipelineId, startTrack,
    subscribeTrackJob,
 } from "./sam3VideoClient";
 import { ObjectPanel } from "./ObjectPanel";
@@ -26,7 +27,7 @@ import { ServiceStatus, type ServiceState } from "./ServiceStatus";
 import { WorkflowSteps } from "./WorkflowSteps";
 import { AssignMaskDialog } from "./AssignMaskDialog";
 import type { ChunkPlan, KeyframePrompt, TrackJob, UploadMeta } from "./types";
-import type { VideoObject } from "./utils";
+import { downloadHref, nextObjectId, type VideoObject } from "./utils";
 import {
    deserializeKeyframes, loadResumeState, objIdFromKey, objKeyId, saveResumeState, serializeKeyframes,
    type KeyframeMasks,
@@ -100,6 +101,7 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
    // Registered before anything else runs: a request that comes back 401
    // (no session yet, or an expired one) re-signs-in with this and retries.
    setAuthToken(tapisToken);
+   setPipelineId(pipeid);
 
    const report = useCallback((e: unknown, fallback: string) => {
       const message = e instanceof Sam3VideoError || e instanceof Error ? e.message : String(e);
@@ -205,6 +207,19 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
    const shownFrameIdx = frame?.frameIdx ?? null;
    const inSync = shownFrameIdx === currentFrame;
 
+   // Frames exist only on the video service, never on Tapis, so SAM3 is sent
+   // the frame's pixels with each request instead of a path to fetch. Built
+   // per frame so a request always carries the frame that was clicked on.
+   const frameSam3Client = useMemo(
+      () => frame && createUploadSam3Client(sam3Endpoint ?? "", () => fetch(frame.url).then((r) => r.blob())),
+      [sam3Endpoint, frame],
+   );
+   // Becomes SAM3's `image_id`, which keys its embedding cache: it must differ
+   // per upload and per frame, or one frame's embedding is reused for another.
+   const frameFileName = frame && uploadMeta
+      ? `${uploadMeta.upload_id}_frame_${String(frame.frameIdx).padStart(6, "0")}.jpg`
+      : undefined;
+
    const displayedAnnotations = useMemo(() => {
       if (shownFrameIdx === null) return NO_MASKS;
       const objMap = keyframeMasks.get(shownFrameIdx);
@@ -246,16 +261,47 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
       });
    };
 
-   const handleAddition = (added: SegmentationAnnotation[]) => {
+   const handleAddition = (added: SegmentationAnnotation[], source: AdditionSource) => {
       if (!added.length || shownFrameIdx === null) return;
+
+      // A text prompt finds every matching instance ("person" → each person),
+      // so each region is a new object of its own. Folding them into the
+      // selected object would overwrite its mask and drop all but one.
+      if (source === "sam3-text") {
+         const firstId = nextObjectId(objects);
+         const created = added.map((ann, i) => ({
+            id: firstId + i,
+            label: ann.label || activeObject?.label || "object",
+         }));
+         setObjects((prev) => [...prev, ...created]);
+         setActiveObjectId(firstId);
+         mutateFrame(shownFrameIdx, (objMap) => {
+            created.forEach((obj, i) =>
+               objMap.set(obj.id, { id: objKeyId(obj.id), label: obj.label, points: added[i].points }),
+            );
+            return objMap;
+         });
+         setNotice(
+            created.length === 1
+               ? `Added 1 new object "${created[0].label}".`
+               : `Added ${created.length} new objects for "${created[0].label}".`,
+         );
+         return;
+      }
+
+      // A click or a drawn polygon is one region, meant for the selected object.
       const points = added[0].points;
       if (added.length > 1) {
          setNotice(`Kept the first of ${added.length} regions — one mask per object per frame.`);
       }
 
-      // With an object selected the intent is unambiguous, so record it straight
-      // away. Otherwise ask, rather than stranding a region nothing owns.
-      if (activeObjectId != null && activeObject) {
+      // With an object selected that has no mask on this frame yet, the intent is
+      // unambiguous, so record it straight away. If it already has one, a second
+      // region is most likely another instance (car 2 after car 1), and silently
+      // replacing car 1's mask would lose it — so ask, as we do with nothing selected.
+      const activeHasMaskHere =
+         activeObjectId != null && (keyframeMasks.get(shownFrameIdx)?.has(activeObjectId) ?? false);
+      if (activeObjectId != null && activeObject && !activeHasMaskHere) {
          assignMaskToObject(shownFrameIdx, activeObject, points);
       } else {
          setPendingMask({ frameIdx: shownFrameIdx, points });
@@ -548,15 +594,31 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
                               or switch to Review to inspect the existing results.
                            </Alert>
                         )}
-                        {activeObject && (
-                           <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
-                              <Typography variant="caption" color="text.secondary">Annotating:</Typography>
-                              <Chip size="small" label={activeObject.label} color="primary" sx={{ fontWeight: 700 }} />
-                              <Typography variant="caption" color="text.secondary">
-                                 on frame {currentFrame}
-                              </Typography>
-                           </Stack>
-                        )}
+                        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                           {activeObject && (
+                              <>
+                                 <Typography variant="caption" color="text.secondary">Annotating:</Typography>
+                                 <Chip size="small" label={activeObject.label} color="primary" sx={{ fontWeight: 700 }} />
+                                 <Typography variant="caption" color="text.secondary">
+                                    on frame {currentFrame}
+                                 </Typography>
+                              </>
+                           )}
+                           <Box sx={{ flex: 1 }} />
+                           <Tooltip title="Download this frame as extracted from the video, without masks">
+                              <span>
+                                 <Button
+                                    size="small"
+                                    variant="outlined"
+                                    startIcon={<DownloadIcon />}
+                                    disabled={!inSync || !frame}
+                                    onClick={() => frame && downloadHref(frame.url, `${exportStem}_frame_${frame.frameIdx}.jpg`)}
+                                 >
+                                    Download frame
+                                 </Button>
+                              </span>
+                           </Tooltip>
+                        </Stack>
                         {inSync && frame ? (
                            <ImageCanvas
                               engine={segmentationEngine}
@@ -579,10 +641,10 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
                               isEditable
                               setFileSize={() => { /* dimensions already known from the upload metadata */ }}
                               isGraphEnabled={false}
-                              fileName={`frame_${frame.frameIdx}`}
+                              fileName={frameFileName}
                               score={0}
                               tapisToken={tapisToken}
-                              sam3Endpoint={sam3Endpoint}
+                              sam3Client={frameSam3Client ?? undefined}
                               pipeId={pipeid}
                               // Always non-empty so the canvas creates the region and
                               // hands it straight to us; its own label prompt would mint
@@ -604,7 +666,7 @@ export function VideoAnnotator({ pipeid, tapisToken = "", sam3Endpoint }: VideoA
                   ) : (
                      job && (
                         <>
-                           <ResultsOverlay jobId={job.job_id} frameIdx={currentFrame} frame={frame} />
+                           <ResultsOverlay jobId={job.job_id} frameIdx={currentFrame} frame={frame} stem={exportStem} />
                            <Stack direction="row" spacing={1} sx={{ mt: 1.5 }}>
                               <Button
                                  variant="outlined"

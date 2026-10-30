@@ -1,6 +1,6 @@
 {
   "name": "@icicle-ai/patra-model-selector",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A Patra model card selector. Visualize and select a required model",
   "license": "MIT",
   "type": "module",
@@ -25,20 +25,20 @@
     "clean": "rm -rf dist"
   },
   "peerDependencies": {
-    "react": "^18.0.0",
-    "react-dom": "^18.0.0",
     "@mantine/core": "^7.0.0",
-    "@tabler/icons-react": "^3.5.0"
+    "@tabler/icons-react": "^3.5.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
   },
   "devDependencies": {
-    "react": "^18.2.1",
-    "react-dom": "^18.2.0",
     "@mantine/core": "^7.10.0",
     "@tabler/icons-react": "^3.5.0",
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.1",
-    "typescript": "^5.6.3",
-    "tsup": "^8.3.5"
+    "react": "^18.2.1",
+    "react-dom": "^18.2.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.3"
   },
   "keywords": [
     "react",
@@ -49,7 +49,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/ICICLE-ai/smart_labeler.git",
+    "url": "git+https://github.com/ICICLE-ai/smart_labeler.git",
     "directory": "packages/patra-model-selector"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
   }
 }

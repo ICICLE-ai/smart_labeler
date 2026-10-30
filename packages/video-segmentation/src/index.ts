@@ -17,7 +17,7 @@ export type { FrameBrowserProps, LoadedFrame } from "./FrameBrowser";
 
 export {
    configureVideoSegmentation, getVideoServiceBaseUrl, getTapisBaseUrl, Sam3VideoError, checkHealth,
-   signIn, signOut, setAuthToken, currentUser, usesGatewayAuth,
+   signIn, signOut, setAuthToken, setPipelineId, currentUser, usesGatewayAuth,
    uploadVideo, getUpload, listChunks, prepareChunk, chunkFrameUrl, singleFrameUrl, fetchFrameObjectUrl,
    startTrack, getTrackJob, cancelTrackJob, getTrackFrame, trackMaskPngUrl, trackCocoUrl, trackVideoUrl,
    fetchTrackVideo, fetchTrackCoco, subscribeTrackJob,

@@ -46,3 +46,18 @@ export function frameTimecode(frameIdx: number, fps: number | undefined): string
    const millis = Math.round((totalSeconds - Math.floor(totalSeconds)) * 1000);
    return `${minutes}:${String(seconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
 }
+
+/** Saves `href` (an object URL or same-origin URL) under `filename` through a throwaway anchor. */
+export function downloadHref(href: string, filename: string) {
+   const a = document.createElement("a");
+   a.href = href;
+   a.download = filename;
+   a.click();
+}
+
+/** Downloads a blob through a throwaway anchor. */
+export function downloadBlob(blob: Blob, filename: string) {
+   const url = URL.createObjectURL(blob);
+   downloadHref(url, filename);
+   setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}

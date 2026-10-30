@@ -44,6 +44,8 @@ let _tapisBaseUrl = "https://icicleai.tapis.io";
 let _tapisToken = "";
 /** Whether to send cookies — only valid against the gateway. See `gatewayAuth`. */
 let _gatewayAuth = false;
+/** Sent as X-Pipeline-Id so the service can tie its logs and jobs to a pipeline. */
+let _pipelineId = "";
 
 export function usesGatewayAuth(): boolean {
    return _gatewayAuth;
@@ -52,6 +54,11 @@ export function usesGatewayAuth(): boolean {
 /** Supplies the token used to (re-)establish a session with the auth gateway. */
 export function setAuthToken(token: string): void {
    _tapisToken = token ?? "";
+}
+
+/** Labels every request with the pipeline it belongs to, for tracing in the service logs. */
+export function setPipelineId(pipelineId: string): void {
+   _pipelineId = pipelineId ?? "";
 }
 
 export function configureVideoSegmentation(cfg: VideoSegmentationConfig): void {
@@ -207,6 +214,7 @@ async function rawRequest(
       if (_gatewayAuth && _tapisToken && !headers.has("X-Tapis-Token")) {
          headers.set("X-Tapis-Token", _tapisToken);
       }
+      if (_pipelineId) headers.set("X-Pipeline-Id", _pipelineId);
       return await fetch(`${_baseUrl}${path}`, {
          ...init,
          headers,
@@ -330,6 +338,7 @@ export function uploadVideo(
       xhr.withCredentials = _gatewayAuth;
       // And the token, for the embedded case where the cookie never arrives.
       if (_gatewayAuth && _tapisToken) xhr.setRequestHeader("X-Tapis-Token", _tapisToken);
+      if (_pipelineId) xhr.setRequestHeader("X-Pipeline-Id", _pipelineId);
       xhr.upload.onprogress = (e) => {
          if (e.lengthComputable) onProgress?.(e.loaded / e.total);
       };

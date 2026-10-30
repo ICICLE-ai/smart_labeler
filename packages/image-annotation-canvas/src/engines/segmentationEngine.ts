@@ -247,7 +247,7 @@ export const segmentationEngine: CanvasEngine<SegmentationAnnotation> = {
                // onAddition stores the masks in the originating file's map slot
                // (captured in this closure at request time); if that file is still
                // displayed, the canvas syncs back through props.
-               ctx.onAddition?.(newAnns);
+               ctx.onAddition?.(newAnns, "sam3-click");
             })
             .catch((err) => { console.error("SAM3 segmentation failed:", err); alert("SAM3 failed. Please try again."); })
             .finally(() => ctx.setIsSam3Loading(false));
@@ -309,8 +309,9 @@ export const segmentationEngine: CanvasEngine<SegmentationAnnotation> = {
                label: m.label || textPrompts[0] || `Segment ${ctx.annotations.length + i + 1}`,
                score: m.confidence,
             }));
-            ctx.setAnnotations((prev) => [...prev, ...newAnns]);
-            ctx.onAddition?.(newAnns);
+            // Through onAddition only, never written straight into the canvas,
+            // for the same reason as the click path above.
+            ctx.onAddition?.(newAnns, "sam3-text");
          })
          .catch((err) => { console.error("SAM3 text segmentation failed:", err); alert("SAM3 text prompt failed. Please try again."); })
          .finally(() => ctx.setIsSam3Loading(false));

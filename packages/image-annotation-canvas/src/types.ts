@@ -55,6 +55,9 @@ export interface Sam3Config {
  * custom implementation (e.g. to add retries, auth headers, or route through
  * their own backend proxy).
  */
+/** Which tool produced annotations handed to `onAddition`. */
+export type AdditionSource = "manual" | "sam3-click" | "sam3-text";
+
 export interface Sam3Client {
    predict: (payload: Record<string, unknown>, token: string) => Promise<any>;
 }
@@ -87,7 +90,7 @@ export interface EngineContext<T extends BaseAnnotation> {
    onSelection: (id: string | null) => void;
    onMultiSelection?: (ids: string[]) => void;
    onUpdate: (id: string, updates: Partial<T>) => void;
-   onAddition?: (annotations: T[]) => void;
+   onAddition?: (annotations: T[], source: AdditionSource) => void;
 
    // Label dialog – engine stores a "pending" payload and the shell later
    // turns it into an annotation via engine.createFromDialog().

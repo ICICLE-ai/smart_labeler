@@ -40,5 +40,6 @@ export {
    mergeSegmentationForSave,
    importSegmentationJson,
    importSegmentationFromCoco,
+   looksLikeSegmentationDefaultJson,
 } from "./segmentationIO";
 export type { SegmentationFileAnnotations } from "./segmentationIO";
