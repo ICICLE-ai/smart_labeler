@@ -7,7 +7,7 @@ import SsidChartIcon from '@mui/icons-material/SsidChart';
 import ImageIcon from '@mui/icons-material/Image';
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 import { Box, Button, ButtonGroup, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Divider, IconButton, MenuItem, Switch, TextField, Tooltip, Typography } from "@mui/material";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import { useControls } from "react-zoom-pan-pinch";
 import { SAM3_MODES } from "./utils";
 
@@ -65,6 +65,50 @@ const Controls = (props: {
    const [isSAHIenabled, setIsSAHIenabled] = useState(false);
    const [detectionConfidence, setDetectionConfidence] = useState<number>(0.3);
    const [maskPrecision, setMaskPrecision] = useState<number>(0.3);
+   const [previewOpen, setPreviewOpen] = useState<Record<string, boolean>>({});
+
+   const featureTooltip = (
+      key: string,
+      title: string,
+      video: string,
+      children: ReactElement,
+      description?: string,
+   ) => (
+      <Tooltip
+         arrow
+         placement="right"
+         enterDelay={300}
+         open={previewOpen[key] ?? false}
+         onOpen={() => setPreviewOpen((prev) => ({ ...prev, [key]: true }))}
+         onClose={() => setPreviewOpen((prev) => ({ ...prev, [key]: false }))}
+         title={
+            previewOpen[key] ? (
+               <Box sx={{ width: 280, p: 0.5 }}>
+                  <Typography variant="subtitle2" sx={{ mb: 0.75 }}>
+                     {title}
+                  </Typography>
+                  <video
+                     src={`/feature-previews/videos/${video}.mp4`}
+                     autoPlay
+                     loop
+                     muted
+                     playsInline
+                     preload="none"
+                     aria-label={`${title} feature preview`}
+                     style={{ display: "block", width: "100%", borderRadius: 4 }}
+                  />
+                  {description && (
+                     <Typography variant="caption" sx={{ display: "block", mt: 0.75 }}>
+                        {description}
+                     </Typography>
+                  )}
+               </Box>
+            ) : title
+         }
+      >
+         {children}
+      </Tooltip>
+   );
 
    // Skips the very first run so mounting does not re-assert a mode the parent
    // already holds.
@@ -128,50 +172,60 @@ const Controls = (props: {
             }}
          >
             <ButtonGroup variant="text">
-               <Tooltip title="Zoom-in">
+               {featureTooltip(
+                  "zoom-in",
+                  "Zoom In",
+                  "ZoomIn",
                   <IconButton
                      onClick={() => zoomIn()}
                      disabled={props.isDrawing}
                      color="primary"
                   >
                      <ZoomIn></ZoomIn>
-                  </IconButton>
-               </Tooltip>
-               <Tooltip title="Zoom-out">
+                  </IconButton>,
+               )}
+               {featureTooltip(
+                  "zoom-out",
+                  "Zoom Out",
+                  "ZoomOut",
                   <IconButton
                      onClick={() => zoomOut()}
                      disabled={props.isDrawing}
                      color="primary"
                   >
                      <ZoomOut></ZoomOut>
-                  </IconButton>
-               </Tooltip>
-               <Tooltip title="refresh">
+                  </IconButton>,
+               )}
+               {featureTooltip(
+                  "refresh",
+                  "Refresh",
+                  "Refresh",
                   <IconButton onClick={() => resetTransform()} color="primary">
                      <Refresh></Refresh>
-                  </IconButton>
-               </Tooltip>
+                  </IconButton>,
+               )}
             </ButtonGroup>
             <Divider orientation="vertical" flexItem />
-            <Tooltip
-               title="Draw"
-               onClick={() => {
-                  // Leaving SAM3 has to be announced separately: it carries config
-                  // the tool channel does not.
-                  if (isSAM3) props.handleSAM3BoxPrediction?.("", false);
-                  setTool((prev) => (prev === "draw" ? "none" : "draw"));
-               }}
-            >
+            {featureTooltip(
+               "draw",
+               "Draw",
+               "Draw",
                <IconButton
                   disabled={!props.isEditable}
+                  onClick={() => {
+                     // Leaving SAM3 has to be announced separately: it carries config
+                     // the tool channel does not.
+                     if (isSAM3) props.handleSAM3BoxPrediction?.("", false);
+                     setTool((prev) => (prev === "draw" ? "none" : "draw"));
+                  }}
                >
                   <DrawSharp
                      sx={{
                         color: !isDrawing ? "black" : "orange",
                      }}
                   ></DrawSharp>
-               </IconButton>
-            </Tooltip>
+               </IconButton>,
+            )}
             <Divider orientation="vertical" flexItem />
             <Tooltip
                title="Edit Box"
@@ -227,15 +281,19 @@ const Controls = (props: {
                </IconButton>
             </Tooltip>
             <Divider orientation="vertical" flexItem />
-            <Tooltip title={`Box stroke: ${lineWidthLabel} (${currentLineWidth}px) – click to cycle`}>
+            {featureTooltip(
+               "box-stroke",
+               "Box Stroke",
+               "BoxStroke",
                <IconButton onClick={handleLineWidthCycle}>
                   <Box component="span" sx={{ display: "inline-flex", flexDirection: "column", gap: "3px", alignItems: "center", justifyContent: "center", height: 24 }}>
                      {([2, 4, 8] as const).map((w) => (
                         <Box key={w} sx={{ width: 18, height: `${w / 2}px`, minHeight: `${w / 2}px`, backgroundColor: currentLineWidth >= w ? "#1976d2" : "#bdbdbd", borderRadius: 0.5 }} />
                      ))}
                   </Box>
-               </IconButton>
-            </Tooltip>
+               </IconButton>,
+               `Current: ${lineWidthLabel} (${currentLineWidth}px) – click to cycle`,
+            )}
             <Divider orientation="vertical" flexItem />
             <Tooltip title={props.showLabels ? "Labels shown – click to hide" : "Labels hidden – click to show"}>
                <Box sx={{ display: "flex", alignItems: "center", px: 0.5 }}>
