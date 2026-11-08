@@ -1,4 +1,4 @@
-import { getLabelColor } from "../utils";
+import { exemplarPayload, getLabelColor } from "../utils";
 import { CanvasMode, type Annotation, type CanvasEngine, type Coords, type EngineContext } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -358,6 +358,7 @@ const ACTION_HANDLERS: Record<CanvasMode, CanvasActionHandler> = {
    [CanvasMode.EDIT]: boxEditHandler,
    [CanvasMode.SAM3_CLICK]: sam3ClickHandler,
    [CanvasMode.SAM3_TEXT]: selectionHandler,
+   [CanvasMode.SAM3_EXEMPLAR]: selectionHandler,
 };
 
 // ---------------------------------------------------------------------------
@@ -456,6 +457,35 @@ export const detectionEngine: CanvasEngine<Annotation> = {
          .catch((err: any) => {
             console.error("SAM3 text prediction failed:", err);
             alert("SAM3 text prediction failed. Please try again.");
+         })
+         .finally(() => ctx.setIsSam3Loading(false));
+   },
+
+   runSam3Exemplar(box, ctx) {
+      ctx.setIsSam3Loading(true);
+      ctx.sam3Client
+         .predictExemplar?.(exemplarPayload(ctx, box), ctx.tapisToken)
+         .then((res: any) => {
+            if (!res?.bboxes?.length) {
+               alert("No similar objects found.");
+            } else {
+               const newAnnotations: Annotation[] = res.bboxes.map((p: any, i: number) => ({
+                  id: `${Date.now()}-${i}`,
+                  x: p.x_min,
+                  y: p.y_min,
+                  width: p.x_max - p.x_min,
+                  height: p.y_max - p.y_min,
+                  label: ctx.labelValue || "Exemplar",
+                  score: p.confidence,
+               }));
+               // Through onAddition only, never written straight into the canvas,
+               // for the same reason as the text path above.
+               ctx.onAddition?.(newAnnotations, "sam3-exemplar");
+            }
+         })
+         .catch((err: any) => {
+            console.error("SAM3 exemplar prediction failed:", err);
+            alert(`SAM3 exemplar prediction failed: ${err.message}`);
          })
          .finally(() => ctx.setIsSam3Loading(false));
    },

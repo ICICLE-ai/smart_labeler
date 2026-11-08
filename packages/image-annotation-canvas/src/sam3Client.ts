@@ -26,7 +26,36 @@ export function createFetchSam3Client(endpoint: string): Sam3Client {
          if (!response.ok) throw new Error("SAM3 prediction failed");
          return response.json();
       },
+      async predictExemplar(payload, token) {
+         if (!endpoint) {
+            throw new Error(
+               "ImageCanvas: provide a `sam3Endpoint` or `sam3Client` prop to use SAM3-assisted annotation."
+            );
+         }
+         const response = await fetch(`${endpoint.replace(/\/+$/, "")}/predict_exemplar`, {
+            method: "POST",
+            headers: {
+               "Content-Type": "application/json",
+               token: token ?? "",
+            },
+            body: JSON.stringify(payload),
+         });
+         if (!response.ok) throw new Error(await errorDetail(response));
+         return response.json();
+      },
    };
+}
+
+/**
+ * The service's reason for a failed request, which is worth showing: a Tapis
+ * download failure or a bad image can be fixed by the user, unlike a generic
+ * failure. `detail` is a string, or an array of objects on a 422.
+ */
+async function errorDetail(response: Response): Promise<string> {
+   const fallback = `SAM3 prediction failed (${response.status})`;
+   const detail = await response.json().then((body) => body?.detail).catch(() => null);
+   if (!detail) return fallback;
+   return typeof detail === "string" ? detail : JSON.stringify(detail);
 }
 
 /**
@@ -38,6 +67,8 @@ export function createFetchSam3Client(endpoint: string): Sam3Client {
  * The image is sent on every request. For point prompts the service checks its
  * embedding cache (keyed on `pipe_id` + `image_id`) first and discards the file
  * on a hit, so `image_id` must be unique per distinct image.
+ *
+ * Has no `predictExemplar`: that route only fetches its image from Tapis.
  */
 export function createUploadSam3Client(
    endpoint: string,

@@ -5,7 +5,7 @@ export { detectionEngine } from "./engines/detectionEngine";
 export { segmentationEngine } from "./engines/segmentationEngine";
 
 export { createFetchSam3Client, createUploadSam3Client } from "./sam3Client";
-export { getLabelColor, LABEL_PALETTE, MAX_SCALE, SAM3_MODES } from "./utils";
+export { getLabelColor, LABEL_PALETTE, MAX_SCALE, SAM3_MODES, toExemplarBox } from "./utils";
 
 export { CanvasMode } from "./types";
 export type {
@@ -15,6 +15,9 @@ export type {
    Coords,
    Sam3Config,
    Sam3Client,
+   ExemplarBox,
+   ExemplarPayload,
+   ExemplarShape,
    AdditionSource,
    EngineContext,
    DrawState,

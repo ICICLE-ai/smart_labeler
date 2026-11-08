@@ -11,14 +11,17 @@ import {
 import { TransformComponent, TransformWrapper, type ReactZoomPanPinchRef } from "react-zoom-pan-pinch";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Controls from "./Controls";
-import { MAX_SCALE, SAM3_MODES } from "./utils";
+import { MAX_SCALE, SAM3_MODES, toExemplarBox } from "./utils";
 import { createFetchSam3Client } from "./sam3Client";
+import { detectionEngine } from "./engines/detectionEngine";
+import { segmentationEngine } from "./engines/segmentationEngine";
 import {
    CanvasMode,
    type BaseAnnotation,
    type AdditionSource,
    type CanvasEngine,
    type EngineContext,
+   type ExemplarShape,
    type Sam3Client,
    type Sam3Config,
 } from "./types";
@@ -129,6 +132,12 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
    const [graphEnabled, setGraphEnabled] = useState<boolean>(props.isGraphMode || false);
    const [sam3Config, setSam3Config] = useState<Sam3Config>({ patchSize: 0, detectionConfidence: 0.3, maskPrecision: 0.3 });
    const [isSam3Loading, setIsSam3Loading] = useState<boolean>(false);
+   // The exemplar is drawn with whichever engine owns the chosen shape, so a box can
+   // prompt a segmentation canvas and a mask a detection one. It gets its own state
+   // and never touches the annotations.
+   const [exemplarEngine, setExemplarEngine] = useState<CanvasEngine<any>>(detectionEngine);
+   const [exemplarEngineState, setExemplarEngineState] = useState<any>(() => detectionEngine.createInitialEngineState());
+   const [pendingExemplar, setPendingExemplar] = useState<any>(null);
    const [lineWidth, setLineWidth] = useState<number>(8);
    // Label badges/text default to hidden — only boxes/masks render until the user opts in.
    const [showLabels, setShowLabels] = useState<boolean>(false);
@@ -139,6 +148,7 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
    );
 
    const isCanvasActive = activeMode !== CanvasMode.NONE;
+   const isExemplarMode = activeMode === CanvasMode.SAM3_EXEMPLAR;
 
    // ---------------------------------------------------------------------------
    // Effects – image loading, prop sync, filtering
@@ -158,6 +168,13 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
          img.onerror = (e) => console.error("Failed to load image.", e);
       }
    }, [props.file]);
+
+   // An exemplar belongs to the image it was drawn on.
+   useEffect(() => {
+      setPendingExemplar(null);
+      setExemplarEngineState(exemplarEngine.createInitialEngineState());
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, [props.file, props.fileName]);
 
    useEffect(() => { setSelectedId(props.selectedAnnotationId); }, [props.selectedAnnotationId]);
    useEffect(() => { setSelectedIds(props.selectedAnnotationIds ?? []); }, [props.selectedAnnotationIds]);
@@ -224,12 +241,14 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
             window.dispatchEvent(new Event("canvas-escape-pressed"));
          } else if (e.key === "Enter" && activeMode === CanvasMode.DRAWING) {
             engine.onDrawingEnterKey?.(buildContext());
+         } else if (e.key === "Enter" && activeMode === CanvasMode.SAM3_EXEMPLAR) {
+            exemplarEngine.onDrawingEnterKey?.(buildExemplarContext());
          }
       };
       window.addEventListener("keydown", onKey);
       return () => window.removeEventListener("keydown", onKey);
       // eslint-disable-next-line react-hooks/exhaustive-deps
-   }, [selectedIds, selectedId, activeMode, engineState, annotations]);
+   }, [selectedIds, selectedId, activeMode, engineState, annotations, exemplarEngine, exemplarEngineState]);
 
    // Track Control / Command key for multi-select
    useEffect(() => {
@@ -323,6 +342,35 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
       ...overrides,
    });
 
+   // What the exemplar's engine sees: an empty canvas in drawing mode, so clicks
+   // that land on an existing annotation still draw instead of selecting it, and a
+   // finished shape becomes the pending exemplar rather than a new annotation.
+   const buildExemplarContext = (): EngineContext<any> => ({
+      ...buildContext(),
+      annotations: [],
+      generatedAnnotations: [],
+      engineState: exemplarEngineState,
+      setEngineState: setExemplarEngineState,
+      activeMode: CanvasMode.DRAWING,
+      selectedId: null,
+      selectedIds: [],
+      setSelectedId: () => {},
+      setSelectedIds: () => {},
+      onSelection: () => {},
+      onMultiSelection: () => {},
+      openLabelDialog: (drawn: any) => setPendingExemplar(drawn),
+   });
+
+   const submitExemplar = () => {
+      const box = toExemplarBox(pendingExemplar, naturalWidth, naturalHeight);
+      if (!box) {
+         alert("That exemplar has no area. Please draw it again.");
+         return;
+      }
+      engine.runSam3Exemplar?.(box, buildContext());
+      setPendingExemplar(null);
+   };
+
    // ---------------------------------------------------------------------------
    // Draw – shell paints the base image, engine paints the overlays
    // ---------------------------------------------------------------------------
@@ -334,7 +382,22 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
       engine.draw(ctx, { annotations, generatedAnnotations, selectedId, selectedIds, engineState, activeMode, lineWidth, showLabels });
-   }, [engine, image, annotations, generatedAnnotations, selectedId, selectedIds, engineState, activeMode, lineWidth, showLabels]);
+      if (activeMode === CanvasMode.SAM3_EXEMPLAR) {
+         // A finished exemplar shows as a generated annotation, which is how the
+         // canvas already marks something that is not part of the saved set.
+         const drawn = pendingExemplar && exemplarEngine.createFromDialog(pendingExemplar, "Exemplar", []);
+         exemplarEngine.draw(ctx, {
+            annotations: [],
+            generatedAnnotations: drawn ? [drawn] : [],
+            selectedId: null,
+            selectedIds: [],
+            engineState: exemplarEngineState,
+            activeMode: CanvasMode.DRAWING,
+            lineWidth,
+            showLabels: true,
+         });
+      }
+   }, [engine, image, annotations, generatedAnnotations, selectedId, selectedIds, engineState, activeMode, lineWidth, showLabels, exemplarEngine, exemplarEngineState, pendingExemplar]);
 
    useEffect(() => { draw(); }, [draw]);
 
@@ -386,10 +449,14 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
    // ---------------------------------------------------------------------------
    // Mouse dispatch – delegates to the engine
    // ---------------------------------------------------------------------------
-   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => engine.onMouseDown?.(getCanvasCoordinates(e), buildContext());
-   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => engine.onMouseMove?.(getCanvasCoordinates(e), buildContext());
-   const handleMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => engine.onMouseUp?.(getCanvasCoordinates(e), buildContext());
-   const handleMouseLeave = (e: React.MouseEvent<HTMLCanvasElement>) => engine.onMouseLeave?.(getCanvasCoordinates(e), buildContext());
+   const dispatchMouse = (method: "onMouseDown" | "onMouseMove" | "onMouseUp" | "onMouseLeave", e: React.MouseEvent<HTMLCanvasElement>) => {
+      if (isExemplarMode) exemplarEngine[method]?.(getCanvasCoordinates(e), buildExemplarContext());
+      else engine[method]?.(getCanvasCoordinates(e), buildContext());
+   };
+   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => dispatchMouse("onMouseDown", e);
+   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => dispatchMouse("onMouseMove", e);
+   const handleMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => dispatchMouse("onMouseUp", e);
+   const handleMouseLeave = (e: React.MouseEvent<HTMLCanvasElement>) => dispatchMouse("onMouseLeave", e);
 
    // ---------------------------------------------------------------------------
    // Label dialog confirmation
@@ -473,8 +540,23 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
                         }}
                         isGraphEnabled={props.isGraphEnabled}
                         handleDisplayTypeSwitch={(type: string) => setGraphEnabled(type.toUpperCase() === "GRAPH")}
-                        handleSAM3BoxPrediction={(mode, sam3Active, label, textPrompts, isSAHIenabled, patchSize, detectionConfidence, maskPrecision) => {
-                           if (sam3Active) {
+                        handleSAM3BoxPrediction={(mode, sam3Active, label, textPrompts, isSAHIenabled, patchSize, detectionConfidence, maskPrecision, exemplarShape) => {
+                           if (sam3Active && mode === SAM3_MODES.EXEMPLAR) {
+                              // Unlike the other modes, a label left blank has to clear
+                              // an earlier one, or results would silently inherit it.
+                              setLabelValue(label ?? "");
+                              setSam3Config({
+                                 patchSize: 0,
+                                 detectionConfidence: detectionConfidence ?? 0.3,
+                                 maskPrecision: maskPrecision ?? 0.3,
+                              });
+                              const next: CanvasEngine<any> = exemplarShape === "mask" ? segmentationEngine : detectionEngine;
+                              setExemplarEngine(next);
+                              setExemplarEngineState(next.createInitialEngineState());
+                              setPendingExemplar(null);
+                              setEngineState(engine.createInitialEngineState());
+                              setActiveMode(CanvasMode.SAM3_EXEMPLAR);
+                           } else if (sam3Active) {
                               if (label) setLabelValue(label);
                               const cfg: Sam3Config = {
                                  patchSize: isSAHIenabled ? (patchSize ?? 0) : 0,
@@ -494,6 +576,9 @@ function ImageCanvasInner<T extends BaseAnnotation>(props: ImageCanvasProps<T>) 
                            }
                         }}
                         sam3loading={isSam3Loading}
+                        isExemplarAvailable={Boolean(sam3Client.predictExemplar && engine.runSam3Exemplar)}
+                        hasPendingExemplar={isExemplarMode && Boolean(pendingExemplar)}
+                        onSubmitExemplar={submitExemplar}
                         lineWidth={lineWidth}
                         onLineWidthChange={(w) => setLineWidth(w)}
                         showLabels={showLabels}

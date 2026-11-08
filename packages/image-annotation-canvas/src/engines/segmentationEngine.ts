@@ -1,4 +1,4 @@
-import { getLabelColor } from "../utils";
+import { exemplarPayload, getLabelColor } from "../utils";
 import { CanvasMode, type CanvasEngine, type Coords, type EngineContext, type SegmentationAnnotation } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -314,6 +314,26 @@ export const segmentationEngine: CanvasEngine<SegmentationAnnotation> = {
             ctx.onAddition?.(newAnns, "sam3-text");
          })
          .catch((err) => { console.error("SAM3 text segmentation failed:", err); alert("SAM3 text prompt failed. Please try again."); })
+         .finally(() => ctx.setIsSam3Loading(false));
+   },
+
+   runSam3Exemplar(box, ctx) {
+      ctx.setIsSam3Loading(true);
+      ctx.sam3Client
+         .predictExemplar?.(exemplarPayload(ctx, box), ctx.tapisToken)
+         .then((res: any) => {
+            if (!res?.bboxes?.length) { alert("No similar objects found."); return; }
+            const newAnns: SegmentationAnnotation[] = res.bboxes.map((m: any, i: number) => ({
+               id: `${Date.now()}-${i}`,
+               points: extractPoints(m),
+               label: ctx.labelValue || "Exemplar",
+               score: m.confidence,
+            }));
+            // Through onAddition only, never written straight into the canvas,
+            // for the same reason as the click path above.
+            ctx.onAddition?.(newAnns, "sam3-exemplar");
+         })
+         .catch((err) => { console.error("SAM3 exemplar segmentation failed:", err); alert(`SAM3 exemplar prediction failed: ${err.message}`); })
          .finally(() => ctx.setIsSam3Loading(false));
    },
 
