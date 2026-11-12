@@ -1,5 +1,7 @@
-- id: SmartVideoSegmentor:0.1.1
+- id: VideoSegmentationTracking:0.1.1
   name: Video Segmentation & Tracking
+  description: Segment objects in a video by annotating a few keyframes, then track every object through the whole video with the
+  SAM3 Video Service running on a GPU node.
   owner: Hari Subramoni
   primaryThrust: core/AI4CI
   targetIcicleRelease: 2026-11
@@ -9,8 +11,9 @@
   componentVersion: 0.1.1
   publicAccess: true
   usageDocumentationAvailable: true
-  usageDocumentationUrl: https://icicle-ai.github.io/training-catalog/docs/category/smart-video-segmentor # TODO: confirm training-catalog URL
+  usageDocumentationUrl: https://icicle-ai.github.io/training-catalog/docs/category/smart-video-segmentor
+  licenseUrl: https://github.com/ICICLE-ai/smart_labeler?tab=BSD-3-Clause-1-ov-file.
   developerDocumentationAvailable: false
   trainingTutorialsAvailable: true
-  trainingTutorialsUrl: https://icicle-ai.github.io/training-catalog/docs/category/smart-video-segmentor # TODO: confirm training-catalog URL
+  trainingTutorialsUrl: https://icicle-ai.github.io/training-catalog/docs/category/smart-video-segmentor
   status: AlphaRelease
