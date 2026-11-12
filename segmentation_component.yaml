@@ -2,6 +2,7 @@
   name: Intelligent Semantic Segmentation & Annotation
   owner: Hari Subramoni
   primaryThrust: core/AI4CI
+  description:  A streamlined, HPC-backed pipeline dedicated exclusively to semantic and instance image segmentation using interactive masking tools and Tapis job execution.
   targetIcicleRelease: 2026-11
   hasDependentComponents:
     - related_to: icicleai-tapisui-extension:0.1.0
