@@ -119,6 +119,17 @@ If an object is selected in the **Objects** panel, the new mask goes straight to
 
 ![Assign Region Dialog](./docs/images_video_segmentation/ai_assisted_annotation.png)
 
+Or use **Text Prompt** mode to run prediction over the whole image from a comma-separated label list.
+
+![SAM3 Text Prompt](./docs/images/annotator/SAM3-text-prompt.png)
+
+The **Detection Confidence** and **Mask Precision** set in the SAM3 dialog are applied to both Single Click and Text Prompt requests.
+
+Or use **Exemplar Prompts** mode to first draw a box or a mask and click on find similar to run prediction over the image to find objects similar to it.
+
+![Exemplar Prompt](./docs/images/annotator/SAM3-exemplar-prompts.png)
+![Exemplar Prompt - Find Similar](./docs/images/annotator/SAM3-exemplar-find-similar.png)
+
 > **Tip:** Annotate a few keyframes spread across the video, especially where an object changes shape, is partly hidden, or reappears. An object can first appear on any keyframe; it is tracked backward from there too, so you do not need to find its first frame.
 
 Keyboard shortcuts: **Enter** closes a polygon, **Esc** cancels the current tool, **Delete** removes the selected mask.

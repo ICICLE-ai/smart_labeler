@@ -108,6 +108,11 @@ Or use **Text Prompt** mode to run prediction over the whole image from a comma-
 
 The **Detection Confidence** and **Mask Precision** set in the SAM3 dialog are applied to both Single Click and Text Prompt requests.
 
+Or use **Exemplar Prompts** mode to first draw a box or a mask and click on find similar to run prediction over the image to find objects similar to it.
+
+![Exemplar Prompt](./docs/images/annotator/SAM3-exemplar-prompts.png)
+![Exemplar Prompt - Find Similar](./docs/images/annotator/SAM3-exemplar-find-similar.png)
+
 When finished, click **Save Annotations** and choose a remote Tapis path to store the annotation file. See [How to Save and Download Annotations](#how-to-save-and-download-annotations).
 
 #### Step 2 — Generate Class Supports
