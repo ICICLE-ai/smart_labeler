@@ -12,6 +12,7 @@ export enum CanvasMode {
    EDIT = "EDIT",
    SAM3_CLICK = "SAM3_CLICK",
    SAM3_TEXT = "SAM3_TEXT",
+   SAM3_EXEMPLAR = "SAM3_EXEMPLAR",
 }
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,26 @@ export interface Sam3Config {
    maskPrecision: number;
 }
 
+/** Shape the user draws to give an exemplar. The service only ever sees its box. */
+export type ExemplarShape = "box" | "mask";
+
+/** `[x1, y1, x2, y2]` in whole original-image pixels. */
+export type ExemplarBox = [number, number, number, number];
+
+/**
+ * Body of `POST /predict_exemplar`. The service rejects unknown fields with a
+ * 422, so `patch_size` and `segmentation` from `/predict` must not appear here.
+ */
+export interface ExemplarPayload {
+   image_id: string;
+   pipe_id: string;
+   system_id: string;
+   image_path: string;
+   exemplar_box: ExemplarBox;
+   threshold: number;
+   mask_threshold: number;
+}
+
 /**
  * Pluggable prediction backend for SAM3-assisted annotation. Consumers
  * provide either a `sam3Endpoint` (via `createFetchSam3Client`) or a fully
@@ -56,10 +77,16 @@ export interface Sam3Config {
  * their own backend proxy).
  */
 /** Which tool produced annotations handed to `onAddition`. */
-export type AdditionSource = "manual" | "sam3-click" | "sam3-text";
+export type AdditionSource = "manual" | "sam3-click" | "sam3-text" | "sam3-exemplar";
 
 export interface Sam3Client {
    predict: (payload: Record<string, unknown>, token: string) => Promise<any>;
+   /**
+    * Finds everything similar to one example box. Optional: the service fetches
+    * the image from Tapis, so a client whose images live elsewhere cannot offer
+    * it, and the exemplar mode is left out of the SAM3 dialog.
+    */
+   predictExemplar?: (payload: ExemplarPayload, token: string) => Promise<any>;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +172,9 @@ export interface CanvasEngine<T extends BaseAnnotation> {
 
    /** SAM3 text-prompt prediction (imperative, no mouse event). */
    runSam3Text?: (textPrompts: string[], ctx: EngineContext<T>) => void;
+
+   /** SAM3 exemplar prediction (imperative, no mouse event). */
+   runSam3Exemplar?: (box: ExemplarBox, ctx: EngineContext<T>) => void;
 
    /** Enter key while in DRAWING mode (e.g. close a polygon). */
    onDrawingEnterKey?: (ctx: EngineContext<T>) => void;

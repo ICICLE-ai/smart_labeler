@@ -152,6 +152,8 @@ To load an existing annotation file, click the **Import** (upload) icon. Choose 
 4. Optionally enable **SAHI** and adjust **Crop Size** for better coverage of small objects in large images.
 5. Click **Enter** to apply.
 
+![SAM3 Single Click](./docs/images/annotator/SAM3-single-click.png)
+
 ### How to Use Text Prompt Annotation
 
 1. Open an image in the annotation canvas.
@@ -159,6 +161,15 @@ To load an existing annotation file, click the **Import** (upload) icon. Choose 
 3. Enter a comma-separated list of class names (e.g. `zebra, giraffe`).
 4. Optionally enable **SAHI** for improved small-object recall.
 5. Click **Enter** — SAM3 generates masks for all detected instances of those classes.
+
+![SAM3 Text Prompt](./docs/images/annotator/SAM3-text-prompt.png)
+
+### How to Use Exemplar Prompt Annotation
+
+Use **Exemplar Prompts** mode to first draw a box or a mask and click on find similar to run prediction over the image to find objects similar to it.
+
+![Exemplar Prompt](./docs/images/annotator/SAM3-exemplar-prompts.png)
+![Exemplar Prompt - Find Similar](./docs/images/annotator/SAM3-exemplar-find-similar.png)
 
 ### How to Flag Masks for Review
 

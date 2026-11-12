@@ -102,6 +102,18 @@ If neither `sam3Endpoint` nor `sam3Client` is provided, every other tool
 (draw/edit/select) works normally — only the SAM3 button throws a clear
 error when clicked.
 
+### Exemplar prompts
+
+Choosing **Exemplar** in the SAM3 dialog lets the user draw one example, as a box
+or a mask on either engine, and then press **Find similar** to get everything
+like it on the current image. It POSTs to `${sam3Endpoint}/predict_exemplar`. A
+mask is sent as the box around it, because the service only accepts a box.
+
+The mode only appears when the client has a `predictExemplar` method.
+`createFetchSam3Client` has one. `createUploadSam3Client` does not, because the
+route fetches its image from Tapis, so video frames don't offer it. Custom
+clients opt in by implementing it.
+
 ## Drawing gestures and pre-assigned labels
 
 With `detectionEngine`, a bounding box can be placed two interchangeable ways:
@@ -160,7 +172,7 @@ for reference implementations.
 | `detectionEngine` | Bounding-box draw/drag/resize engine |
 | `segmentationEngine` | Polygon-mask draw/drag-vertex engine |
 | `createFetchSam3Client(endpoint)` | Builds a `Sam3Client` that POSTs to `{endpoint}/predict` |
-| `CanvasMode` | `NONE \| DRAWING \| EDIT \| SAM3_CLICK \| SAM3_TEXT` |
+| `CanvasMode` | `NONE \| DRAWING \| EDIT \| SAM3_CLICK \| SAM3_TEXT \| SAM3_EXEMPLAR` |
 | `BaseAnnotation`, `Annotation`, `SegmentationAnnotation` | Annotation shapes |
 | `getLabelColor`, `LABEL_PALETTE` | Deterministic per-label color assignment |
 | `ImageCanvasProps` | Props type, including `defaultLabel` and `focusRequest` |

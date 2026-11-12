@@ -10,6 +10,7 @@ import { Box, Button, ButtonGroup, CircularProgress, Dialog, DialogActions, Dial
 import { useEffect, useRef, useState } from "react";
 import { useControls } from "react-zoom-pan-pinch";
 import { SAM3_MODES } from "./utils";
+import type { ExemplarShape } from "./types";
 
 /**
  * The mutually exclusive canvas tools this toolbar owns.
@@ -30,8 +31,13 @@ const Controls = (props: {
    onToolChange: (tool: CanvasTool) => void;
    isGraphEnabled?: boolean;
    handleDisplayTypeSwitch?: (type: string) => void;
-   handleSAM3BoxPrediction?: (mode: string, sam3Prediction: boolean, labelValue?: string, textPrompts?: string[], isSAHIenabled?: boolean, patchSize?: number, detectionConfidence?: number, maskPrecision?: number) => void;
+   handleSAM3BoxPrediction?: (mode: string, sam3Prediction: boolean, labelValue?: string, textPrompts?: string[], isSAHIenabled?: boolean, patchSize?: number, detectionConfidence?: number, maskPrecision?: number, exemplarShape?: ExemplarShape) => void;
    sam3loading?: boolean;
+   /** Offers the exemplar mode. Off when the SAM3 client or the engine cannot run it. */
+   isExemplarAvailable?: boolean;
+   /** A drawn exemplar is waiting to be submitted. */
+   hasPendingExemplar?: boolean;
+   onSubmitExemplar?: () => void;
    onResetAllControls?: () => void;
    lineWidth?: number;
    onLineWidthChange?: (width: number) => void;
@@ -60,6 +66,7 @@ const Controls = (props: {
    const [openDialog, setOpenDialog] = useState(false);
    const [labelValue, setLabelValue] = useState("");
    const [mode, setMode] = useState<SAM3_MODES>(SAM3_MODES.SINGLE_CLICK);
+   const [exemplarShape, setExemplarShape] = useState<ExemplarShape>("box");
    const [textPrompts, setTextPrompts] = useState<string[]>([]);
    const [patchSize, setPatchSize] = useState<number>(640);
    const [isSAHIenabled, setIsSAHIenabled] = useState(false);
@@ -266,6 +273,17 @@ const Controls = (props: {
                </>
             </Tooltip>
          </div>
+         {props.hasPendingExemplar && (
+            <Button
+               size="small"
+               variant="contained"
+               disabled={props.sam3loading}
+               onClick={() => props.onSubmitExemplar?.()}
+               sx={{ mx: 1, whiteSpace: "nowrap", flexShrink: 0 }}
+            >
+               Find similar
+            </Button>
+         )}
          {props.sam3loading && (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                <CircularProgress size={20} />
@@ -282,6 +300,10 @@ const Controls = (props: {
             }}
             maxWidth="xs"
             fullWidth
+            // Clicks on the canvas don't take focus, so focus handed back to the wand
+            // button would stay there, and the Enter that closes an exemplar polygon
+            // would also press the button and reopen this dialog.
+            disableRestoreFocus
          >
             <DialogTitle sx={{ fontFamily: "system-ui" }}>Segmentation Assisted Annotation (SAM3)</DialogTitle>
             <DialogContent>
@@ -290,9 +312,7 @@ const Controls = (props: {
                   fullWidth
                   label="Mode"
                   value={mode}
-                  onChange={(e) =>
-                     setMode(e.target.value == "SINGLE_CLICK" ? SAM3_MODES.SINGLE_CLICK : SAM3_MODES.TEXT_PROMPTS)
-                  }
+                  onChange={(e) => setMode(e.target.value as SAM3_MODES)}
                   variant="filled"
                   // Deliberately non-native: the browser's native <select> popup is
                   // positioned by the OS in screen coordinates, which is a known
@@ -304,8 +324,24 @@ const Controls = (props: {
                >
                   <MenuItem value={SAM3_MODES.SINGLE_CLICK}>Single Click</MenuItem>
                   <MenuItem value={SAM3_MODES.TEXT_PROMPTS}>Text Prompt</MenuItem>
+                  {props.isExemplarAvailable && <MenuItem value={SAM3_MODES.EXEMPLAR}>Exemplar</MenuItem>}
                </TextField>
-                  {mode === SAM3_MODES.SINGLE_CLICK ?
+                  {mode === SAM3_MODES.EXEMPLAR && (
+                     <TextField
+                        select
+                        fullWidth
+                        label="Draw exemplar as"
+                        value={exemplarShape}
+                        onChange={(e) => setExemplarShape(e.target.value as ExemplarShape)}
+                        variant="filled"
+                        helperText="Draw one example on the image, then choose Find similar. A mask is sent as the box around it."
+                        sx={{ mb: 2 }}
+                     >
+                        <MenuItem value="box">Box</MenuItem>
+                        <MenuItem value="mask">Mask</MenuItem>
+                     </TextField>
+                  )}
+                  {mode !== SAM3_MODES.TEXT_PROMPTS ?
                     <TextField
                       variant="filled"
                       autoFocus
@@ -325,7 +361,7 @@ const Controls = (props: {
                         placeholder="Enter prompts separated by commas"
                       />
                     )}
-                  <Box sx={{ mt: 2, mb: 1 }}>
+                  {mode !== SAM3_MODES.EXEMPLAR && <Box sx={{ mt: 2, mb: 1 }}>
                      <Typography variant="body2" sx={{ mb: 0.5 }}>Enable SAHI</Typography>
                      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
                         SAHI (Slicing Aided Hyper Inference) divides the image into overlapping tiles before running inference. This significantly improves detection of small or densely packed objects in large images.
@@ -337,8 +373,8 @@ const Controls = (props: {
                      >
                         {isSAHIenabled ? "SAHI Enabled" : "SAHI Disabled"}
                      </Button>
-                  </Box>
-                  {isSAHIenabled && (
+                  </Box>}
+                  {mode !== SAM3_MODES.EXEMPLAR && isSAHIenabled && (
                      <TextField
                         variant="filled"
                         fullWidth
@@ -388,7 +424,7 @@ const Controls = (props: {
                </Button>
                <Button variant="contained" onClick={() => {
                   setTool("sam3");
-                  props.handleSAM3BoxPrediction && props.handleSAM3BoxPrediction(mode, true, labelValue, textPrompts, isSAHIenabled, patchSize, detectionConfidence, maskPrecision);
+                  props.handleSAM3BoxPrediction && props.handleSAM3BoxPrediction(mode, true, labelValue, textPrompts, isSAHIenabled, patchSize, detectionConfidence, maskPrecision, exemplarShape);
                   setOpenDialog(false);
                }}>
                   Enter
