@@ -3,6 +3,7 @@
   owner: Hari Subramoni
   primaryThrust: core/AI4CI
   targetIcicleRelease: 2026-11
+  licenseURL: https://github.com/ICICLE-ai/smart_labeler?tab=BSD-3-Clause-1-ov-file
   hasDependentComponents:
     - related_to: icicleai-tapisui-extension:0.1.0
       relationship_type: DependsOn
