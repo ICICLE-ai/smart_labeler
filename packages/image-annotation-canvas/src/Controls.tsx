@@ -73,6 +73,7 @@ const Controls = (props: {
       video: string,
       children: ReactElement,
       description?: string,
+      tooltipTitle?: string,
    ) => (
       <Tooltip
          arrow
@@ -103,7 +104,7 @@ const Controls = (props: {
                      </Typography>
                   )}
                </Box>
-            ) : title
+            ) : tooltipTitle ?? title
          }
       >
          {children}
@@ -227,23 +228,24 @@ const Controls = (props: {
                </IconButton>,
             )}
             <Divider orientation="vertical" flexItem />
-            <Tooltip
-               title="Edit Box"
-               onClick={() => {
-                  if (isSAM3) props.handleSAM3BoxPrediction?.("", false);
-                  setTool((prev) => (prev === "edit" ? "none" : "edit"));
-               }}
-            >
+            {featureTooltip(
+               "edit-box",
+               "Edit Box",
+               "EditBox",
                <IconButton
                   disabled={!props.isEditable}
+                  onClick={() => {
+                     if (isSAM3) props.handleSAM3BoxPrediction?.("", false);
+                     setTool((prev) => (prev === "edit" ? "none" : "edit"));
+                  }}
                >
                   <CropSquareIcon
                      sx={{
                         color: !isEnableBoxEdit ? "black" : "orange",
                      }}
                   ></CropSquareIcon>
-               </IconButton>
-            </Tooltip>
+               </IconButton>,
+            )}
             <Divider orientation="vertical" flexItem />
             <Tooltip
                title="Graph Mode"
@@ -295,15 +297,20 @@ const Controls = (props: {
                `Current: ${lineWidthLabel} (${currentLineWidth}px) – click to cycle`,
             )}
             <Divider orientation="vertical" flexItem />
-            <Tooltip title={props.showLabels ? "Labels shown – click to hide" : "Labels hidden – click to show"}>
+            {featureTooltip(
+               "labels",
+               "Labels",
+               "Labels",
                <Box sx={{ display: "flex", alignItems: "center", px: 0.5 }}>
                   <Switch
                      size="small"
                      checked={props.showLabels ?? false}
                      onChange={(e) => props.onShowLabelsChange?.(e.target.checked)}
                   />
-               </Box>
-            </Tooltip>
+               </Box>,
+               undefined,
+               props.showLabels ? "Labels shown – click to hide" : "Labels hidden – click to show",
+            )}
             <Divider orientation="vertical" flexItem />
             <Tooltip
                title="SAM3 Segmentation Assisted Annotation"
