@@ -1,8 +1,11 @@
-- id: SmartDetector:0.3.0
+- id: SmartLabelingServiceForObjectDetection:0.3.0
   name: Smart Labeling Service for Object Detection
+  description: A 7-step HPC-backed pipeline for few-shot object detection, from interactive image annotation through class support generation 
+  proposal visualization, and Tapis-powered job execution. Also includes a Semantic Segmentation pipeline for polygon and pixel-mask annotation with SAM3-assisted labeling.
   owner: Hari Subramoni
   primaryThrust: core/AI4CI
   targetIcicleRelease: 2026-11
+  licenseUrl: https://github.com/ICICLE-ai/smart_labeler?tab=BSD-3-Clause-1-ov-file
   hasDependentComponents:
     - related_to: icicleai-tapisui-extension:0.1.0
       relationship_type: DependsOn
