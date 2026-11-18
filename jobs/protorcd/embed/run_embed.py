@@ -15,6 +15,9 @@ The crop and encoder code is ProtoRCD's, unchanged (``crops.py``, ``masks.py``,
 ``dinov3.py``, ``insid3_debias.py``, ``bioclip.py``); only the loader differs: proposals
 come from the COCO file and are keyed by annotation id instead of
 ``"{image_id}:{index}"`` + row order.
+
+Logs go to stderr with timestamps (``--log_level DEBUG`` for per-image detail). The tqdm
+bar shows only on a terminal; batch jobs get a progress line every minute instead.
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ import argparse
 import gc
 import hashlib
 import json
+import logging
 import os
 import sys
 import time
@@ -44,6 +48,22 @@ from embed.proposals import Proposal
 SCHEMA = "protorcd.embeddings/v1"
 SOURCE_COMMIT = "accd349"
 MODELS = ("dinov3", "bioclip", "dinov3_debiased")
+PROGRESS_EVERY_S = 60
+MISSING_IMAGES_LOGGED = 10
+
+log = logging.getLogger("protorcd.embed")
+
+
+def setup_logging(level: str = "INFO") -> None:
+    """Timestamped logs on stderr, readable in a Tapis job's output file."""
+    logging.basicConfig(level=level, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+                        datefmt="%Y-%m-%d %H:%M:%S")
+
+
+def format_duration(seconds: float) -> str:
+    seconds = int(max(seconds, 0))
+    hours, rest = divmod(seconds, 3600)
+    return f"{hours}h{rest // 60:02d}m{rest % 60:02d}s" if hours else f"{rest // 60}m{rest % 60:02d}s"
 
 
 def sha256_file(path: Path) -> str:
@@ -110,23 +130,50 @@ def embed_proposals(
     ids: list[int] = []
     skipped: list[int] = []
     missing_images: list[str] = []
-    for file_name, props in tqdm(image_items, desc=description, unit="image", dynamic_ncols=True):
+    total_proposals = sum(len(props) for _, props in image_items)
+    loop_start = last_log = time.time()
+    proposals_seen = 0
+    for n, (file_name, props) in enumerate(
+        tqdm(image_items, desc=description, unit="image", dynamic_ncols=True, disable=None), start=1
+    ):
+        proposals_seen += len(props)
         image_path = resolve_image_path(image_dir, file_name)
         if image_path is None:
             missing_images.append(file_name)
             skipped.extend(p.proposal_index for p in props)
-            continue
-        image = Image.open(image_path).convert("RGB")
-        crops = []
-        for proposal in props:
-            crop = proposal_crop(image, proposal, region=region, mask_background=mask_background)
-            if crop is None:
-                skipped.append(proposal.proposal_index)
-                continue
-            crops.append(crop)
-            ids.append(proposal.proposal_index)
-        if crops:
-            chunks.append(encode_crops(crops, batch_size=batch_size))
+            if len(missing_images) <= MISSING_IMAGES_LOGGED:
+                log.warning("%s: image %s not found under %s; skipping its %d proposals",
+                            description, file_name, image_dir, len(props))
+            elif len(missing_images) == MISSING_IMAGES_LOGGED + 1:
+                log.warning("%s: more images missing; not logging each one (count in the summary)",
+                            description)
+        else:
+            try:
+                image = Image.open(image_path).convert("RGB")
+                crops = []
+                for proposal in props:
+                    crop = proposal_crop(image, proposal, region=region, mask_background=mask_background)
+                    if crop is None:
+                        log.debug("%s: annotation %d has an empty crop; skipped",
+                                  file_name, proposal.proposal_index)
+                        skipped.append(proposal.proposal_index)
+                        continue
+                    crops.append(crop)
+                    ids.append(proposal.proposal_index)
+                if crops:
+                    chunks.append(encode_crops(crops, batch_size=batch_size))
+            except Exception:
+                log.exception("%s: failed on image %s (%d proposals)", description, file_name, len(props))
+                raise
+            log.debug("%s: %d crops encoded", file_name, len(crops))
+
+        now = time.time()
+        if now - last_log >= PROGRESS_EVERY_S or n == len(image_items):
+            rate = n / max(now - loop_start, 1e-9)
+            log.info("%s progress: %d/%d images (%.1f%%), %d/%d proposals, %.2f images/s, ETA %s",
+                     description, n, len(image_items), 100.0 * n / len(image_items), proposals_seen,
+                     total_proposals, rate, format_duration((len(image_items) - n) / rate))
+            last_log = now
 
     embeddings = np.vstack(chunks).astype(np.float32) if chunks else np.zeros((0, 0), np.float32)
     return (
@@ -146,6 +193,12 @@ def package_version(name: str) -> str | None:
 
 def load_encoder(model_name: str, args: argparse.Namespace) -> tuple[object, dict]:
     """Instantiate a ProtoRCD encoder; returns (model, provenance dict for ``meta``)."""
+    if model_name != "bioclip":
+        log.info("%s: model_size=%s image_size=%d repo=%s weights=%s", model_name, args.dinov3_model_size,
+                 args.dinov3_image_size, args.dinov3_repo, args.dinov3_weights or "(ProtoRCD default path)")
+        if args.dinov3_weights and "://" not in str(args.dinov3_weights) and not Path(args.dinov3_weights).exists():
+            log.warning("DINOv3 weights %s do not exist (inside a container, is the folder bound?)",
+                        args.dinov3_weights)
     if model_name == "bioclip":
         from embed.bioclip import BioCLIPEmbedder
 
@@ -176,22 +229,66 @@ def load_encoder(model_name: str, args: argparse.Namespace) -> tuple[object, dic
     }
 
 
+def log_environment(device: str) -> None:
+    try:
+        import torch
+    except ImportError:
+        log.error("torch is not importable; is this the protorcd_embed image?")
+        return
+    if torch.cuda.is_available():
+        log.info("torch %s, CUDA %s, %d GPU(s): %s", torch.__version__, torch.version.cuda,
+                 torch.cuda.device_count(), torch.cuda.get_device_name(0))
+    elif device.startswith("cuda"):
+        log.warning("--device %s but torch %s sees no CUDA device; the encoders will fail or crawl "
+                    "(under Apptainer, pass --nv)", device, torch.__version__)
+    else:
+        log.info("torch %s on %s", torch.__version__, device)
+
+
 def run(args: argparse.Namespace) -> int:
+    run_started = time.time()
+    log.info("Embed stage: coco=%s image_dir=%s output_dir=%s models=%s region=%s batch_size=%d "
+             "device=%s dtype=%s", args.coco, args.image_dir, args.output_dir, " ".join(args.models),
+             args.region, args.batch_size, args.device, args.dtype)
+    if not args.coco.is_file():
+        log.error("COCO file %s does not exist (run the detect stage first)", args.coco)
+        return 1
+    if not args.image_dir.is_dir():
+        log.error("Image directory %s does not exist or is not a directory", args.image_dir)
+        return 1
     coco_sha = sha256_file(args.coco)
     coco = json.loads(args.coco.read_text())
+    schema = coco.get("info", {}).get("schema")
+    if schema is not None and not str(schema).startswith("protorcd.proposals.coco/"):
+        log.warning("%s has schema %r, not a ProtoRCD proposals file", args.coco, schema)
     image_items = load_proposals_by_image(coco)
     num_annotations = len(coco["annotations"])
-    print(f"{num_annotations} proposals over {len(image_items)} images from {args.coco}")
+    log.info("%d proposals over %d images (of %d in the COCO file) from %s, sha256 %s",
+             num_annotations, len(image_items), len(coco["images"]), args.coco, coco_sha[:12])
+    if args.region == "mask":
+        with_masks = sum(1 for ann in coco["annotations"] if ann.get("segmentation"))
+        if with_masks < num_annotations:
+            log.warning("--region mask, but %d of %d proposals have no mask (detect with --return_masks)",
+                        num_annotations - with_masks, num_annotations)
+    if num_annotations == 0:
+        log.warning("The COCO file has no proposals; writing empty embedding files")
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    log_environment(args.device)
 
     for model_name in args.models:
         out_path = args.output_dir / f"{model_name}_{args.region}.npz"
         if out_path.exists() and not args.overwrite:
-            print(f"{out_path} exists; skipping (use --overwrite to redo)")
+            log.info("%s exists; skipping %s (use --overwrite to redo)", out_path, model_name)
             continue
 
         started = time.time()
-        model, provenance = load_encoder(model_name, args)
+        log.info("Loading %s encoder", model_name)
+        try:
+            model, provenance = load_encoder(model_name, args)
+        except Exception:
+            log.exception("Could not load the %s encoder", model_name)
+            raise
+        log.info("%s loaded in %.1fs", model_name, time.time() - started)
         embeddings, ids, skipped, missing = embed_proposals(
             image_items,
             args.image_dir,
@@ -229,10 +326,14 @@ def run(args: argparse.Namespace) -> int:
             meta=np.array(json.dumps(meta)),
         )
         tmp_path.replace(out_path)
-        print(f"{model_name}: {meta['num_embedded']} embedded, {meta['num_skipped']} skipped, "
-              f"dim={meta['embedding_dim']} -> {out_path}")
+        log.info("%s: %d embedded, %d skipped, dim=%d, in %s -> %s (%.1f MB)", model_name,
+                 meta["num_embedded"], meta["num_skipped"], meta["embedding_dim"],
+                 format_duration(meta["elapsed_seconds"]), out_path, out_path.stat().st_size / 1e6)
         if missing:
-            print(f"WARNING: {len(missing)} images not found under {args.image_dir}")
+            log.warning("%s: %d images not found under %s (first: %s)", model_name, len(missing),
+                        args.image_dir, ", ".join(missing[:3]))
+        if num_annotations and meta["num_embedded"] == 0:
+            log.error("%s embedded no proposals; triage will reject this file", model_name)
 
         del model
         gc.collect()
@@ -242,6 +343,7 @@ def run(args: argparse.Namespace) -> int:
             torch.cuda.empty_cache()
         except Exception:
             pass
+    log.info("Embed stage finished in %s", format_duration(time.time() - run_started))
     return 0
 
 
@@ -271,11 +373,16 @@ def build_parser() -> argparse.ArgumentParser:
                              "hard-coded in ProtoRCD's dinov3.py)")
     parser.add_argument("--svd_components", type=int, default=500)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--log_level", default=os.environ.get("PROTORCD_LOG_LEVEL", "INFO"),
+                        choices=("DEBUG", "INFO", "WARNING", "ERROR"), type=str.upper,
+                        help="Log verbosity (default: INFO, or $PROTORCD_LOG_LEVEL)")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    return run(build_parser().parse_args(argv))
+    args = build_parser().parse_args(argv)
+    setup_logging(args.log_level)
+    return run(args)
 
 
 if __name__ == "__main__":

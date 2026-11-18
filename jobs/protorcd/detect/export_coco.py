@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -24,6 +26,20 @@ import numpy as np
 SCHEMA = "protorcd.proposals.coco/v1"
 SOURCE_COMMIT = "accd349"
 PROPOSAL_CATEGORY = {"id": 1, "name": "proposal", "supercategory": "object"}
+
+log = logging.getLogger("protorcd.detect")
+
+
+def setup_logging(level: str = "INFO") -> None:
+    """Timestamped logs on stderr, readable in a Tapis job's output file."""
+    logging.basicConfig(level=level, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+                        datefmt="%Y-%m-%d %H:%M:%S")
+
+
+def format_duration(seconds: float) -> str:
+    seconds = int(max(seconds, 0))
+    hours, rest = divmod(seconds, 3600)
+    return f"{hours}h{rest // 60:02d}m{rest % 60:02d}s" if hours else f"{rest // 60}m{rest % 60:02d}s"
 
 
 def encode_mask(mask: Any) -> dict:
@@ -77,6 +93,8 @@ def build_coco(
     coco_images = []
     annotations = []
     dropped = 0
+    degenerate = 0
+    empty_images = 0
     for image_id, img in enumerate(sorted(images, key=lambda r: r["file_name"]), start=1):
         coco_images.append({
             "id": image_id,
@@ -84,6 +102,7 @@ def build_coco(
             "width": int(img["width"]),
             "height": int(img["height"]),
         })
+        before = len(annotations)
         for rec in records_by_file.get(img["file_name"], []):
             if rec["score"] < score_threshold:
                 dropped += 1
@@ -91,6 +110,7 @@ def build_coco(
             x, y, w, h = rec["bbox"]
             if w <= 0 or h <= 0:
                 dropped += 1
+                degenerate += 1
                 continue
             ann = {
                 "id": len(annotations) + 1,
@@ -105,7 +125,15 @@ def build_coco(
                 if key in rec:
                     ann[key] = rec[key]
             annotations.append(ann)
+        if len(annotations) == before:
+            empty_images += 1
 
+    log.info("COCO: %d proposals kept over %d images; %d dropped (%d below score %.2f, %d empty boxes); "
+             "%d images have no proposal", len(annotations), len(coco_images), dropped,
+             dropped - degenerate, score_threshold, degenerate, empty_images)
+    if not annotations:
+        log.warning("No proposal passed score_threshold=%.2f; the embed stage will have nothing to do",
+                    score_threshold)
     return {
         "info": {
             "schema": SCHEMA,
@@ -129,6 +157,7 @@ def write_coco(coco: dict, output: Path) -> None:
     with tmp.open("w") as f:
         json.dump(coco, f)
     tmp.replace(output)
+    log.info("Wrote %s (%.1f MB)", output, output.stat().st_size / 1e6)
 
 
 def records_from_detections_dir(detections_dir: Path, images_dir: Path) -> tuple[list[dict], dict]:
@@ -137,16 +166,21 @@ def records_from_detections_dir(detections_dir: Path, images_dir: Path) -> tuple
 
     images = []
     records_by_file: dict[str, list[dict]] = {}
-    for det_path in sorted(detections_dir.rglob("*_detections.json")):
+    det_paths = sorted(detections_dir.rglob("*_detections.json"))
+    log.info("Reading %d detection files from %s", len(det_paths), detections_dir)
+    for det_path in det_paths:
         if det_path.stat().st_size == 0:
+            log.warning("Skipping empty detections file %s", det_path)
             continue
         det = json.loads(det_path.read_text())
         file_name = det.get("file_name")
         if file_name is None:
             rel = det_path.relative_to(detections_dir)
             file_name = str(rel.parent / f"{rel.stem[: -len('_detections')]}.jpg")
+            log.debug("%s has no file_name; assuming %s", det_path, file_name)
         width, height = det.get("image_width"), det.get("image_height")
         if not width or not height:
+            log.debug("%s has no image size; reading it from %s", det_path, images_dir / file_name)
             with Image.open(images_dir / file_name) as im:
                 width, height = im.size
         images.append({"file_name": file_name, "width": width, "height": height})
@@ -167,13 +201,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--score_threshold", type=float, default=0.4,
                         help="Drop proposals below this score (default: 0.4, ProtoRCD's feature-stage default)")
+    parser.add_argument("--log_level", default=os.environ.get("PROTORCD_LOG_LEVEL", "INFO"),
+                        choices=("DEBUG", "INFO", "WARNING", "ERROR"), type=str.upper)
     args = parser.parse_args(argv)
+    setup_logging(args.log_level)
 
     images, records = records_from_detections_dir(args.detections_dir, args.images_dir)
     coco = build_coco(images, records, args.score_threshold,
                       info={"converted_from": str(args.detections_dir)})
     write_coco(coco, args.output)
-    print(f"{coco['info']['num_proposals']} proposals over {len(images)} images -> {args.output}")
     return 0
 
 

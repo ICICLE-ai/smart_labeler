@@ -28,6 +28,8 @@ class Settings:
     image_cache_mb: int = field(default_factory=lambda: int(os.environ.get("TRIAGE_IMAGE_CACHE_MB", "2048")))
     # Loaded pools kept in memory (each is ~N x (D_dino + D_bioclip) x 4 bytes).
     pool_cache_size: int = field(default_factory=lambda: int(os.environ.get("TRIAGE_POOL_CACHE_SIZE", "2")))
+    # DEBUG adds every WebSocket message and cache hit; INFO is one line per event.
+    log_level: str = field(default_factory=lambda: os.environ.get("TRIAGE_LOG_LEVEL", "INFO").upper())
 
     @property
     def datasets_dir(self) -> Path:

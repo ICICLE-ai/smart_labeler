@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 import threading
 import time
@@ -23,6 +24,8 @@ from protorcd_pipeline.triage import ProposalPool, l2_normalize
 
 from .config import Settings
 from .storage import Storage, StorageError, safe_relative
+
+log = logging.getLogger("triage_service.datasets")
 
 EMBEDDING_SCHEMA_PREFIX = "protorcd.embeddings/"
 META_FIELDS = (
@@ -72,11 +75,14 @@ def _load_npz(path: Path, expected_model: str, coco_sha: str) -> tuple[np.ndarra
         raise DatasetError(f"{expected_model}: embeddings/annotation_ids shapes disagree")
     if np.unique(ids).size != ids.size:
         raise DatasetError(f"{expected_model}: duplicate annotation ids")
+    log.debug("%s: %s rows x %s dims, model %s, region %s", path.name, embeddings.shape[0],
+              embeddings.shape[1], meta.get("model"), meta.get("region"))
     return embeddings, ids, meta
 
 
 def load_files(coco_path: Path, dinov3_path: Path, bioclip_path: Path) -> tuple[LoadedDataset, dict]:
     """Validate the three files and build the pool. Returns (dataset, summary for info)."""
+    started = time.time()
     coco_sha = sha256_file(coco_path)
     try:
         coco = json.loads(coco_path.read_text())
@@ -97,6 +103,10 @@ def load_files(coco_path: Path, dinov3_path: Path, bioclip_path: Path) -> tuple[
         raise DatasetError(f"embeddings reference {unknown.size} ids missing from the COCO file")
 
     ids = np.intersect1d(bg_ids, fg_ids)                 # sorted, unique
+    only_one = np.setxor1d(bg_ids, fg_ids).size
+    if only_one:
+        log.warning("%d proposals are embedded by only one of the two models; they stay out of the pool",
+                    only_one)
     if ids.size == 0:
         raise DatasetError("no proposal is embedded by both models")
     bg_order = np.argsort(bg_ids)
@@ -130,6 +140,9 @@ def load_files(coco_path: Path, dinov3_path: Path, bioclip_path: Path) -> tuple[
         "bioclip": {k: fg_meta[k] for k in META_FIELDS if k in fg_meta},
         "coco_sha256": coco_sha,
     }
+    log.info("loaded %s: %d images, %d proposals, %d in the pool (%d not embedded), dims dinov3=%d "
+             "bioclip=%d, in %.1fs", coco_path.parent.name, summary["num_images"], summary["num_proposals"],
+             summary["num_pool"], summary["num_not_embedded"], bg.shape[1], fg.shape[1], time.time() - started)
     return LoadedDataset(info={}, pool=pool, coco=coco, annotation_ids=sorted(annotations)), summary
 
 
@@ -173,6 +186,8 @@ class DatasetStore:
         loaded.info = info
         (self._dir(dataset_id) / "dataset.json").write_text(json.dumps(info, indent=2))
         self._remember(dataset_id, loaded)
+        log.info("dataset %s registered as %r (image root %s, %s classes)", dataset_id, name,
+                 root or "none", len(taxonomy) if taxonomy else "no")
         return info
 
     def _new_dir(self) -> tuple[str, Path]:
@@ -184,6 +199,7 @@ class DatasetStore:
     def register_upload(self, name: str, coco: BinaryIO, dinov3: BinaryIO, bioclip: BinaryIO,
                         image_root: Optional[str], labels: Optional[Dict[int, str]]) -> dict:
         dataset_id, d = self._new_dir()
+        log.info("dataset %s: receiving upload %r", dataset_id, name)
         try:
             files = {}
             for key, src, fname in (("coco", coco, "proposals.coco.json"),
@@ -192,14 +208,19 @@ class DatasetStore:
                 files[key] = d / fname
                 with files[key].open("wb") as out:
                     shutil.copyfileobj(src, out, length=1 << 20)
+            log.info("dataset %s: stored upload (%s)", dataset_id,
+                     ", ".join(f"{k} {f.stat().st_size / 1e6:.1f} MB" for k, f in files.items()))
             return self._register(dataset_id, name, files, image_root, labels)
-        except BaseException:
+        except BaseException as exc:
+            log.warning("dataset %s (%r) rejected: %s: %s", dataset_id, name, type(exc).__name__, exc)
             shutil.rmtree(d, ignore_errors=True)
             raise
 
     def register_uris(self, name: str, coco_uri: str, dinov3_uri: str, bioclip_uri: str,
                       image_root: Optional[str], labels: Optional[Dict[int, str]]) -> dict:
         dataset_id, d = self._new_dir()
+        log.info("dataset %s: registering %r from coco=%s dinov3=%s bioclip=%s", dataset_id, name,
+                 coco_uri, dinov3_uri, bioclip_uri)
         try:
             files = {
                 "coco": self.storage.materialize(coco_uri, d / "proposals.coco.json"),
@@ -207,7 +228,8 @@ class DatasetStore:
                 "bioclip": self.storage.materialize(bioclip_uri, d / "bioclip.npz"),
             }
             return self._register(dataset_id, name, files, image_root, labels)
-        except BaseException:
+        except BaseException as exc:
+            log.warning("dataset %s (%r) rejected: %s: %s", dataset_id, name, type(exc).__name__, exc)
             shutil.rmtree(d, ignore_errors=True)
             raise
 
@@ -228,8 +250,10 @@ class DatasetStore:
         with self._lock:
             if dataset_id in self._cache:
                 self._cache.move_to_end(dataset_id)
+                log.debug("dataset %s: pool cache hit", dataset_id)
                 return self._cache[dataset_id]
         info = self.get_info(dataset_id)
+        log.info("dataset %s: not in the pool cache; loading from disk", dataset_id)
         files = info["_files"]
         loaded, _ = load_files(Path(files["coco"]), Path(files["dinov3"]), Path(files["bioclip"]))
         loaded.info = info
@@ -241,7 +265,9 @@ class DatasetStore:
             self._cache[dataset_id] = loaded
             self._cache.move_to_end(dataset_id)
             while len(self._cache) > max(1, self.settings.pool_cache_size):
-                self._cache.popitem(last=False)
+                evicted, _ = self._cache.popitem(last=False)
+                log.info("dataset %s evicted from the pool cache (TRIAGE_POOL_CACHE_SIZE=%d)",
+                         evicted, self.settings.pool_cache_size)
 
     def delete(self, dataset_id: str) -> None:
         d = self._dir(dataset_id)
@@ -251,6 +277,7 @@ class DatasetStore:
             self._cache.pop(dataset_id, None)
         shutil.rmtree(d, ignore_errors=True)
         shutil.rmtree(self.settings.image_cache_dir / dataset_id, ignore_errors=True)
+        log.info("dataset %s deleted", dataset_id)
 
 
 def public_info(info: dict) -> dict:

@@ -1,12 +1,16 @@
 """Where dataset files and images come from: S3-compatible storage or allowed local paths."""
 from __future__ import annotations
 
+import logging
 import threading
+import time
 import uuid
 from collections import OrderedDict
 from pathlib import Path, PurePosixPath
 
 from .config import Settings
+
+log = logging.getLogger("triage_service.storage")
 
 
 class StorageError(ValueError):
@@ -46,6 +50,7 @@ class Storage:
                 except ImportError as exc:  # pragma: no cover - boto3 is in requirements
                     raise StorageError("S3 URIs need boto3 installed") from exc
                 self._s3 = boto3.client("s3", endpoint_url=self.settings.s3_endpoint_url)
+                log.info("S3 client created (endpoint %s)", self.settings.s3_endpoint_url or "AWS default")
             return self._s3
 
     def local_path(self, path: str, *, want_dir: bool = False) -> Path:
@@ -55,6 +60,7 @@ class Storage:
             raise StorageError("local paths are disabled (TRIAGE_ALLOWED_LOCAL_ROOTS is unset)")
         resolved = Path(path).expanduser().resolve()
         if not any(resolved == r or r in resolved.parents for r in roots):
+            log.warning("refused local path %s: outside TRIAGE_ALLOWED_LOCAL_ROOTS", resolved)
             raise StorageError(f"{path!r} is outside the allowed local roots")
         if want_dir and not resolved.is_dir():
             raise StorageError(f"not a directory: {path!r}")
@@ -69,14 +75,20 @@ class Storage:
             bucket, key = split_s3(uri)
             dest.parent.mkdir(parents=True, exist_ok=True)
             tmp = dest.with_name(dest.name + ".part")
+            started = time.time()
+            log.info("downloading %s", uri)
             try:
                 self.s3().download_file(bucket, key, str(tmp))
             except Exception as exc:
+                log.warning("download of %s failed: %s: %s", uri, type(exc).__name__, exc)
                 tmp.unlink(missing_ok=True)
                 raise StorageError(f"could not download {uri}: {type(exc).__name__}") from exc
             tmp.replace(dest)
+            log.info("downloaded %s (%.1f MB) in %.1fs", uri, dest.stat().st_size / 1e6, time.time() - started)
             return dest
-        return self.local_path(uri)
+        path = self.local_path(uri)
+        log.info("using local file %s in place", path)
+        return path
 
     def check_image_root(self, image_root: str) -> str:
         """Validate an image root and return its canonical form."""
@@ -114,9 +126,11 @@ class S3ImageCache:
             try:
                 self.storage.s3().download_file(bucket, f"{prefix}{rel.as_posix()}", str(tmp))
             except Exception as exc:
+                log.warning("image %s not available from %s: %s", file_name, image_root, type(exc).__name__)
                 tmp.unlink(missing_ok=True)
                 raise FileNotFoundError(f"image not available: {file_name}") from exc
             tmp.replace(path)
+            log.debug("cached image %s for dataset %s", file_name, dataset_id)
         with self._lock:
             size = path.stat().st_size
             self._total += size - self._entries.get(path, 0)
@@ -124,6 +138,7 @@ class S3ImageCache:
             self._entries.move_to_end(path)
             while self._total > self.max_bytes and len(self._entries) > 1:
                 old, old_size = self._entries.popitem(last=False)
+                log.debug("image cache full (%d MB): evicting %s", self.max_bytes // (1024 * 1024), old)
                 old.unlink(missing_ok=True)
                 self._total -= old_size
         return root

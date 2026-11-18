@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import secrets
 import time
@@ -53,6 +54,8 @@ from .schemas import (
 PROTOCOL = "split_no_veto"
 JOURNAL_VERSION = 1
 
+log = logging.getLogger("triage_service.sessions")
+
 __all__ = ["NotAllowed", "InvalidLabels", "RestoreError", "StaleBatchError", "LiveSession", "SessionService"]
 
 
@@ -84,6 +87,10 @@ def _now() -> str:
 
 def start_managed(session_id: str, dataset: LoadedDataset, config: dict) -> ManagedSession:
     """Start a ManagedSession and wait until its first batch is pending."""
+    started = time.time()
+    log.info("session %s: starting %s triage on %d proposals (seed=%s, batch_size=%s, "
+             "calibration_size=%s, max_rounds=%s)", session_id, PROTOCOL, len(dataset.pool.proposal_ids),
+             config["seed"], config["batch_size"], config["calibration_size"], config["max_rounds"])
     managed = ManagedSession(
         session_id,
         dataset.pool,
@@ -95,23 +102,32 @@ def start_managed(session_id: str, dataset: LoadedDataset, config: dict) -> Mana
         precomputed_density=None,
         max_rounds=int(config["max_rounds"]),
     )
-    managed.wait_for_batch(timeout=None)
+    first = managed.wait_for_batch(timeout=None)
+    log.info("session %s: worker ready in %.1fs, first batch %s (%d proposals)", session_id,
+             time.time() - started, first.batch_id if first else None, len(first.proposal_ids) if first else 0)
     return managed
 
 
 def replay(managed: ManagedSession, submissions: List[dict]) -> None:
     """Feed recorded submissions back in order, checking each batch matches the record."""
+    started = time.time()
     for sub in submissions:
         batch = managed.wait_for_batch(timeout=None)
         if batch is None or batch.batch_id != sub["batch_id"] or \
                 [int(p) for p in batch.proposal_ids] != sub["proposal_ids"]:
+            log.error("session %s: replay diverged at recorded batch %s (worker offered %s); the "
+                      "dataset or ProtoRCD code changed since this session was recorded",
+                      managed.session_id, sub["batch_id"], None if batch is None else batch.batch_id)
             raise RestoreError(
                 f"replay diverged at {sub['batch_id']!r} "
                 f"(got {None if batch is None else batch.batch_id!r})"
             )
         labels = {int(k): int(v) for k, v in sub["labels"].items()}
         managed.submit_labels(labels, batch_id=batch.batch_id, timeout=None)
+        log.debug("session %s: replayed %s", managed.session_id, sub["batch_id"])
     managed.wait_for_batch(timeout=None)
+    log.info("session %s: replayed %d recorded submissions in %.1fs", managed.session_id,
+             len(submissions), time.time() - started)
 
 
 class LiveSession:
@@ -245,9 +261,13 @@ class LiveSession:
         nxt = self.managed.wait_for_batch(timeout=None)     # raises SessionError on failure
         if nxt is not None:
             events.append(self._batch(nxt))
+            log.info("session %s: next batch %s (%s, round %d, %d proposals)", self.session_id,
+                     nxt.batch_id, nxt.phase, self._round_of(nxt), len(nxt.proposal_ids))
         else:
-            events.append(FinishedMessage(reason=self.finish_reason(),
-                                          counts=self.decision_counts()).model_dump())
+            counts = self.decision_counts()
+            events.append(FinishedMessage(reason=self.finish_reason(), counts=counts).model_dump())
+            log.info("session %s: finished (%s) after %d round(s); decisions %s", self.session_id,
+                     self.finish_reason(), len(self.journal["rounds"]), counts)
         events.append(self.state_message())
         return events
 
@@ -279,6 +299,10 @@ class LiveSession:
         """Hand checked labels to the worker, journal them, and wait for the next batch."""
         batch_id = pending.batch_id
         expected = list(clean)
+        background = sum(1 for v in clean.values() if v == 0)
+        log.info("session %s: %s batch %s answered: %d labels (%d background, %d foreground)",
+                 self.session_id, pending.phase, batch_id, len(clean), background, len(clean) - background)
+        started = time.time()
         info = self.managed.submit_labels(clean, batch_id=batch_id, timeout=None)
         self.journal["submissions"].append({
             "batch_id": batch_id, "phase": pending.phase, "round": pending.round,
@@ -289,6 +313,8 @@ class LiveSession:
             report = self.managed.session.calibration_report or {}
             events.append(CalibratedMessage(rule=report.get("rule", {}),
                                             bank_size=int(report.get("bank_size", len(expected)))).model_dump())
+            log.info("session %s: calibrated in %.1fs, bank size %s, rule %s", self.session_id,
+                     time.time() - started, report.get("bank_size"), report.get("rule"))
         else:
             counts = info.triage.counts() if info.triage is not None else {}
             summary = RoundSummary(round=info.round, acquired=len(info.acquired_ids), retired=info.retired,
@@ -296,6 +322,9 @@ class LiveSession:
                                    cumulative_reviews=info.cumulative_reviews)
             self.journal["rounds"].append(summary.model_dump())
             events.append(RoundResultMessage(result=summary).model_dump())
+            log.info("session %s: round %d done in %.1fs: acquired %d, retired %s, remaining %s, "
+                     "cumulative reviews %s, counts %s", self.session_id, info.round, time.time() - started,
+                     len(info.acquired_ids), info.retired, info.remaining, info.cumulative_reviews, counts)
         self.save()
         return events + self._after_phase()
 
@@ -304,15 +333,19 @@ class LiveSession:
             raise NotAllowed("session failed")
         if self.managed.session.finished:
             raise NotAllowed("every proposal is already reviewed or auto-decided")
-        new_max = int(self.journal["config"]["max_rounds"]) + int(additional)
+        old_max = int(self.journal["config"]["max_rounds"])
+        new_max = old_max + int(additional)
         if not self.managed.finished:
             # Worker still running: it re-reads max_rounds before every round.
+            log.info("session %s: max_rounds %d -> %d (worker still running)", self.session_id, old_max, new_max)
             self.managed.max_rounds = new_max
             self.journal["config"]["max_rounds"] = new_max
             self.save()
             return [self.state_message()]
 
         # Stopped at its budget: the worker has exited, so rebuild from the journal.
+        log.info("session %s: max_rounds %d -> %d; rebuilding the stopped worker from %d recorded "
+                 "submissions", self.session_id, old_max, new_max, len(self.journal["submissions"]))
         config = dict(self.journal["config"], max_rounds=new_max)
         self.restoring = True
         try:
@@ -394,6 +427,8 @@ class LiveSession:
         self.journal["validation_seq"] = seq
         self.journal["pending_validation"] = pending
         self.save()
+        log.info("session %s: spot check %s drew %d of %d unchecked auto-decisions", self.session_id,
+                 pending["validation_id"], len(pending["proposal_ids"]), len(candidates))
         return [self.pending_validation_message(), self.state_message()]
 
     def submit_validation(self, validation_id: str, labels: Dict[int, int]) -> List[dict]:
@@ -418,12 +453,17 @@ class LiveSession:
         self.save()
         checked = sum(v[0] for v in by.values())
         agreed = sum(v[1] for v in by.values())
+        cumulative = self.validation_summary()
+        log.info("session %s: spot check %s: %d/%d agreed (resolve %d/%d, clear %d/%d); cumulative "
+                 "accuracy %s over %d", self.session_id, validation_id, agreed, checked,
+                 by["resolve"][1], by["resolve"][0], by["clear"][1], by["clear"][0],
+                 cumulative.accuracy, cumulative.checked)
         result = ValidationResultMessage(
             validation_id=validation_id, checked=checked, agreed=agreed,
             accuracy=round(agreed / checked, 4) if checked else None,
             ci95=wilson_interval(agreed, checked),
             by_decision={k: DecisionAgreement(checked=v[0], agreed=v[1]) for k, v in by.items()},
-            cumulative=self.validation_summary(),
+            cumulative=cumulative,
         )
         return [result.model_dump(), self.state_message()]
 
@@ -502,7 +542,8 @@ class SessionService:
         for path in self.settings.sessions_dir.glob("*.json"):
             try:
                 out.append(json.loads(path.read_text()))
-            except (OSError, ValueError):
+            except (OSError, ValueError) as exc:
+                log.warning("ignoring unreadable session journal %s: %s", path, exc)
                 continue
         return sorted(out, key=lambda j: j["created"])
 
@@ -529,6 +570,7 @@ class SessionService:
         managed = start_managed(session_id, dataset, journal["config"])
         live = LiveSession(self, journal, dataset, managed)
         live.save()
+        log.info("session %s created on dataset %s", session_id, req.dataset_id)
         return live
 
     async def create(self, req: SessionCreateRequest) -> LiveSession:
@@ -537,6 +579,8 @@ class SessionService:
         return live
 
     def _restore_blocking(self, journal: dict) -> LiveSession:
+        log.info("session %s: not in memory; restoring from its journal (%d submissions, %d rounds)",
+                 journal["session_id"], len(journal["submissions"]), len(journal["rounds"]))
         dataset = self.datasets.load(journal["dataset_id"])
         managed = start_managed(journal["session_id"], dataset, journal["config"])
         try:
@@ -559,6 +603,9 @@ class SessionService:
                 self._sessions[session_id] = live
         return live
 
+    def loaded_count(self) -> int:
+        return len(self._sessions)
+
     def loaded(self, session_id: str) -> Optional[LiveSession]:
         return self._sessions.get(session_id)
 
@@ -576,6 +623,7 @@ class SessionService:
         if live is not None:
             live.managed.close()
         path.unlink(missing_ok=True)
+        log.info("session %s deleted (%s)", session_id, "was loaded" if live is not None else "journal only")
 
     def close_all(self) -> None:
         for live in self._sessions.values():

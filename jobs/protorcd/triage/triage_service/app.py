@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import secrets
+import time
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Set
 
@@ -53,6 +55,37 @@ from .sessions import InvalidLabels, LiveSession, NotAllowed, RestoreError, Sess
 from .storage import S3ImageCache, Storage, StorageError, is_s3
 
 log = logging.getLogger("triage_service")
+ws_log = logging.getLogger("triage_service.ws")
+
+
+class RedactTokens(logging.Filter):
+    """Mask ``token=...`` in uvicorn's access and WebSocket lines, which print full URLs
+    (crop URLs and WebSockets carry the token in the query string)."""
+
+    pattern = re.compile(r"(token=)[^&\s\"']+")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = self.pattern.sub(r"\1***", record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(self.pattern.sub(r"\1***", a) if isinstance(a, str) else a
+                                for a in record.args)
+        return True
+
+
+def setup_logging(level: str) -> None:
+    """Make the service's own logs visible. uvicorn configures only its own loggers, so
+    without a handler here everything below WARNING would be dropped."""
+    for name in ("uvicorn.access", "uvicorn.error"):
+        target = logging.getLogger(name)
+        if not any(isinstance(f, RedactTokens) for f in target.filters):
+            target.addFilter(RedactTokens())
+    log.setLevel(level)
+    if not log.handlers and not logging.getLogger().handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+                                               "%Y-%m-%d %H:%M:%S"))
+        log.addHandler(handler)
 
 API_VERSION = "1.0.0"
 DESCRIPTION = """
@@ -108,22 +141,32 @@ class SessionHub:
     def __init__(self) -> None:
         self._clients: Dict[str, Set[WebSocket]] = {}
 
-    def add(self, session_id: str, ws: WebSocket) -> None:
-        self._clients.setdefault(session_id, set()).add(ws)
+    def add(self, session_id: str, ws: WebSocket) -> int:
+        clients = self._clients.setdefault(session_id, set())
+        clients.add(ws)
+        return len(clients)
 
     def remove(self, session_id: str, ws: WebSocket) -> None:
         self._clients.get(session_id, set()).discard(ws)
 
     async def broadcast(self, session_id: str, events: List[dict]) -> None:
-        for ws in list(self._clients.get(session_id, ())):
+        clients = list(self._clients.get(session_id, ()))
+        ws_log.debug("session %s: broadcasting %s to %d client(s)", session_id,
+                     [e.get("type") for e in events], len(clients))
+        for ws in clients:
             try:
                 for event in events:
                     await ws.send_json(event)
-            except Exception:
+            except Exception as exc:
+                ws_log.info("session %s: dropping client %s after a failed send (%s)",
+                            session_id, _peer(ws), type(exc).__name__)
                 self.remove(session_id, ws)
 
     async def close_session(self, session_id: str) -> None:
-        for ws in list(self._clients.pop(session_id, ())):
+        clients = list(self._clients.pop(session_id, ()))
+        if clients:
+            ws_log.info("session %s deleted: closing %d WebSocket(s)", session_id, len(clients))
+        for ws in clients:
             try:
                 await ws.close(code=4404, reason="session deleted")
             except Exception:
@@ -136,6 +179,11 @@ def _token_ok(settings: Settings, token: Optional[str]) -> bool:
     return token is not None and secrets.compare_digest(token, settings.api_token)
 
 
+def _peer(conn) -> str:
+    client = getattr(conn, "client", None)
+    return f"{client.host}:{client.port}" if client else "?"
+
+
 def _bearer(header: Optional[str]) -> Optional[str]:
     if header and header.lower().startswith("bearer "):
         return header[7:].strip()
@@ -144,6 +192,7 @@ def _bearer(header: Optional[str]) -> Optional[str]:
 
 def create_app(settings: Optional[Settings] = None) -> FastAPI:
     settings = settings or Settings()
+    setup_logging(settings.log_level)
     settings.ensure_dirs()
     storage = Storage(settings)
     datasets = DatasetStore(settings, storage)
@@ -153,7 +202,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        log.info("ProtoRCD triage service %s starting: data_dir=%s, auth=%s, cors=%s, "
+                 "local roots=%s, s3 endpoint=%s, pool cache=%d, image cache=%d MB",
+                 API_VERSION, settings.data_dir.resolve(), "token" if settings.api_token else "OFF",
+                 settings.cors_origins or "none", [str(r) for r in settings.allowed_local_roots] or "disabled",
+                 settings.s3_endpoint_url or "(AWS default)", settings.pool_cache_size, settings.image_cache_mb)
+        if not settings.api_token:
+            log.warning("TRIAGE_API_TOKEN is unset: every HTTP call and WebSocket is open to anyone")
+        log.info("%d stored datasets, %d stored sessions", len(datasets.list()), len(sessions.journals()))
         yield
+        log.info("Shutting down: closing %d loaded session(s)", sessions.loaded_count())
         sessions.close_all()
 
     app = FastAPI(title="ProtoRCD Triage Service", version=API_VERSION, description=DESCRIPTION,
@@ -168,30 +226,35 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     async def require_token(request: Request) -> None:
         token = _bearer(request.headers.get("authorization")) or request.query_params.get("token")
         if not _token_ok(settings, token):
+            log.warning("401 %s %s from %s: %s token", request.method, request.url.path, _peer(request),
+                        "missing" if token is None else "invalid")
             raise HTTPException(401, "missing or invalid token")
 
     api = APIRouter(dependencies=[Depends(require_token)])
 
     # ---- error mapping ---------------------------------------------------- #
     @app.exception_handler(KeyError)
-    async def _not_found(_request, exc: KeyError):
+    async def _not_found(request: Request, exc: KeyError):
+        log.info("404 %s %s: not found %s", request.method, request.url.path, exc.args[0] if exc.args else "")
         return JSONResponse({"detail": f"not found: {exc.args[0] if exc.args else ''}"}, status_code=404)
 
     @app.exception_handler(DatasetError)
     @app.exception_handler(StorageError)
     @app.exception_handler(InvalidLabels)
-    async def _bad_request(_request, exc: Exception):
+    async def _bad_request(request: Request, exc: Exception):
+        log.warning("400 %s %s: %s: %s", request.method, request.url.path, type(exc).__name__, exc)
         return JSONResponse({"detail": str(exc)}, status_code=400)
 
     @app.exception_handler(NotAllowed)
     @app.exception_handler(StaleBatchError)
-    async def _conflict(_request, exc: Exception):
+    async def _conflict(request: Request, exc: Exception):
+        log.info("409 %s %s: %s", request.method, request.url.path, exc)
         return JSONResponse({"detail": str(exc)}, status_code=409)
 
     @app.exception_handler(SessionError)
     @app.exception_handler(RestoreError)
-    async def _session_failed(_request, exc: Exception):
-        log.exception("session error", exc_info=exc)
+    async def _session_failed(request: Request, exc: Exception):
+        log.error("500 %s %s: session error", request.method, request.url.path, exc_info=exc)
         return JSONResponse({"detail": f"session unavailable ({type(exc).__name__})"}, status_code=500)
 
     # ---- health ----------------------------------------------------------- #
@@ -219,6 +282,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             try:
                 taxonomy = TypeAdapter(Dict[int, str]).validate_json(labels)
             except ValidationError as exc:
+                log.warning("dataset upload %r rejected: bad labels JSON", name)
                 raise HTTPException(400, f"labels must be a JSON object of id -> name: {exc.errors()[0]['msg']}")
         info = await run_in_threadpool(datasets.register_upload, name, coco.file, dinov3.file,
                                        bioclip.file, image_root, taxonomy)
@@ -241,6 +305,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         datasets.get_info(dataset_id)
         users = sessions.sessions_for_dataset(dataset_id)
         if users:
+            log.info("refusing to delete dataset %s: %d session(s) still use it", dataset_id, len(users))
             raise HTTPException(409, f"delete its sessions first: {users[:5]}")
         datasets.delete(dataset_id)
         return {"deleted": dataset_id}
@@ -328,6 +393,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         live = await sessions.get(session_id)
         async with live.lock:
             coco = await run_in_threadpool(live.export_coco, include_background)
+        log.info("session %s exported: %d annotations (include_background=%s), counts %s", session_id,
+                 len(coco["annotations"]), include_background, coco["info"]["counts"])
         return JSONResponse(coco, headers={
             "Content-Disposition": f'attachment; filename="triage_{session_id}.coco.json"'})
 
@@ -346,6 +413,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     # ---- websocket -------------------------------------------------------- #
     async def handle(live: LiveSession, msg) -> tuple[List[dict], bool]:
         """Run one client message. Returns (events, broadcast?)."""
+        ws_log.debug("session %s: received %s", live.session_id, msg.type)
         if isinstance(msg, Ping):
             return [Pong().model_dump()], False
         if isinstance(msg, GetState):
@@ -371,6 +439,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     @app.websocket("/ws/sessions/{session_id}")
     async def session_socket(websocket: WebSocket, session_id: str):
         token = _bearer(websocket.headers.get("authorization")) or websocket.query_params.get("token")
+        peer = _peer(websocket)
         await websocket.accept()
         try:
             session_token = sessions.session_token(session_id)
@@ -385,16 +454,24 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             and secrets.compare_digest(token, session_token)
         )
         if not allowed:
+            ws_log.warning("session %s: rejected WebSocket from %s (%s token)", session_id, peer,
+                           "missing" if token is None else "invalid")
             await websocket.send_json(error_event("not_allowed", "missing or invalid token"))
             await websocket.close(code=4401)
             return
         if not known:
+            ws_log.info("session %s: WebSocket from %s for an unknown session", session_id, peer)
             await websocket.send_json(error_event("not_found", f"unknown session {session_id}"))
             await websocket.close(code=4404)
             return
+        if not settings.api_token:
+            auth = "no token (auth off)"
+        else:
+            auth = "service token" if _token_ok(settings, token) else "session token"
         try:
             live = await sessions.get(session_id)
         except KeyError:
+            ws_log.info("session %s: deleted while %s was connecting", session_id, peer)
             await websocket.send_json(error_event("not_found", f"unknown session {session_id}"))
             await websocket.close(code=4404)
             return
@@ -404,7 +481,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             await websocket.close(code=1011)
             return
 
-        hub.add(session_id, websocket)
+        clients = hub.add(session_id, websocket)
+        connected = time.time()
+        messages = 0
+        close_code = None
+        ws_log.info("session %s: client %s connected with the %s (%d client(s) now)",
+                    session_id, peer, auth, clients)
         try:
             async with live.lock:
                 initial = [live.state_message()]
@@ -417,9 +499,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                         initial.append(event)
             for event in initial:
                 await websocket.send_json(event)
+            ws_log.info("session %s: sent %s to %s (status %s, pending batch %s)", session_id,
+                        [e["type"] for e in initial], peer, initial[0]["state"]["status"],
+                        batch["batch_id"] if batch else None)
 
             while True:
                 raw = await websocket.receive_text()
+                messages += 1
                 request_type = None
                 try:
                     payload = json.loads(raw)
@@ -427,28 +513,33 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     msg = client_message_adapter.validate_python(payload)
                 except (ValueError, ValidationError) as exc:
                     detail = exc.errors()[0]["msg"] if isinstance(exc, ValidationError) else "invalid JSON"
+                    ws_log.warning("session %s: invalid %s message from %s: %s", session_id,
+                                   request_type or "untyped", peer, detail)
                     await websocket.send_json(error_event("invalid_message", detail, request_type))
                     continue
                 try:
                     events, broadcast = await handle(live, msg)
                 except StaleBatchError as exc:
+                    ws_log.info("session %s: %s from %s rejected as stale: %s", session_id, msg.type, peer, exc)
                     await websocket.send_json(error_event("stale_batch", str(exc), msg.type))
                     continue
                 except InvalidLabels as exc:
+                    ws_log.info("session %s: %s from %s rejected: %s", session_id, msg.type, peer, exc)
                     await websocket.send_json(error_event("invalid_labels", str(exc), msg.type))
                     continue
                 except NotAllowed as exc:
+                    ws_log.info("session %s: %s from %s not allowed: %s", session_id, msg.type, peer, exc)
                     await websocket.send_json(error_event("not_allowed", str(exc), msg.type))
                     continue
                 except (SessionError, RestoreError) as exc:
-                    log.exception("session %s failed", session_id)
+                    log.exception("session %s failed while handling %s", session_id, msg.type)
                     await hub.broadcast(session_id, [
                         error_event("session_failed", f"session failed ({type(exc.__cause__ or exc).__name__})", msg.type),
                         live.state_message(),
                     ])
                     continue
                 except Exception:
-                    log.exception("unhandled error in session %s", session_id)
+                    log.exception("unhandled error in session %s while handling %s", session_id, msg.type)
                     await websocket.send_json(error_event("internal", "internal error", msg.type))
                     continue
                 if broadcast:
@@ -456,10 +547,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 else:
                     for event in events:
                         await websocket.send_json(event)
-        except WebSocketDisconnect:
-            pass
+        except WebSocketDisconnect as exc:
+            close_code = exc.code
         finally:
             hub.remove(session_id, websocket)
+            ws_log.info("session %s: client %s disconnected (code %s) after %.0fs and %d message(s)",
+                        session_id, peer, close_code, time.time() - connected, messages)
 
     # ---- OpenAPI: include the WebSocket message schemas -------------------- #
     def custom_openapi() -> dict:

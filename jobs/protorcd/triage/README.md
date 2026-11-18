@@ -39,6 +39,7 @@ Tests: `pip install -r requirements-dev.txt && pytest`
 | `TRIAGE_CORS_ORIGINS` | unset | Comma-separated browser origins (the Smart Labeler client) |
 | `TRIAGE_IMAGE_CACHE_MB` | 2048 | Local cache for images fetched from S3 for crops |
 | `TRIAGE_POOL_CACHE_SIZE` | 2 | Datasets kept loaded in memory |
+| `TRIAGE_LOG_LEVEL` | INFO | `DEBUG` adds every WebSocket message and cache hit. Tokens in URLs are masked in uvicorn's access log |
 
 **Run exactly one worker and one replica.** Live sessions are in the process's memory.
 Restarts are still safe, because every accepted batch of labels is journalled and the

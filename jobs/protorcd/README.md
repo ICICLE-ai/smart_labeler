@@ -177,3 +177,8 @@ apptainer run --nv --bind /data,/weights protorcd_embed.sif \
 
 A Tapis app is a thin wrapper around the same `.sif` and the same arguments, so a Tapis
 run and a local run produce the same files.
+
+Both stages log to stderr with timestamps: settings, GPU and Hugging Face status, a
+progress line with an ETA every minute, and a summary of what was written. Add
+`--log_level DEBUG` (or set `PROTORCD_LOG_LEVEL`) for per-image detail. The tqdm bar only
+appears on a terminal, so Tapis output files stay readable.
