@@ -162,6 +162,7 @@ def test_full_websocket_loop_validation_extend_restart_export(make_client, data,
         assert batch["round"] == 3
         state = recv_until(ws, "state")[0]["state"]
         assert state["max_rounds"] == 3 and state["round"] == 3 and state["rounds_completed"] == 2
+        assert [r["round"] for r in state["rounds"]] == [1, 2]
         answer(ws, batch, gt)
         recv_until(ws, "round_result")
         recv_until(ws, "finished")
@@ -264,6 +265,32 @@ def test_token_auth(make_client, data, settings):
         assert ws.receive_json()["code"] == "not_allowed"
     schema = client.get("/openapi.json").json()
     assert schema["security"] == [{"bearer": []}]
+
+
+def test_session_token_opens_only_its_own_session(make_client, data, settings):
+    client = make_client(replace(settings, api_token="s3cret"))
+    auth = {"Authorization": "Bearer s3cret"}
+    files = {
+        "coco": ("c.json", data["coco"].read_bytes()),
+        "dinov3": ("d.npz", data["dinov3"].read_bytes()),
+        "bioclip": ("b.npz", data["bioclip"].read_bytes()),
+    }
+    dataset_id = client.post("/datasets", files=files, data={"name": "t"}, headers=auth).json()["dataset_id"]
+    body = {"dataset_id": dataset_id, "calibration_size": 40, "batch_size": 25, "max_rounds": 1}
+    first = client.post("/sessions", json=body, headers=auth).json()
+    second = client.post("/sessions", json=body, headers=auth).json()
+    assert first["session_token"] and first["session_token"] != second["session_token"]
+    assert first["rounds"] == []
+    assert client.get(f"/sessions/{first['session_id']}", headers=auth).json()["session_token"] == first["session_token"]
+
+    with client.websocket_connect(f"/ws/sessions/{first['session_id']}?token={first['session_token']}") as ws:
+        state = ws.receive_json()["state"]
+        assert state["session_id"] == first["session_id"] and state.get("session_token") is None
+        assert ws.receive_json()["type"] == "batch"
+    with client.websocket_connect(f"/ws/sessions/{second['session_id']}?token={first['session_token']}") as ws:
+        assert ws.receive_json()["code"] == "not_allowed"
+    # a session token is not an API key
+    assert client.get("/datasets", params={"token": first["session_token"]}).status_code == 401
 
 
 def test_openapi_documents_http_and_websocket(make_client):

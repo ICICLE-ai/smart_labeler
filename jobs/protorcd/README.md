@@ -129,6 +129,39 @@ pool = ProposalPool(bg_x=l2_normalize(bg), fg_x=l2_normalize(fg),
 Each `metadata` row carries `image_id`, `file_name` and `bbox_xywh` from the COCO file,
 so crops can be shown to the reviewer.
 
+## Running it from Smart Labeler
+
+In the dashboard, **New Pipeline → Detection approach → ProtoRCD** creates a pipeline
+with two steps:
+
+1. **Configure jobs** (`/protorcd/configure/:id`). One form per Tapis job: the proposal
+   job (image directory → `proposals.coco.json`), then the embedding job, which is
+   pre-filled from it. Both show live Tapis status and logs.
+2. **Human in the loop** (`/protorcd/triage/:id`). Enter the classes and the triage
+   settings (rounds, batch size, calibration size, seed), then start or resume a session.
+   - **Labelling:** batches arrive over the WebSocket. Pick a class in the palette (or
+     press 0–9) and click crops to label them.
+   - **When the rounds are done:** draw a blind spot-check sample, run more rounds if
+     the accuracy is too low, then download the COCO export or save it next to the
+     embeddings on HPC.
+
+The backend (`server/protorcd.py`, routes under `/protorcd/…`) does three things:
+- submits both jobs;
+- copies the embed job's outputs from the HPC system to the triage service;
+- hands the browser a WebSocket URL carrying a token for that one session.
+
+The service-wide `TRIAGE_API_TOKEN` stays on the server. Crops are cut in the browser
+from the original images, which are fetched through Tapis, so the triage service needs
+no access to the images.
+
+Deployment settings are listed in `server/.env.example` and `k8s/server-deployment.yaml`:
+- `SMART_LABELER_PROTORCD_{DETECT,EMBED}_IMAGE`
+- `PROTORCD_{DETECT,EMBED}_APP_ID`
+- `TRIAGE_SERVICE_URL`, `TRIAGE_PUBLIC_URL`, `TRIAGE_API_TOKEN`
+
+The two Tapis apps must be registered under those ids, in the same shape as the existing
+Smart Labeler job apps: a container SIF in `sifpath`, with inputs bind-mounted.
+
 ## Running as a Tapis job or on your own node
 
 ```bash

@@ -89,7 +89,9 @@ id is rejected without consuming labels.
 
 ### Auth
 If the server sets `TRIAGE_API_TOKEN`, send `Authorization: Bearer <token>` on HTTP calls,
-or `?token=<token>` (needed for `<img src>` crop URLs and for browser WebSockets).
+or `?token=<token>` (needed for `<img src>` crop URLs). A backend holds that service token;
+a reviewer's browser should get only the `session_token` returned by `POST /sessions`,
+which opens that one session's WebSocket (`/ws/sessions/{id}?token=<session_token>`).
 """
 
 TAGS = [
@@ -278,7 +280,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
               summary="Create a session; returns once the calibration batch is ready")
     async def create_session(req: SessionCreateRequest):
         live = await sessions.create(req)
-        return live.state()
+        return {**live.state(), "session_token": live.journal.get("session_token")}
 
     @api.get("/sessions", tags=["sessions"], summary="Stored sessions (lightweight, from journals)")
     async def list_sessions() -> dict:
@@ -299,7 +301,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @api.get("/sessions/{session_id}", response_model=SessionState, tags=["sessions"])
     async def get_session(session_id: str):
-        return (await sessions.get(session_id)).state()
+        live = await sessions.get(session_id)
+        return {**live.state(), "session_token": live.journal.get("session_token")}
 
     @api.delete("/sessions/{session_id}", tags=["sessions"])
     async def delete_session(session_id: str) -> dict:
@@ -332,7 +335,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
              summary="JSON schemas of the WebSocket messages")
     async def ws_protocol():
         return {
-            "auth": "If TRIAGE_API_TOKEN is set: ?token=<token> query parameter or Authorization: Bearer header",
+            "auth": "?token=<token> or Authorization: Bearer, with either the service token "
+                    "(TRIAGE_API_TOKEN, any session) or the session_token from POST/GET /sessions "
+                    "(that session only). With no TRIAGE_API_TOKEN set, no token is needed.",
             **ws_message_schemas(),
         }
 
@@ -367,9 +372,25 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     async def session_socket(websocket: WebSocket, session_id: str):
         token = _bearer(websocket.headers.get("authorization")) or websocket.query_params.get("token")
         await websocket.accept()
-        if not _token_ok(settings, token):
+        try:
+            session_token = sessions.session_token(session_id)
+        except KeyError:
+            session_token = None
+            known = False
+        else:
+            known = True
+        # The service token opens any session; a session token opens only its own.
+        allowed = _token_ok(settings, token) or (
+            known and session_token is not None and token is not None
+            and secrets.compare_digest(token, session_token)
+        )
+        if not allowed:
             await websocket.send_json(error_event("not_allowed", "missing or invalid token"))
             await websocket.close(code=4401)
+            return
+        if not known:
+            await websocket.send_json(error_event("not_found", f"unknown session {session_id}"))
+            await websocket.close(code=4404)
             return
         try:
             live = await sessions.get(session_id)

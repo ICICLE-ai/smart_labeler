@@ -382,3 +382,63 @@ class VaultSecretWrite(BaseModel):
 
 class VaultSecretRead(BaseModel):
     secret: Optional[str] = None
+
+
+# ── ProtoRCD ──────────────────────────────────────────────────────────────────
+
+class _HPCResources(BaseModel):
+    node_count: int = Field(1, ge=1)
+    cores_per_node: int = Field(8, ge=1)
+    memory_mb: int = Field(64800, ge=1024)
+    max_minutes: int = Field(210, ge=1)
+
+
+class ProtoRCDDetectJobRequest(_HPCResources):
+    name: str = "ProtoRCD proposals"
+    system: str
+    imageDir: str = Field(description="Image directory on `system` (searched recursively)")
+    outputDir: str = Field(description="Archive directory; receives proposals.coco.json")
+    # One token: Tapis joins app args into a command line.
+    text_prompt: str = Field("visual", pattern=r"^[A-Za-z0-9_\-]+$")
+    confidence_threshold: float = Field(0.2, ge=0, le=1)
+    score_threshold: float = Field(0.4, ge=0, le=1)
+    nms_iou_threshold: float = Field(0.4, ge=0, le=1)
+    batch_size: int = Field(4, ge=1, le=256)
+    use_sahi: bool = False
+    crop_size: int = Field(1008, ge=64)
+    overlap: float = Field(0.25, ge=0, lt=1)
+    return_masks: bool = False
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class ProtoRCDEmbedJobRequest(_HPCResources):
+    name: str = "ProtoRCD embeddings"
+    system: str
+    imageDir: str
+    cocoPath: str = Field(description="proposals.coco.json written by the detect job")
+    outputDir: str = Field(description="Archive directory; receives <model>_<region>.npz")
+    models: List[str] = Field(default_factory=lambda: ["dinov3", "bioclip"])
+    region: str = Field("box", pattern=r"^(box|mask)$")
+    batch_size: int = Field(16, ge=1, le=512)
+    dtype: str = Field("float32", pattern=r"^(float32|float16)$")
+    dinov3_model_size: str = Field("hugeplus", pattern=r"^(small|base|large|hugeplus)$")
+    dinov3_image_size: int = Field(1024, ge=64)
+    dinov3_weights: str = Field("", description="DINOv3 checkpoint path on `system` (optional)")
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class ProtoRCDTriageSessionRequest(BaseModel):
+    labels: List[str] = Field(min_length=1, description="Class names; ids 1..n in this order (0 = background)")
+    seed: int = Field(0, ge=0)
+    batch_size: int = Field(50, ge=1, le=1000)
+    calibration_size: int = Field(100, ge=2, le=5000)
+    max_rounds: int = Field(10, ge=1, le=1000)
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class ProtoRCDExportQuery(BaseModel):
+    include_background: bool = False
+    save: bool = Field(False, description="Also write the export next to the embeddings on the HPC system")

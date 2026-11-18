@@ -582,10 +582,17 @@ export const sam3Predictions = async (
 
 export enum TYPE {
    DETECTION = "DETECTION",
+   /** Detection by ProtoRCD: proposal + embedding jobs, then human-in-the-loop triage. */
+   PROTORCD = "PROTORCD",
    CLASSIFICATION = "CLASSIFICATION",
    SEGMENTATION = "SEGMENTATION",
    VIDEO_SEGMENTATION = "VIDEO_SEGMENTATION",
 }
+
+/** Pipeline types that belong to object detection (listed and created together). */
+export const DETECTION_TYPES: string[] = [TYPE.DETECTION, TYPE.PROTORCD];
+export const isDetectionType = (type?: string | null): boolean =>
+   !!type && DETECTION_TYPES.includes(type);
 
 export enum JobStatus {
    PENDING = "PENDING",

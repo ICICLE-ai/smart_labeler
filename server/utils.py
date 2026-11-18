@@ -21,6 +21,17 @@ _APP_CONFIGS = {
         "cardinal-tapis": {"appId": "generate_proposals", "appVersion": "1.0.0"},
         "ascend-static": {"appId": "generate_proposals", "appVersion": "1.0.0"}
     },
+    # ProtoRCD stages 1 and 2 (jobs/protorcd/{detect,embed}). Same app shape as the
+    # jobs above (container SIF in `sifpath`, bind-mounted inputs), registered in
+    # Tapis under these ids; override per deployment with the env vars.
+    "protorcd_detect": {
+        "default": {"appId": os.getenv("PROTORCD_DETECT_APP_ID", "protorcd_detect"),
+                    "appVersion": os.getenv("PROTORCD_DETECT_APP_VERSION", "1.0.0")},
+    },
+    "protorcd_embed": {
+        "default": {"appId": os.getenv("PROTORCD_EMBED_APP_ID", "protorcd_embed"),
+                    "appVersion": os.getenv("PROTORCD_EMBED_APP_VERSION", "1.0.0")},
+    },
     "classification": {
         "default": {"appId": "object_classification_smart_labeller", "appVersion": "1.0.0"},
         "pitzer-tapis": {"appId": "classify_objects", "appVersion": "1.0.0"},

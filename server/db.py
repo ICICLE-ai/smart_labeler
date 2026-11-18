@@ -237,6 +237,26 @@ execute_query("ALTER TABLE annotator_configuration ADD COLUMN IF NOT EXISTS file
 execute_query("ALTER TABLE annotator_configuration ADD COLUMN IF NOT EXISTS annotationSystem TEXT DEFAULT ''", None)
 execute_query('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE', None)
 
+# ProtoRCD pipelines: the two Tapis jobs (proposals, embeddings) and the triage
+# dataset/session they feed. Configs are stored as JSON text so the forms can
+# grow without a migration per field. `id` is SERIAL only because
+# execute_query reads LASTVAL() after every INSERT.
+execute_query(
+    """CREATE TABLE IF NOT EXISTS protorcd(
+        id SERIAL PRIMARY KEY,
+        parentpipeline INTEGER UNIQUE REFERENCES pipeline(pipelineid),
+        detect_config TEXT DEFAULT '',
+        detect_job_id TEXT DEFAULT '',
+        embed_config TEXT DEFAULT '',
+        embed_job_id TEXT DEFAULT '',
+        triage_dataset_id TEXT DEFAULT '',
+        triage_dataset_key TEXT DEFAULT '',
+        triage_session_id TEXT DEFAULT '',
+        triage_config TEXT DEFAULT ''
+    )""",
+    None,
+)
+
 _default_system = os.getenv("DEFAULT_SYSTEM", "expanse-tapis-static")
 execute_query(
     f"ALTER TABLE object_detection ALTER COLUMN system SET DEFAULT '{_default_system}'",
@@ -370,6 +390,7 @@ def delete_pipeline(pipeline_id, user):
     anything that still goes wrong is raised rather than hidden.
     """
     statements = (
+        ("DELETE FROM protorcd WHERE parentpipeline = %s", (pipeline_id,)),
         # object_detection points at query_image_configuration, so it goes first.
         ("DELETE FROM object_detection WHERE parentpipeline = %s", (pipeline_id,)),
         ("DELETE FROM query_image_configuration WHERE parentpipelineid = %s", (pipeline_id,)),
@@ -738,3 +759,48 @@ def get_latest_query_image_configuration_id(parentpipeid):
         (parentpipeid,),
     )
     return rows[0]["id"] if rows else None
+
+
+####### ProtoRCD ##################################
+
+_PROTORCD_JSON_FIELDS = ("detect_config", "embed_config", "triage_config")
+_PROTORCD_FIELDS = (
+    "detect_config", "detect_job_id", "embed_config", "embed_job_id",
+    "triage_dataset_id", "triage_dataset_key", "triage_session_id", "triage_config",
+)
+
+
+def get_protorcd(pipeline_id):
+    """The pipeline's ProtoRCD record, with JSON configs decoded ({} when unset)."""
+    rows = execute_query("SELECT * FROM protorcd WHERE parentpipeline = %s", (pipeline_id,))
+    row = dict(rows[0]) if rows else {f: "" for f in _PROTORCD_FIELDS}
+    for key in _PROTORCD_JSON_FIELDS:
+        try:
+            row[key] = json.loads(row.get(key) or "{}")
+        except (TypeError, ValueError):
+            row[key] = {}
+    return row
+
+
+def update_protorcd(pipeline_id, updates):
+    """Create the pipeline's ProtoRCD row if needed, then set the given fields."""
+    execute_query(
+        "INSERT INTO protorcd (parentpipeline) VALUES (%s) ON CONFLICT (parentpipeline) DO NOTHING",
+        (pipeline_id,),
+    )
+    fields, values = [], []
+    for key, value in updates.items():
+        if key not in _PROTORCD_FIELDS:
+            continue
+        if key in _PROTORCD_JSON_FIELDS and not isinstance(value, str):
+            value = json.dumps(value)
+        fields.append(f"{key} = %s")
+        values.append(value if value is not None else "")
+    if not fields:
+        return False
+    values.append(pipeline_id)
+    execute_query(
+        f"UPDATE protorcd SET {', '.join(fields)} WHERE parentpipeline = %s",
+        tuple(values),
+    )
+    return True

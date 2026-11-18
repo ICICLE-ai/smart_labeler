@@ -6,12 +6,14 @@ import { fetchAndReturnData, TYPE } from "~/utils/utils";
 /** Where each pipeline type's workspace lives. */
 const WORKSPACE: Partial<Record<TYPE, (pipeid: string) => string>> = {
    [TYPE.DETECTION]: (id) => `/object-detection/image-annotator/${id}`,
+   [TYPE.PROTORCD]: (id) => `/protorcd/configure/${id}`,
    [TYPE.SEGMENTATION]: (id) => `/annotation/image-annotator/${id}`,
    [TYPE.VIDEO_SEGMENTATION]: (id) => `/video-segmentation/${id}`,
 };
 
 const LABEL: Partial<Record<TYPE, string>> = {
    [TYPE.DETECTION]: "object detection",
+   [TYPE.PROTORCD]: "ProtoRCD detection",
    [TYPE.SEGMENTATION]: "image segmentation",
    [TYPE.VIDEO_SEGMENTATION]: "video segmentation",
 };

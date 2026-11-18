@@ -34,7 +34,11 @@ from schemas import (
     ClassSupportTensorUpdate, ObjectDetectionUpdate,
     JobStatusOut, IsAdminOut,
     VaultSecretWrite, VaultSecretRead,
+    ProtoRCDDetectJobRequest, ProtoRCDEmbedJobRequest, ProtoRCDTriageSessionRequest,
+    ProtoRCDExportQuery,
 )
+import protorcd
+from protorcd import TriageError
 
 
 os.environ.setdefault("APP_CONFIG_PATH", "./config.yaml")
@@ -123,6 +127,12 @@ patra_blp = APIBlueprint("patra", __name__, url_prefix="/patra",
 vault_blp = APIBlueprint("vault", __name__, url_prefix="/api/vault",
                          abp_tags=[Tag(name="Vault", description="Tapis vault secrets")],
                          abp_security=_auth_sec)
+
+protorcd_blp = APIBlueprint("protorcd", __name__, url_prefix="/protorcd",
+                            abp_tags=[Tag(name="ProtoRCD", description=(
+                                "ProtoRCD detection: proposal and embedding jobs, then the "
+                                "human-in-the-loop triage session"))],
+                            abp_security=_auth_sec)
 
 
 # ── Auth endpoints ────────────────────────────────────────────────────────────
@@ -934,6 +944,155 @@ def test_pipe(pipeline, user):
     is_user_pipeline(pipeline, user)
 
 
+# ── ProtoRCD ──────────────────────────────────────────────────────────────────
+@app.errorhandler(TriageError)
+def _triage_error(e):
+    # Same keys the client reads from job-submission failures.
+    return jsonify({"status": "error", "description": e.message, "detail": e.message}), e.status
+
+
+def _own_pipeline(pipe_id, user):
+    if not is_user_pipeline(pipe_id, user):
+        abort(404, description=f"Pipeline not found: {pipe_id}")
+
+
+def _protorcd_view(rec):
+    return {
+        "detect_config": rec["detect_config"] or None,
+        "detect_job_id": rec["detect_job_id"] or None,
+        "embed_config": rec["embed_config"] or None,
+        "embed_job_id": rec["embed_job_id"] or None,
+        "triage_session_id": rec["triage_session_id"] or None,
+        "triage_config": rec["triage_config"] or None,
+        "triage_service_configured": protorcd.configured(),
+        "proposals_file": PROTORCD_PROPOSALS_FILE,
+    }
+
+
+def _hf_secret(user, token):
+    try:
+        return read_vault_secret("hftoken", user, token, False)
+    except Exception as e:
+        print(f"Error reading vault secret: {e}")
+        return None
+
+
+@protorcd_blp.get("/<int:pipeId>", summary="ProtoRCD job configs, job ids and triage session")
+def protorcd_get(path: PipeIdPath):
+    token, user = getAuth(request)
+    _own_pipeline(path.pipeId, user)
+    return jsonify(_protorcd_view(get_protorcd(path.pipeId)))
+
+
+@protorcd_blp.post("/<int:pipeId>/detect-job",
+                   summary="Submit the ProtoRCD proposal job (SAM3 -> proposals.coco.json)")
+def protorcd_detect_job(path: PipeIdPath, body: ProtoRCDDetectJobRequest):
+    token, user = getAuth(request)
+    _own_pipeline(path.pipeId, user)
+    return job_submission_response(
+        ProtoRCDDetect.run(path.pipeId, token, body.model_dump(), _hf_secret(user, token)),
+        "The ProtoRCD proposal job",
+    )
+
+
+@protorcd_blp.post("/<int:pipeId>/embed-job",
+                   summary="Submit the ProtoRCD embedding job (DINOv3 + BioCLIP .npz files)")
+def protorcd_embed_job(path: PipeIdPath, body: ProtoRCDEmbedJobRequest):
+    token, user = getAuth(request)
+    _own_pipeline(path.pipeId, user)
+    unknown = [m for m in body.models if m not in ("dinov3", "dinov3_debiased", "bioclip")]
+    if unknown or not body.models:
+        abort(400, description=f"Unknown embedding models: {unknown or 'none selected'}")
+    return job_submission_response(
+        ProtoRCDEmbed.run(path.pipeId, token, body.model_dump(), _hf_secret(user, token)),
+        "The ProtoRCD embedding job",
+    )
+
+
+@protorcd_blp.post("/<int:pipeId>/triage/session",
+                   summary="Start a triage session on the embedding job's outputs")
+def protorcd_start_triage(path: PipeIdPath, body: ProtoRCDTriageSessionRequest):
+    token, user = getAuth(request)
+    _own_pipeline(path.pipeId, user)
+    rec = get_protorcd(path.pipeId)
+    inputs = protorcd.dataset_inputs(rec)
+
+    status = _get_tapis_job_status(rec["embed_job_id"], token)
+    if not status or status.get("status") != "FINISHED":
+        raise TriageError(
+            "The embedding job has not finished "
+            f"(status: {status.get('status') if status else 'unknown'}). Start triage once it has.", 409)
+
+    labels = {str(i + 1): name.strip() for i, name in enumerate(body.labels)}
+    if any(not name for name in labels.values()) or len(set(labels.values())) != len(labels):
+        abort(400, description="Class names must be non-empty and distinct.")
+
+    key = protorcd.dataset_key(inputs, labels, rec["embed_job_id"])
+    dataset_id = rec["triage_dataset_id"]
+    if rec["triage_dataset_key"] != key or not protorcd.dataset_exists(dataset_id):
+        dataset_id = protorcd.register_dataset(f"pipeline {path.pipeId}", inputs, labels, token)
+        update_protorcd(path.pipeId, {"triage_dataset_id": dataset_id, "triage_dataset_key": key})
+
+    # A pipeline has one active session; starting another replaces it.
+    if rec["triage_session_id"]:
+        try:
+            protorcd.delete_session(rec["triage_session_id"])
+        except TriageError as e:
+            print(f"Could not delete previous triage session: {e.message}")
+
+    config = body.model_dump(exclude={"labels"})
+    state = protorcd.create_session(dataset_id, config)
+    update_protorcd(path.pipeId, {
+        "triage_session_id": state["session_id"],
+        "triage_config": {**config, "labels": body.labels},
+    })
+    return jsonify(protorcd.connection(state)), 201
+
+
+@protorcd_blp.get("/<int:pipeId>/triage/session",
+                  summary="Reconnect to the pipeline's triage session")
+def protorcd_get_triage(path: PipeIdPath):
+    token, user = getAuth(request)
+    _own_pipeline(path.pipeId, user)
+    rec = get_protorcd(path.pipeId)
+    if not rec["triage_session_id"]:
+        abort(404, description="This pipeline has no triage session.")
+    state = protorcd.get_session(rec["triage_session_id"])
+    if state is None:
+        update_protorcd(path.pipeId, {"triage_session_id": ""})
+        abort(404, description="The triage session no longer exists; start a new one.")
+    return jsonify(protorcd.connection(state))
+
+
+@protorcd_blp.delete("/<int:pipeId>/triage/session",
+                     summary="Discard the pipeline's triage session")
+def protorcd_delete_triage(path: PipeIdPath):
+    token, user = getAuth(request)
+    _own_pipeline(path.pipeId, user)
+    rec = get_protorcd(path.pipeId)
+    if rec["triage_session_id"]:
+        protorcd.delete_session(rec["triage_session_id"])
+        update_protorcd(path.pipeId, {"triage_session_id": ""})
+    return jsonify({"message": "Triage session discarded."})
+
+
+@protorcd_blp.get("/<int:pipeId>/triage/export",
+                  summary="COCO file of the triage labels; optionally also saved on the HPC system")
+def protorcd_export(path: PipeIdPath, query: ProtoRCDExportQuery):
+    token, user = getAuth(request)
+    _own_pipeline(path.pipeId, user)
+    rec = get_protorcd(path.pipeId)
+    if not rec["triage_session_id"]:
+        abort(404, description="This pipeline has no triage session.")
+    coco = protorcd.export(rec["triage_session_id"], query.include_background)
+    saved_path = None
+    if query.save:
+        inputs = protorcd.dataset_inputs(rec)
+        saved_path = f"{inputs['output_dir']}/triage_{rec['triage_session_id']}.coco.json"
+        protorcd.save_to_tapis(inputs["system"], saved_path, json.dumps(coco).encode(), token)
+    return jsonify({"saved_path": saved_path, "coco": coco})
+
+
 # ── Register blueprints ───────────────────────────────────────────────────────
 app.register_api(auth_blp)
 app.register_api(pipes_blp)
@@ -944,6 +1103,7 @@ app.register_api(jobs_blp)
 app.register_api(admin_blp)
 app.register_api(patra_blp)
 app.register_api(vault_blp)
+app.register_api(protorcd_blp)
 
 
 if __name__ == "__main__":

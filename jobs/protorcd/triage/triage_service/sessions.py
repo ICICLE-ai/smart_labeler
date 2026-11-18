@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import secrets
 import time
 import uuid
 from pathlib import Path
@@ -229,6 +230,7 @@ class LiveSession:
             "validation": self.validation_summary().model_dump(),
             "labels": self.taxonomy,
             "config": self.journal["config"],
+            "rounds": self.journal["rounds"],
             "websocket_path": f"/ws/sessions/{self.session_id}",
         }
 
@@ -522,6 +524,7 @@ class SessionService:
             "validations": [],
             "pending_validation": None,
             "validation_seq": 0,
+            "session_token": secrets.token_urlsafe(24),
         }
         managed = start_managed(session_id, dataset, journal["config"])
         live = LiveSession(self, journal, dataset, managed)
@@ -558,6 +561,12 @@ class SessionService:
 
     def loaded(self, session_id: str) -> Optional[LiveSession]:
         return self._sessions.get(session_id)
+
+    def session_token(self, session_id: str) -> Optional[str]:
+        """The per-session WebSocket token, read without restoring the session."""
+        live = self._sessions.get(session_id)
+        journal = live.journal if live is not None else self.read_journal(session_id)
+        return journal.get("session_token")
 
     def delete(self, session_id: str) -> None:
         path = self._journal_path(session_id)

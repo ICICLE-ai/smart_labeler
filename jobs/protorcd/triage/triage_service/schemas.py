@@ -114,7 +114,14 @@ class SessionState(BaseModel):
     validation: ValidationSummary
     labels: Optional[Dict[int, str]] = None
     config: SessionCreateRequest
+    rounds: List["RoundSummary"] = Field(default_factory=list, description="Completed review rounds, oldest first")
     websocket_path: str
+    session_token: Optional[str] = Field(
+        None,
+        description="Opens this session's WebSocket only (?token=...). Returned by the HTTP session "
+                    "endpoints, never over the WebSocket; hand it to the reviewer's browser instead of "
+                    "the service-wide token.",
+    )
 
 
 class SessionList(BaseModel):
@@ -128,6 +135,9 @@ class RoundSummary(BaseModel):
     counts: DecisionCounts
     remaining: int
     cumulative_reviews: int
+
+
+SessionState.model_rebuild()
 
 
 class ProposalDecision(BaseModel):

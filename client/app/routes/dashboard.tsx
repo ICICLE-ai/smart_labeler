@@ -12,6 +12,7 @@ import {
   Loader,
   Modal,
   Progress,
+  Radio,
   Select,
   SimpleGrid,
   Stack,
@@ -30,7 +31,7 @@ import { useCookies } from "react-cookie";
 import FormikTapisFileWrapper from "~/components/FileExplorer/FormikTapisFileWrapper";
 import { IndexAppShell } from "~/components/IndexAppShell";
 import { useAppConfig } from "~/context/AppConfigContext";
-import { DeleteData, fetchAndReturnData, SubmitData, TYPE, allowed_systems, DEFAULT_SYSTEM } from "~/utils/utils";
+import { DeleteData, fetchAndReturnData, SubmitData, TYPE, allowed_systems, DEFAULT_SYSTEM, DETECTION_TYPES, isDetectionType } from "~/utils/utils";
 
 type Pipeline = {
   pid: string;
@@ -134,13 +135,7 @@ export default function DashBoardPage() {
 
   useEffect(() => {
     if (createdPipeId) {
-      if (createType === TYPE.SEGMENTATION) {
-        navigate(`/annotation/image-annotator/${createdPipeId}`);
-      } else if (createType === TYPE.VIDEO_SEGMENTATION) {
-        navigate(`/video-segmentation/${createdPipeId}`);
-      } else {
-        navigate(`/object-detection/image-annotator/${createdPipeId}`);
-      }
+      navigate(goRoute({ pid: createdPipeId, type: createType }));
     }
   }, [createdPipeId]);
 
@@ -295,20 +290,30 @@ export default function DashBoardPage() {
     }
   };
 
+  function goRoute(p: Pipeline) {
+    const type = p.type ?? activeType;
+    if (type === TYPE.SEGMENTATION) return `/annotation/image-annotator/${p.pid}`;
+    if (type === TYPE.VIDEO_SEGMENTATION) return `/video-segmentation/${p.pid}`;
+    if (type === TYPE.PROTORCD) return `/protorcd/configure/${p.pid}`;
+    return `/object-detection/image-annotator/${p.pid}`;
+  }
+
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const q = search.trim().toLowerCase();
 
   const userPipelines = pipelines.filter((p) => !p.is_demo);
-  const detectionPipelines = userPipelines.filter((p) => !p.type || p.type === TYPE.DETECTION);
+  const detectionPipelines = userPipelines.filter((p) => !p.type || isDetectionType(p.type));
   const segmentationPipelines = userPipelines.filter((p) => p.type === TYPE.SEGMENTATION);
   const videoPipelines = userPipelines.filter((p) => p.type === TYPE.VIDEO_SEGMENTATION);
   const allDemoPipelines = pipelines.filter((p) => p.is_demo);
   const typesInScope: (string | undefined)[] = isSegmentationFamily
     ? [TYPE.SEGMENTATION, TYPE.VIDEO_SEGMENTATION]
-    : activeType
-      ? [activeType]
-      : [];
+    : activeType === TYPE.DETECTION
+      ? DETECTION_TYPES
+      : activeType
+        ? [activeType]
+        : [];
   const demoPipelines = activeType
     ? allDemoPipelines.filter((p) => !p.type || typesInScope.includes(p.type))
     : allDemoPipelines;
@@ -316,12 +321,6 @@ export default function DashBoardPage() {
   const filterBySearch = (list: Pipeline[]) =>
     q ? list.filter((p) => (p.name ?? "").toLowerCase().includes(q) || String(p.pid).includes(q)) : list;
 
-  const goRoute = (p: Pipeline) => {
-    const type = p.type ?? activeType;
-    if (type === TYPE.SEGMENTATION) return `/annotation/image-annotator/${p.pid}`;
-    if (type === TYPE.VIDEO_SEGMENTATION) return `/video-segmentation/${p.pid}`;
-    return `/object-detection/image-annotator/${p.pid}`;
-  };
   const activePipelines =
     activeType === TYPE.SEGMENTATION ? segmentationPipelines :
     activeType === TYPE.VIDEO_SEGMENTATION ? videoPipelines :
@@ -597,7 +596,7 @@ export default function DashBoardPage() {
                     <PipelineCard
                       key={p.pid}
                       pipeline={p}
-                      onGo={() => navigate(`/object-detection/image-annotator/${p.pid}`)}
+                      onGo={() => navigate(goRoute(p))}
                       onRename={() => openRename(p)}
                       onDelete={() => handleDelete(p.pid)}
                       deleting={deletingId === p.pid}
@@ -666,7 +665,7 @@ export default function DashBoardPage() {
                     <PipelineCard
                       key={p.pid}
                       pipeline={p}
-                      onGo={() => navigate(`/object-detection/image-annotator/${p.pid}`)}
+                      onGo={() => navigate(goRoute(p))}
                       onRename={() => openRename(p)}
                       onDelete={() => handleDelete(p.pid)}
                       deleting={deletingId === p.pid}
@@ -764,11 +763,34 @@ export default function DashBoardPage() {
                   { value: TYPE.SEGMENTATION, label: "Segmentation" },
                   { value: TYPE.VIDEO_SEGMENTATION, label: "Video Segmentation & Tracking" },
                 ]}
-                value={createType}
+                value={isDetectionType(createType) ? TYPE.DETECTION : createType}
                 onChange={(v) => setCreateType((v as TYPE) ?? TYPE.DETECTION)}
                 required
               />
             ) : null}
+            {!isSegmentationFamily && isDetectionType(createType) && (
+              // Two detection workflows open into different workspaces, so the
+              // choice is made here and fixed for the pipeline's lifetime.
+              <Radio.Group
+                label="Detection approach"
+                description="This decides the pipeline's workflow and cannot be changed later."
+                value={createType}
+                onChange={(v) => setCreateType(v as TYPE)}
+              >
+                <Stack gap="xs" mt="xs">
+                  <Radio
+                    value={TYPE.DETECTION}
+                    label="Class supports"
+                    description="Annotate examples, build class supports, then detect and classify by similarity."
+                  />
+                  <Radio
+                    value={TYPE.PROTORCD}
+                    label="ProtoRCD (human-in-the-loop)"
+                    description="Generate SAM3 proposals and DINOv3/BioCLIP embeddings on HPC, then label batches the triage service picks until it can decide the rest."
+                  />
+                </Stack>
+              </Radio.Group>
+            )}
             <Textarea
               label="Description"
               placeholder={`What will this pipeline ${
@@ -1046,6 +1068,11 @@ function PipelineCard({
         {pipeline.slurm_account && (
           <Badge variant="light" size="sm">
             {pipeline.slurm_account}
+          </Badge>
+        )}
+        {pipeline.type === TYPE.PROTORCD && (
+          <Badge variant="light" color="grape" size="sm">
+            ProtoRCD
           </Badge>
         )}
         {pipeline.is_demo && (

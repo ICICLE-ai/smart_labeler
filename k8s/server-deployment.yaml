@@ -38,6 +38,19 @@ data:
   SMART_LABELER_PROPOSAL_GENERATION_IMAGE: "https://icicleai.tapis.io/v3/files/postits/redeem/3f6e5208-2a08-4b7a-b885-035fbe8a5390-010"
   SMART_LABELER_CLASSIFICATION_IMAGE: "https://icicleai.tapis.io/v3/files/postits/redeem/2f415522-f511-4b45-b9b7-660554df5ef4-010"
 
+  # ProtoRCD detection (jobs/protorcd). Build the two .sif images from
+  # jobs/protorcd/{detect,embed}/*.def and point these at them; register the
+  # Tapis apps under the ids below (or override the ids).
+  SMART_LABELER_PROTORCD_DETECT_IMAGE: "<PROTORCD_DETECT_SIF_URL>"
+  SMART_LABELER_PROTORCD_EMBED_IMAGE: "<PROTORCD_EMBED_SIF_URL>"
+  PROTORCD_DETECT_APP_ID: "protorcd_detect"
+  PROTORCD_EMBED_APP_ID: "protorcd_embed"
+  # The triage service (jobs/protorcd/triage). TRIAGE_SERVICE_URL is how this
+  # server reaches it (an in-cluster Service is fine); TRIAGE_PUBLIC_URL is how
+  # browsers reach its WebSocket, and defaults to TRIAGE_SERVICE_URL.
+  TRIAGE_SERVICE_URL: "http://protorcd-triage"
+  TRIAGE_PUBLIC_URL: "https://<TRIAGE_HOSTNAME>"
+
 ---
 # ── Secret ────────────────────────────────────────────────────────────────────
 # Generate: echo -n 'your-password' | base64
@@ -48,6 +61,9 @@ metadata:
 type: Opaque
 stringData:
   DB_PASSWORD: ""   # plain-text — Kubernetes encodes this automatically
+  # The triage service's TRIAGE_API_TOKEN. Stays on this server: browsers only
+  # ever get a per-session token.
+  TRIAGE_API_TOKEN: ""
 
 ---
 # ── Flask Server Deployment ───────────────────────────────────────────────────
