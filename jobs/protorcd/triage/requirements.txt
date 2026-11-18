@@ -1,0 +1,11 @@
+# ProtoRCD triage core (protorcd_pipeline/triage): numpy + scikit-learn only, no torch.
+numpy>=1.24,<3
+scikit-learn>=1.2,<2
+
+# Service
+fastapi>=0.110,<1
+uvicorn[standard]>=0.29,<1     # [standard] brings the `websockets` WebSocket implementation
+pydantic>=2.6,<3
+python-multipart>=0.0.9        # multipart dataset uploads
+pillow>=10                     # proposal crops
+boto3>=1.34,<2                 # s3:// datasets and images (NRP Ceph or any S3-compatible store)

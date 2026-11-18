@@ -1,0 +1,89 @@
+# ProtoRCD triage service on NRP (Nautilus). Replace every <PLACEHOLDER> before applying:
+#   kubectl -n <NAMESPACE> apply -f triage-service.yaml
+#
+# Secrets (create once, never commit values):
+#   kubectl -n <NAMESPACE> create secret generic protorcd-triage \
+#     --from-literal=TRIAGE_API_TOKEN=<token> \
+#     --from-literal=AWS_ACCESS_KEY_ID=<key> --from-literal=AWS_SECRET_ACCESS_KEY=<secret>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: protorcd-triage-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: <STORAGE_CLASS>         # e.g. NRP's Ceph block storage class
+  resources:
+    requests:
+      storage: 50Gi                          # uploaded datasets + session journals + image cache
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: protorcd-triage
+  labels: {app: protorcd-triage}
+spec:
+  replicas: 1                                # sessions are in-process: exactly one replica
+  strategy: {type: Recreate}                 # RWO volume; never run two pods at once
+  selector:
+    matchLabels: {app: protorcd-triage}
+  template:
+    metadata:
+      labels: {app: protorcd-triage}
+    spec:
+      containers:
+        - name: triage
+          image: <REGISTRY>/protorcd-triage:<TAG>
+          ports: [{containerPort: 8000, name: http}]
+          env:
+            - {name: TRIAGE_DATA_DIR, value: /data}
+            - {name: S3_ENDPOINT_URL, value: "<S3_ENDPOINT_URL>"}
+            - {name: TRIAGE_CORS_ORIGINS, value: "<SMART_LABELER_ORIGIN>"}
+            - {name: TRIAGE_IMAGE_CACHE_MB, value: "4096"}
+          envFrom:
+            - secretRef: {name: protorcd-triage}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+          resources:
+            # A pool holds N x (D_dinov3 + D_bioclip) float32 per loaded dataset:
+            # 100k proposals x (1280 + 768) ~ 0.8 GB. Size memory for pool_cache_size of them.
+            requests: {cpu: "2", memory: 8Gi}
+            limits: {cpu: "4", memory: 10Gi}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: protorcd-triage-data}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: protorcd-triage
+spec:
+  selector: {app: protorcd-triage}
+  ports: [{port: 80, targetPort: http, name: http}]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: protorcd-triage
+  # WebSockets idle between batches while a reviewer labels: if the ingress controller
+  # closes idle tunnels sooner than the 20s uvicorn ping, raise its tunnel timeout here.
+spec:
+  ingressClassName: <INGRESS_CLASS>
+  tls:
+    - hosts: [<HOSTNAME>]
+  rules:
+    - host: <HOSTNAME>
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: protorcd-triage
+                port: {name: http}

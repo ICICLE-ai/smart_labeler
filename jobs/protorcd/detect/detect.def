@@ -1,0 +1,63 @@
+Bootstrap: docker
+From: python:3.12-bullseye
+
+# Build from this folder:  apptainer build protorcd_detect.sif detect.def
+# Run:  apptainer run --nv --env HF_TOKEN=... protorcd_detect.sif \
+#           --image_dir /data/images --output /data/out/proposals.coco.json
+
+%files
+    ../LICENSE /app/protorcd/LICENSE
+    __init__.py /app/protorcd/detect/__init__.py
+    detector.py /app/protorcd/detect/detector.py
+    sahi_utils.py /app/protorcd/detect/sahi_utils.py
+    utils.py /app/protorcd/detect/utils.py
+    export_coco.py /app/protorcd/detect/export_coco.py
+    run_detect.py /app/protorcd/detect/run_detect.py
+
+%environment
+    export PATH="/usr/local/bin:$PATH"
+    export PYTHONPATH="/app/protorcd:$PYTHONPATH"
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+
+%post
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        git \
+        libgl1-mesa-glx \
+        libglib2.0-0
+    rm -rf /var/lib/apt/lists/*
+
+    python3 -m pip install --upgrade pip
+    pip install --no-cache-dir \
+        numpy \
+        Pillow \
+        torch \
+        torchvision \
+        tqdm \
+        pyyaml \
+        sahi \
+        opencv-python-headless \
+        pycocotools \
+        huggingface_hub
+
+    # Meta's native SAM3 package (what ProtoRCD's detector imports). The checkpoint is
+    # gated on Hugging Face and downloaded at runtime: pass HF_TOKEN or mount an HF_HOME
+    # cache that already holds it.
+    pip install --no-cache-dir "git+https://github.com/facebookresearch/sam3.git"
+
+    chmod -R a+rX /app/protorcd
+    chmod 755 /app/protorcd/detect/run_detect.py
+
+%runscript
+    exec python3 /app/protorcd/detect/run_detect.py "$@"
+
+%apprun export_coco
+    exec python3 /app/protorcd/detect/export_coco.py "$@"
+
+%labels
+    Maintainer "Brijesh Nanda <brundayogananda.1@osu.edu>"
+    Version "1.0"
+    Appname "ProtoRCD Detect"
+    Description "ProtoRCD SAM3 text-prompt proposals exported as one COCO file"
