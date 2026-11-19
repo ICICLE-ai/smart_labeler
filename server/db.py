@@ -237,18 +237,17 @@ execute_query("ALTER TABLE annotator_configuration ADD COLUMN IF NOT EXISTS file
 execute_query("ALTER TABLE annotator_configuration ADD COLUMN IF NOT EXISTS annotationSystem TEXT DEFAULT ''", None)
 execute_query('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE', None)
 
-# ProtoRCD pipelines: the two Tapis jobs (proposals, embeddings) and the triage
-# dataset/session they feed. Configs are stored as JSON text so the forms can
-# grow without a migration per field. `id` is SERIAL only because
-# execute_query reads LASTVAL() after every INSERT.
+# ProtoRCD pipelines: the proposal job, the embedding jobs (any number, each
+# running one or more models) and the triage dataset/session they feed. Configs
+# are stored as JSON text so the forms can grow without a migration per field.
+# `id` is SERIAL only because execute_query reads LASTVAL() after every INSERT.
 execute_query(
     """CREATE TABLE IF NOT EXISTS protorcd(
         id SERIAL PRIMARY KEY,
         parentpipeline INTEGER UNIQUE REFERENCES pipeline(pipelineid),
         detect_config TEXT DEFAULT '',
         detect_job_id TEXT DEFAULT '',
-        embed_config TEXT DEFAULT '',
-        embed_job_id TEXT DEFAULT '',
+        embed_jobs TEXT DEFAULT '',
         triage_dataset_id TEXT DEFAULT '',
         triage_dataset_key TEXT DEFAULT '',
         triage_session_id TEXT DEFAULT '',
@@ -256,6 +255,8 @@ execute_query(
     )""",
     None,
 )
+# Tables created before embedding jobs became a list.
+execute_query("ALTER TABLE protorcd ADD COLUMN IF NOT EXISTS embed_jobs TEXT DEFAULT ''", None)
 
 _default_system = os.getenv("DEFAULT_SYSTEM", "expanse-tapis-static")
 execute_query(
@@ -763,23 +764,40 @@ def get_latest_query_image_configuration_id(parentpipeid):
 
 ####### ProtoRCD ##################################
 
-_PROTORCD_JSON_FIELDS = ("detect_config", "embed_config", "triage_config")
+# JSON fields and their value when unset. embed_jobs is a list of
+# {"job_id", "config", "submitted"}, oldest first.
+_PROTORCD_JSON_FIELDS = {"detect_config": dict, "embed_jobs": list, "triage_config": dict}
 _PROTORCD_FIELDS = (
-    "detect_config", "detect_job_id", "embed_config", "embed_job_id",
+    "detect_config", "detect_job_id", "embed_jobs",
     "triage_dataset_id", "triage_dataset_key", "triage_session_id", "triage_config",
 )
 
 
 def get_protorcd(pipeline_id):
-    """The pipeline's ProtoRCD record, with JSON configs decoded ({} when unset)."""
+    """The pipeline's ProtoRCD record, with JSON fields decoded (empty when unset)."""
     rows = execute_query("SELECT * FROM protorcd WHERE parentpipeline = %s", (pipeline_id,))
     row = dict(rows[0]) if rows else {f: "" for f in _PROTORCD_FIELDS}
-    for key in _PROTORCD_JSON_FIELDS:
+    for key, empty in _PROTORCD_JSON_FIELDS.items():
         try:
-            row[key] = json.loads(row.get(key) or "{}")
+            value = json.loads(row.get(key) or "null")
         except (TypeError, ValueError):
-            row[key] = {}
+            value = None
+        row[key] = value if isinstance(value, empty) else empty()
     return row
+
+
+def add_protorcd_embed_job(pipeline_id, job_id, config):
+    """Append an embedding job to the pipeline's list, atomically."""
+    execute_query(
+        "INSERT INTO protorcd (parentpipeline) VALUES (%s) ON CONFLICT (parentpipeline) DO NOTHING",
+        (pipeline_id,),
+    )
+    entry = {"job_id": job_id, "config": config, "submitted": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    execute_query(
+        "UPDATE protorcd SET embed_jobs = (COALESCE(NULLIF(embed_jobs, ''), '[]')::jsonb || %s::jsonb)::text "
+        "WHERE parentpipeline = %s",
+        (json.dumps([entry]), pipeline_id),
+    )
 
 
 def update_protorcd(pipeline_id, updates):

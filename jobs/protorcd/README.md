@@ -134,9 +134,17 @@ so crops can be shown to the reviewer.
 In the dashboard, **New Pipeline → Detection approach → ProtoRCD** creates a pipeline
 with two steps:
 
-1. **Configure jobs** (`/protorcd/configure/:id`). One form per Tapis job: the proposal
-   job (image directory → `proposals.coco.json`), then the embedding job, which is
-   pre-filled from it. Both show live Tapis status and logs.
+1. **Configure jobs** (`/protorcd/configure/:id`). First the proposal job (image
+   directory → `proposals.coco.json`), then embedding jobs, pre-filled from it. Each
+   embedding job runs the models you select: both DINOv3 and BioCLIP in one job, or one
+   job per model so they run in parallel on separate GPUs. After a job is submitted,
+   the form pre-selects whichever model still has no job. Every job shows live Tapis
+   status and logs.
+   - **When triage can start:** a finished DINOv3 file and a finished BioCLIP file must
+     embed the same proposals file. They can come from any jobs; the newest finished
+     pair is used.
+   - **Sessions keep their inputs:** each session remembers the files it was started
+     with, so later embedding jobs do not change a session in progress.
 2. **Human in the loop** (`/protorcd/triage/:id`). Enter the classes and the triage
    settings (rounds, batch size, calibration size, seed), then start or resume a session.
    - **Labelling:** batches arrive over the WebSocket. Pick a class in the palette (or
@@ -146,7 +154,8 @@ with two steps:
      embeddings on HPC.
 
 The backend (`server/protorcd.py`, routes under `/protorcd/…`) does three things:
-- submits both jobs;
+- submits the jobs, and picks the triage files from the finished embedding jobs
+  (`GET /protorcd/:id/triage/inputs` reports which, or why triage cannot start yet);
 - copies the embed job's outputs from the HPC system to the triage service;
 - hands the browser a WebSocket URL carrying a token for that one session.
 

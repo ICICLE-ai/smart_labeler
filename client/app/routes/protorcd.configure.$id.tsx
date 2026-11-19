@@ -1,12 +1,16 @@
 import {
    Accordion,
    Alert,
+   Badge,
    Button,
    Card,
    Checkbox,
+   Divider,
    Grid,
    Group,
+   MultiSelect,
    NumberInput,
+   Paper,
    Select,
    SimpleGrid,
    Stack,
@@ -18,18 +22,23 @@ import {
 import { IconAlertCircle, IconArrowRight, IconInfoCircle, IconRocket } from "@tabler/icons-react";
 import { useNavigate, useParams } from "@remix-run/react";
 import { Formik, type FormikProps } from "formik";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useCookies } from "react-cookie";
 import FormikTapisFileWrapper from "~/components/FileExplorer/FormikTapisFileWrapper";
 import {
    DETECT_DEFAULTS,
    EMBED_DEFAULTS,
+   EMBED_MODELS,
+   embedModelLabel,
    getProtoRCD,
-   type BackgroundModel,
+   getTriageReadiness,
    type DetectConfig,
    type EmbedConfig,
+   type EmbedJob,
+   type EmbedModel,
    type HPCResources,
    type ProtoRCDRecord,
+   type TriageReadiness,
 } from "~/components/ProtoRCD/api";
 import { JobStatusLine } from "~/components/ProtoRCD/JobStatusLine";
 import { useJobStatus } from "~/components/ProtoRCD/useJobStatus";
@@ -79,6 +88,36 @@ function HPCFields<T extends HPCResources>({ form }: { form: Form<T> }) {
 
 const join = (dir: string, name: string) => `${dir.replace(/\/+$/, "")}/${name}`;
 
+// Triage needs one of each; the two DINOv3 variants are alternatives.
+const REQUIRED_MODELS: EmbedModel[][] = [["dinov3", "dinov3_debiased"], ["bioclip"]];
+
+const jobTitle = (models: string[]) => `ProtoRCD ${models.map(embedModelLabel).join(" + ") || "embeddings"}`;
+
+/** One submitted embedding job: its models, output and live Tapis status. */
+function EmbedJobRow({ job, token, onStatus }: {
+   job: EmbedJob;
+   token: string;
+   onStatus: (jobId: string, status: string | null) => void;
+}) {
+   const status = useJobStatus(job.job_id, token);
+   useEffect(() => onStatus(job.job_id, status.status), [job.job_id, status.status, onStatus]);
+   return (
+      <Paper withBorder radius="sm" p="xs">
+         <Group justify="space-between" wrap="nowrap" align="flex-start">
+            <Stack gap={2} miw={0}>
+               <Group gap={4}>
+                  {job.config.models.map((m) => <Badge key={m} size="sm" variant="light">{embedModelLabel(m)}</Badge>)}
+                  <Text size="xs" c="dimmed">{job.config.region}</Text>
+               </Group>
+               <Text size="xs" c="dimmed" truncate title={job.config.outputDir}>→ {job.config.outputDir}</Text>
+            </Stack>
+            <JobStatusLine jobId={job.job_id} status={status.status} message={status.message}
+               loading={status.loading} onRefresh={status.refresh} token={token} />
+         </Group>
+      </Paper>
+   );
+}
+
 export default function ConfigureProtoRCD() {
    const { id: pipeId = "" } = useParams();
    const navigate = useNavigate();
@@ -102,7 +141,21 @@ export default function ConfigureProtoRCD() {
    }, [load, pipeId, token]);
 
    const detectJob = useJobStatus(record?.detect_job_id, token);
-   const embedJob = useJobStatus(record?.embed_job_id, token);
+
+   // Whether triage can start is decided by the backend from all embed jobs; ask again
+   // whenever one of them changes status.
+   const [embedStatuses, setEmbedStatuses] = useState<Record<string, string | null>>({});
+   const onEmbedStatus = useCallback((jobId: string, status: string | null) =>
+      setEmbedStatuses((prev) => (prev[jobId] === status ? prev : { ...prev, [jobId]: status })), []);
+   const [readiness, setReadiness] = useState<TriageReadiness | null>(null);
+   const statusKey = JSON.stringify(embedStatuses);
+   useEffect(() => {
+      if (!pipeId || !token || !record?.embed_jobs.length) {
+         setReadiness(null);
+         return;
+      }
+      getTriageReadiness(pipeId, token).then((res) => setReadiness(res.ok && res.data ? res.data : null));
+   }, [pipeId, token, record?.embed_jobs.length, statusKey]);
 
    const proposalsFile = record?.proposals_file ?? "proposals.coco.json";
    const detectValues: DetectConfig = {
@@ -113,14 +166,24 @@ export default function ConfigureProtoRCD() {
       ...(record?.detect_config ?? {}),
    };
    const detected = record?.detect_config;
-   const embedValues: EmbedConfig = {
-      ...EMBED_DEFAULTS,
-      system: detected?.system ?? DEFAULT_SYSTEM,
-      imageDir: detected?.imageDir ?? "",
-      cocoPath: detected?.outputDir ? join(detected.outputDir, proposalsFile) : "",
-      outputDir: detected?.outputDir ? join(detected.outputDir, "embeddings") : "",
-      ...(record?.embed_config ?? {}),
-   };
+   const embedJobs = record?.embed_jobs ?? [];
+   const latestEmbed = embedJobs.at(-1)?.config;
+   const embedValues: EmbedConfig = useMemo(() => {
+      // Pre-select the models no job has run yet, so a second job completes the pair.
+      const submitted = new Set(embedJobs.flatMap((j) => j.config.models));
+      const missing = REQUIRED_MODELS.filter((group) => !group.some((m) => submitted.has(m))).map((group) => group[0]);
+      const models = missing.length ? missing : latestEmbed?.models ?? EMBED_DEFAULTS.models;
+      return {
+         ...EMBED_DEFAULTS,
+         system: detected?.system ?? DEFAULT_SYSTEM,
+         imageDir: detected?.imageDir ?? "",
+         cocoPath: detected?.outputDir ? join(detected.outputDir, proposalsFile) : "",
+         outputDir: detected?.outputDir ? join(detected.outputDir, "embeddings") : "",
+         ...(latestEmbed ?? {}),
+         models,
+         name: jobTitle(models),
+      };
+   }, [embedJobs, latestEmbed, detected, proposalsFile]);
 
    const submit = async (what: string, url: string, body: object, system: string,
       paths: { label: string; path: string; allowMissing?: boolean }[]) => {
@@ -150,9 +213,10 @@ export default function ConfigureProtoRCD() {
          <Stack gap={4}>
             <Title order={2}>Configure ProtoRCD jobs</Title>
             <Text c="dimmed" size="sm">
-               Two HPC jobs prepare the triage. The proposal job finds candidate objects with SAM3 and writes a COCO
-               file; the embedding job then describes every proposal with DINOv3 (is it background?) and BioCLIP (which
-               species?). When both have finished, continue to the human-in-the-loop step.
+               HPC jobs prepare the triage. The proposal job finds candidate objects with SAM3 and writes a COCO file;
+               embedding jobs then describe every proposal with DINOv3 (is it background?) and BioCLIP (which species?).
+               Run both models in one job, or one job per model to run them in parallel. When DINOv3 and BioCLIP
+               embeddings of the same proposals have finished, continue to the human-in-the-loop step.
             </Text>
          </Stack>
 
@@ -248,32 +312,51 @@ export default function ConfigureProtoRCD() {
                            { label: "Proposals file", path: v.cocoPath },
                            { label: "Output directory", path: v.outputDir, allowMissing: true },
                         ];
-                        if (v.dinov3_weights) paths.push({ label: "DINOv3 weights", path: v.dinov3_weights });
+                        const usesDino = v.models.some((m) => m.startsWith("dinov3"));
+                        if (usesDino && v.dinov3_weights) paths.push({ label: "DINOv3 weights", path: v.dinov3_weights });
                         return submit("The embedding job", `/protorcd/${pipeId}/embed-job`, v, v.system, paths);
                      }}
                   >
                      {(form) => {
-                        const background = (form.values.models.find((m) => m.startsWith("dinov3")) ?? "dinov3") as BackgroundModel;
                         const masksAvailable = !!detected?.return_masks;
+                        const usesDino = form.values.models.some((m) => m.startsWith("dinov3"));
+                        const setModels = (models: EmbedModel[]) => {
+                           form.setFieldValue("models", models);
+                           // Follow the models in the job name until the user names it themselves.
+                           if (form.values.name === jobTitle(form.values.models)) form.setFieldValue("name", jobTitle(models));
+                        };
                         return (
                            <form onSubmit={form.handleSubmit}>
                               <Stack gap="sm">
-                                 <Group justify="space-between" align="flex-start">
-                                    <Stack gap={0}>
-                                       <Text fw={700} size="lg">2. Embedding generation</Text>
-                                       <Text size="xs" c="dimmed">DINOv3 + BioCLIP features keyed by annotation id</Text>
+                                 <Stack gap={0}>
+                                    <Text fw={700} size="lg">2. Embedding generation</Text>
+                                    <Text size="xs" c="dimmed">One .npz per model, keyed by annotation id</Text>
+                                 </Stack>
+
+                                 {embedJobs.length > 0 && (
+                                    <Stack gap={6}>
+                                       {[...embedJobs].reverse().map((job) => (
+                                          <EmbedJobRow key={job.job_id} job={job} token={token} onStatus={onEmbedStatus} />
+                                       ))}
+                                       <Divider label="Submit another embedding job" labelPosition="left" mt={4} />
                                     </Stack>
-                                    <JobStatusLine jobId={record?.embed_job_id ?? null} status={embedJob.status}
-                                       message={embedJob.message} loading={embedJob.loading} onRefresh={embedJob.refresh} token={token} />
-                                 </Group>
+                                 )}
 
                                  {record?.detect_job_id && !detectJob.finished && (
                                     <Alert color="blue" variant="light" icon={<IconInfoCircle size={16} />}>
-                                       The proposal job is {detectJob.status?.toLowerCase() ?? "not finished"}. This job reads its
-                                       {" "}{proposalsFile}, so submit it once the proposal job has finished.
+                                       The proposal job is {detectJob.status?.toLowerCase() ?? "not finished"}. Embedding jobs read its
+                                       {" "}{proposalsFile}, so submit them once the proposal job has finished.
                                     </Alert>
                                  )}
 
+                                 <MultiSelect
+                                    label="Models"
+                                    description="Select one model to run it as its own job, or several to run them one after another in a single job."
+                                    data={EMBED_MODELS}
+                                    value={form.values.models}
+                                    onChange={(v) => setModels(v as EmbedModel[])}
+                                    error={form.values.models.length ? undefined : "Select at least one model"}
+                                 />
                                  <TextInput label="Job name" value={form.values.name}
                                     onChange={(e) => form.setFieldValue("name", e.currentTarget.value)} />
                                  <Select label="HPC system" data={allowed_systems} value={form.values.system}
@@ -282,24 +365,13 @@ export default function ConfigureProtoRCD() {
                                     description="The same directory the proposal job read."
                                     systemId={form.values.system} files={false} dirs />
                                  <FormikTapisFileWrapper name="cocoPath" label="Proposals file" required
-                                    description={`The proposal job's ${proposalsFile}.`}
+                                    description={`The proposal job's ${proposalsFile}. DINOv3 and BioCLIP must embed the same file.`}
                                     systemId={form.values.system} files dirs={false} />
                                  <FormikTapisFileWrapper name="outputDir" label="Output directory" required
-                                    description="Receives one .npz file per model."
+                                    description="Receives <model>_<region>.npz per model. Jobs for different models can share it."
                                     systemId={form.values.system} files={false} dirs />
 
                                  <SimpleGrid cols={{ base: 1, sm: 2 }}>
-                                    <Select
-                                       label="Background model"
-                                       description="BioCLIP is always added for species"
-                                       data={[
-                                          { value: "dinov3", label: "DINOv3" },
-                                          { value: "dinov3_debiased", label: "DINOv3 (positionally debiased)" },
-                                       ]}
-                                       value={background}
-                                       onChange={(v) => form.setFieldValue("models", [v ?? "dinov3", "bioclip"])}
-                                       allowDeselect={false}
-                                    />
                                     <Select
                                        label="Crop region"
                                        description={masksAvailable ? "Mask blacks out pixels outside the object" : "Mask needs masks from the proposal job"}
@@ -311,19 +383,6 @@ export default function ConfigureProtoRCD() {
                                        onChange={(v) => form.setFieldValue("region", (v ?? "box") as EmbedConfig["region"])}
                                        allowDeselect={false}
                                     />
-                                    <Select
-                                       label="DINOv3 size"
-                                       data={[
-                                          { value: "hugeplus", label: "ViT-H+/16 (ProtoRCD default)" },
-                                          { value: "large", label: "ViT-L/16" },
-                                          { value: "base", label: "ViT-B/16" },
-                                          { value: "small", label: "ViT-S/16" },
-                                       ]}
-                                       value={form.values.dinov3_model_size}
-                                       onChange={(v) => form.setFieldValue("dinov3_model_size", (v ?? "hugeplus") as EmbedConfig["dinov3_model_size"])}
-                                       allowDeselect={false}
-                                    />
-                                    <NumberField form={form} name="dinov3_image_size" label="DINOv3 input size (px)" min={64} step={16} />
                                     <NumberField form={form} name="batch_size" label="Batch size" min={1} max={512} />
                                     <Select
                                        label="Stored precision"
@@ -335,17 +394,37 @@ export default function ConfigureProtoRCD() {
                                        onChange={(v) => form.setFieldValue("dtype", (v ?? "float32") as EmbedConfig["dtype"])}
                                        allowDeselect={false}
                                     />
+                                    {usesDino && (
+                                       <>
+                                          <Select
+                                             label="DINOv3 size"
+                                             data={[
+                                                { value: "hugeplus", label: "ViT-H+/16 (ProtoRCD default)" },
+                                                { value: "large", label: "ViT-L/16" },
+                                                { value: "base", label: "ViT-B/16" },
+                                                { value: "small", label: "ViT-S/16" },
+                                             ]}
+                                             value={form.values.dinov3_model_size}
+                                             onChange={(v) => form.setFieldValue("dinov3_model_size", (v ?? "hugeplus") as EmbedConfig["dinov3_model_size"])}
+                                             allowDeselect={false}
+                                          />
+                                          <NumberField form={form} name="dinov3_image_size" label="DINOv3 input size (px)" min={64} step={16} />
+                                       </>
+                                    )}
                                  </SimpleGrid>
-                                 <FormikTapisFileWrapper name="dinov3_weights" label="DINOv3 weights"
-                                    description="Checkpoint (.pth) on the HPC system. The weights are gated, so they are not in the container."
-                                    systemId={form.values.system} files dirs={false} />
+                                 {usesDino && (
+                                    <FormikTapisFileWrapper name="dinov3_weights" label="DINOv3 weights"
+                                       description="Checkpoint (.pth) on the HPC system, matching the DINOv3 size. The weights are gated, so they are not in the container."
+                                       systemId={form.values.system} files dirs={false} />
+                                 )}
 
                                  <HPCFields form={form} />
 
                                  <Group justify="flex-end">
                                     <Button type="submit" leftSection={<IconRocket size={16} />} loading={form.isSubmitting}
-                                       disabled={isDemo || !form.values.imageDir || !form.values.cocoPath || !form.values.outputDir}>
-                                       {record?.embed_job_id ? "Resubmit embedding job" : "Submit embedding job"}
+                                       disabled={isDemo || !form.values.models.length || !form.values.imageDir
+                                          || !form.values.cocoPath || !form.values.outputDir}>
+                                       Submit {form.values.models.map(embedModelLabel).join(" + ") || "embedding"} job
                                     </Button>
                                  </Group>
                               </Stack>
@@ -359,12 +438,13 @@ export default function ConfigureProtoRCD() {
 
          <Card withBorder radius="md" p="md">
             <Group justify="space-between">
-               <Text size="sm" c={embedJob.finished ? undefined : "dimmed"}>
-                  {embedJob.finished
-                     ? "Both jobs are done. Set up the labelling session next."
-                     : "Human-in-the-loop labelling opens once the embedding job has finished."}
+               <Text size="sm" c={readiness?.ready ? undefined : "dimmed"}>
+                  {readiness?.ready
+                     ? "DINOv3 and BioCLIP embeddings are ready. Set up the labelling session next."
+                     : readiness?.problem
+                        ?? "Human-in-the-loop labelling opens once DINOv3 and BioCLIP embeddings have finished."}
                </Text>
-               <Button rightSection={<IconArrowRight size={16} />} disabled={!embedJob.finished}
+               <Button rightSection={<IconArrowRight size={16} />} disabled={!readiness?.ready}
                   onClick={() => navigate(`/protorcd/triage/${pipeId}`)}>
                   Continue to human in the loop
                </Button>

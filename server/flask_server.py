@@ -960,8 +960,7 @@ def _protorcd_view(rec):
     return {
         "detect_config": rec["detect_config"] or None,
         "detect_job_id": rec["detect_job_id"] or None,
-        "embed_config": rec["embed_config"] or None,
-        "embed_job_id": rec["embed_job_id"] or None,
+        "embed_jobs": rec["embed_jobs"],
         "triage_session_id": rec["triage_session_id"] or None,
         "triage_config": rec["triage_config"] or None,
         "triage_service_configured": protorcd.configured(),
@@ -996,38 +995,54 @@ def protorcd_detect_job(path: PipeIdPath, body: ProtoRCDDetectJobRequest):
 
 
 @protorcd_blp.post("/<int:pipeId>/embed-job",
-                   summary="Submit the ProtoRCD embedding job (DINOv3 + BioCLIP .npz files)")
+                   summary="Submit a ProtoRCD embedding job (one .npz per selected model)")
 def protorcd_embed_job(path: PipeIdPath, body: ProtoRCDEmbedJobRequest):
     token, user = getAuth(request)
     _own_pipeline(path.pipeId, user)
     unknown = [m for m in body.models if m not in ("dinov3", "dinov3_debiased", "bioclip")]
     if unknown or not body.models:
         abort(400, description=f"Unknown embedding models: {unknown or 'none selected'}")
+    if len(set(body.models)) != len(body.models):
+        abort(400, description="Each model may be selected once.")
     return job_submission_response(
         ProtoRCDEmbed.run(path.pipeId, token, body.model_dump(), _hf_secret(user, token)),
         "The ProtoRCD embedding job",
     )
 
 
+def _triage_inputs(rec, token):
+    """(inputs, None) from the finished embed jobs, or (None, why not yet)."""
+    statuses = {}
+    for job in rec["embed_jobs"]:
+        status = _get_tapis_job_status(job["job_id"], token)
+        statuses[job["job_id"]] = status.get("status") if status else None
+    return protorcd.select_inputs(rec["embed_jobs"], statuses)
+
+
+@protorcd_blp.get("/<int:pipeId>/triage/inputs",
+                  summary="Whether triage can start, and which embedding files it would use")
+def protorcd_triage_inputs(path: PipeIdPath):
+    token, user = getAuth(request)
+    _own_pipeline(path.pipeId, user)
+    inputs, problem = _triage_inputs(get_protorcd(path.pipeId), token)
+    return jsonify({"ready": inputs is not None, "inputs": inputs, "problem": problem})
+
+
 @protorcd_blp.post("/<int:pipeId>/triage/session",
-                   summary="Start a triage session on the embedding job's outputs")
+                   summary="Start a triage session on the finished embedding jobs' outputs")
 def protorcd_start_triage(path: PipeIdPath, body: ProtoRCDTriageSessionRequest):
     token, user = getAuth(request)
     _own_pipeline(path.pipeId, user)
     rec = get_protorcd(path.pipeId)
-    inputs = protorcd.dataset_inputs(rec)
-
-    status = _get_tapis_job_status(rec["embed_job_id"], token)
-    if not status or status.get("status") != "FINISHED":
-        raise TriageError(
-            "The embedding job has not finished "
-            f"(status: {status.get('status') if status else 'unknown'}). Start triage once it has.", 409)
+    inputs, problem = _triage_inputs(rec, token)
+    if inputs is None:
+        raise TriageError(problem, 409)
 
     labels = {str(i + 1): name.strip() for i, name in enumerate(body.labels)}
     if any(not name for name in labels.values()) or len(set(labels.values())) != len(labels):
         abort(400, description="Class names must be non-empty and distinct.")
 
-    key = protorcd.dataset_key(inputs, labels, rec["embed_job_id"])
+    key = protorcd.dataset_key(inputs, labels)
     dataset_id = rec["triage_dataset_id"]
     if rec["triage_dataset_key"] != key or not protorcd.dataset_exists(dataset_id):
         dataset_id = protorcd.register_dataset(f"pipeline {path.pipeId}", inputs, labels, token)
@@ -1044,7 +1059,9 @@ def protorcd_start_triage(path: PipeIdPath, body: ProtoRCDTriageSessionRequest):
     state = protorcd.create_session(dataset_id, config)
     update_protorcd(path.pipeId, {
         "triage_session_id": state["session_id"],
-        "triage_config": {**config, "labels": body.labels},
+        # The inputs are kept so crops and exports use this session's files even after
+        # newer embedding jobs finish.
+        "triage_config": {**config, "labels": body.labels, "inputs": inputs},
     })
     return jsonify(protorcd.connection(state)), 201
 
@@ -1087,7 +1104,9 @@ def protorcd_export(path: PipeIdPath, query: ProtoRCDExportQuery):
     coco = protorcd.export(rec["triage_session_id"], query.include_background)
     saved_path = None
     if query.save:
-        inputs = protorcd.dataset_inputs(rec)
+        inputs = rec["triage_config"].get("inputs")
+        if not inputs:
+            abort(409, description="This session predates saving exports; start a new session to save on HPC.")
         saved_path = f"{inputs['output_dir']}/triage_{rec['triage_session_id']}.coco.json"
         protorcd.save_to_tapis(inputs["system"], saved_path, json.dumps(coco).encode(), token)
     return jsonify({"saved_path": saved_path, "coco": coco})

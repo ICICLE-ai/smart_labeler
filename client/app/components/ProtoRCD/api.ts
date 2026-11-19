@@ -1,8 +1,9 @@
 // Types and backend calls for ProtoRCD pipelines.
 //
-// The two HPC jobs are submitted through this app's backend (/protorcd/...), which
-// also brokers the triage session: it copies the jobs' outputs to the triage
-// service and hands back a WebSocket URL carrying a token for that one session.
+// The HPC jobs (one proposal job, then any number of embedding jobs) are submitted
+// through this app's backend (/protorcd/...), which also brokers the triage session:
+// it copies the jobs' outputs to the triage service and hands back a WebSocket URL
+// carrying a token for that one session.
 // The message shapes below mirror jobs/protorcd/triage/triage_service/schemas.py.
 import { getBaseURL } from "~/utils/utils";
 
@@ -30,7 +31,15 @@ export interface DetectConfig extends HPCResources {
    return_masks: boolean;
 }
 
-export type BackgroundModel = "dinov3" | "dinov3_debiased";
+export type EmbedModel = "dinov3" | "dinov3_debiased" | "bioclip";
+
+export const EMBED_MODELS: { value: EmbedModel; label: string }[] = [
+   { value: "dinov3", label: "DINOv3" },
+   { value: "dinov3_debiased", label: "DINOv3 (positionally debiased)" },
+   { value: "bioclip", label: "BioCLIP" },
+];
+
+export const embedModelLabel = (model: string) => EMBED_MODELS.find((m) => m.value === model)?.label ?? model;
 
 export interface EmbedConfig extends HPCResources {
    name: string;
@@ -38,7 +47,7 @@ export interface EmbedConfig extends HPCResources {
    imageDir: string;
    cocoPath: string;
    outputDir: string;
-   models: string[];
+   models: EmbedModel[];
    region: "box" | "mask";
    batch_size: number;
    dtype: "float32" | "float16";
@@ -91,13 +100,36 @@ export const TRIAGE_DEFAULTS: TriageConfig = {
    max_rounds: 10,
 };
 
+export interface EmbedJob {
+   job_id: string;
+   config: EmbedConfig;
+   submitted: string;
+}
+
+/** The files a triage session is built from, picked by the backend from finished embed jobs. */
+export interface TriageInputs {
+   system: string;
+   image_dir: string;
+   coco: string;
+   dinov3: string;
+   bioclip: string;
+   output_dir: string;
+   job_ids: { dinov3: string; bioclip: string };
+}
+
+export interface TriageReadiness {
+   ready: boolean;
+   inputs: TriageInputs | null;
+   problem: string | null;
+}
+
 export interface ProtoRCDRecord {
    detect_config: DetectConfig | null;
    detect_job_id: string | null;
-   embed_config: EmbedConfig | null;
-   embed_job_id: string | null;
+   /** Oldest first. */
+   embed_jobs: EmbedJob[];
    triage_session_id: string | null;
-   triage_config: TriageConfig | null;
+   triage_config: (TriageConfig & { inputs?: TriageInputs }) | null;
    triage_service_configured: boolean;
    proposals_file: string;
 }
@@ -244,6 +276,9 @@ async function request<T>(method: string, url: string, token: string, body?: unk
 
 export const getProtoRCD = (pipeId: string, token: string) =>
    request<ProtoRCDRecord>("GET", `/protorcd/${pipeId}`, token);
+
+export const getTriageReadiness = (pipeId: string, token: string) =>
+   request<TriageReadiness>("GET", `/protorcd/${pipeId}/triage/inputs`, token);
 
 export const startTriage = (pipeId: string, config: TriageConfig, token: string) =>
    request<TriageConnection>("POST", `/protorcd/${pipeId}/triage/session`, token, config);

@@ -2,8 +2,9 @@
 Smart Labeler side of ProtoRCD triage: hand the jobs' outputs to the triage service.
 
 The triage service (jobs/protorcd/triage) runs the human-in-the-loop session; this
-module is the only place that talks to it. It downloads the embed job's outputs
-from the HPC system through Tapis, registers them as a triage dataset, creates
+module is the only place that talks to it. It picks the embedding files from the
+pipeline's finished embed jobs, downloads them from the HPC system through Tapis,
+registers them as a triage dataset, creates
 sessions, and returns a WebSocket URL carrying the session's own token, so the
 service-wide TRIAGE_API_TOKEN never reaches a browser.
 """
@@ -65,34 +66,64 @@ def _detail(resp):
 
 
 # ── Inputs ────────────────────────────────────────────────────────────────────
-def dataset_inputs(record):
-    """The three files the triage dataset is built from, read from the embed job's config."""
+def _background_model(models):
+    return next((m for m in BACKGROUND_MODELS if m in models), None)
+
+
+def _describe(jobs, statuses, label):
+    if not jobs:
+        return f"{label}: no job yet"
+    return f"{label}: " + ", ".join(
+        f"job {j['job_id'][:8]} {(statuses.get(j['job_id']) or 'status unknown').lower()}" for j in jobs)
+
+
+def select_inputs(embed_jobs, statuses):
+    """The files a triage dataset is built from, picked from the pipeline's embed jobs.
+
+    Any finished jobs may supply them: one job that ran both models, or a DINOv3 job and
+    a BioCLIP job. Both files must embed the same proposals file; the newest finished
+    pair is used. `statuses` maps job id -> Tapis status. Returns (inputs, None), or
+    (None, why triage cannot start yet).
+    """
     from steps import protorcd_embedding_file
 
-    cfg = record.get("embed_config") or {}
-    if not cfg or not record.get("embed_job_id"):
-        raise TriageError("Run the embedding job before starting triage.", 409)
-    models = cfg.get("models") or []
-    background = next((m for m in models if m in BACKGROUND_MODELS), None)
-    if background is None or FOREGROUND_MODEL not in models:
-        raise TriageError(
-            "Triage needs both a DINOv3 and a BioCLIP embedding; the embedding job "
-            f"produced only: {', '.join(models) or 'nothing'}.", 409)
-    out = cfg["outputDir"].rstrip("/")
-    region = cfg.get("region", "box")
-    return {
-        "system": cfg["system"],
-        "image_dir": cfg["imageDir"],
-        "coco": cfg["cocoPath"],
-        "dinov3": f"{out}/{protorcd_embedding_file(background, region)}",
-        "bioclip": f"{out}/{protorcd_embedding_file(FOREGROUND_MODEL, region)}",
-        "output_dir": out,
-    }
+    if not embed_jobs:
+        return None, "Run the embedding jobs before starting triage."
+    finished = [j for j in reversed(embed_jobs) if statuses.get(j["job_id"]) == "FINISHED"]
+    for anchor in finished:
+        same = [j for j in finished
+                if (j["config"]["system"], j["config"]["cocoPath"])
+                == (anchor["config"]["system"], anchor["config"]["cocoPath"])]
+        bg = next((j for j in same if _background_model(j["config"]["models"])), None)
+        fg = next((j for j in same if FOREGROUND_MODEL in j["config"]["models"]), None)
+        if bg is None or fg is None:
+            continue
+        bg_cfg, fg_cfg = bg["config"], fg["config"]
+        newest = bg if embed_jobs.index(bg) > embed_jobs.index(fg) else fg
+        return {
+            "system": bg_cfg["system"],
+            "image_dir": fg_cfg["imageDir"],
+            "coco": bg_cfg["cocoPath"],
+            "dinov3": f"{bg_cfg['outputDir'].rstrip('/')}/"
+                      f"{protorcd_embedding_file(_background_model(bg_cfg['models']), bg_cfg.get('region', 'box'))}",
+            "bioclip": f"{fg_cfg['outputDir'].rstrip('/')}/"
+                       f"{protorcd_embedding_file(FOREGROUND_MODEL, fg_cfg.get('region', 'box'))}",
+            "output_dir": newest["config"]["outputDir"].rstrip("/"),
+            "job_ids": {"dinov3": bg["job_id"], "bioclip": fg["job_id"]},
+        }, None
+
+    bg_jobs = [j for j in reversed(embed_jobs) if _background_model(j["config"]["models"])]
+    fg_jobs = [j for j in reversed(embed_jobs) if FOREGROUND_MODEL in j["config"]["models"]]
+    if any(j in finished for j in bg_jobs) and any(j in finished for j in fg_jobs):
+        return None, ("The finished DINOv3 and BioCLIP jobs embedded different proposals files. "
+                      "Run the missing model on the same proposals file.")
+    return None, ("Triage needs finished DINOv3 and BioCLIP embeddings of the same proposals file. "
+                  f"{_describe(bg_jobs, statuses, 'DINOv3')}; {_describe(fg_jobs, statuses, 'BioCLIP')}.")
 
 
-def dataset_key(inputs, labels, embed_job_id):
-    """Identifies a registration: same files from the same job, same taxonomy."""
-    blob = json.dumps({"inputs": inputs, "labels": labels, "job": embed_job_id}, sort_keys=True)
+def dataset_key(inputs, labels):
+    """Identifies a registration: same files from the same jobs, same taxonomy."""
+    blob = json.dumps({"inputs": inputs, "labels": labels}, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()
 
 

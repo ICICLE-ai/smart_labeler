@@ -37,17 +37,19 @@ import {
    exportTriage,
    getProtoRCD,
    getTriage,
+   getTriageReadiness,
    startTriage,
    TRIAGE_DEFAULTS,
    type ProtoRCDRecord,
    type SessionState,
    type TriageConfig,
    type TriageConnection,
+   type TriageInputs,
+   type TriageReadiness,
    type ValidationSummary,
 } from "~/components/ProtoRCD/api";
 import { classColor, classesFromTaxonomy, LabelingGrid, type LabelClass } from "~/components/ProtoRCD/LabelingGrid";
 import { useImageLoader, type ImageLoader } from "~/components/ProtoRCD/ProposalCrop";
-import { useJobStatus } from "~/components/ProtoRCD/useJobStatus";
 import { useTriageSocket, type ConnectionStatus } from "~/components/ProtoRCD/useTriageSocket";
 
 const pct = (x: number | null | undefined) => (x === null || x === undefined ? "—" : `${(100 * x).toFixed(1)}%`);
@@ -68,7 +70,10 @@ function SessionSetup({
    onResume: () => void;
    busy: "start" | "resume" | null;
 }) {
-   const [config, setConfig] = useState<TriageConfig>({ ...TRIAGE_DEFAULTS, ...(record.triage_config ?? {}) });
+   const [config, setConfig] = useState<TriageConfig>(() => {
+      const { inputs: _inputs, ...saved } = record.triage_config ?? {};
+      return { ...TRIAGE_DEFAULTS, ...saved };
+   });
    const set = <K extends keyof TriageConfig>(key: K, value: TriageConfig[K]) => setConfig((c) => ({ ...c, [key]: value }));
    const num = (key: "seed" | "batch_size" | "calibration_size" | "max_rounds") => (v: string | number) =>
       set(key, typeof v === "number" ? v : Number(v));
@@ -398,21 +403,21 @@ function LiveSession({
    pipeId,
    token,
    connection,
-   record,
+   inputs,
    onLeave,
 }: {
    pipeId: string;
    token: string;
    connection: TriageConnection;
-   record: ProtoRCDRecord;
+   /** Where the session's images live (crops are cut from them in the browser). */
+   inputs: Pick<TriageInputs, "system" | "image_dir">;
    onLeave: () => void;
 }) {
    const socket = useTriageSocket(connection.websocket_url);
    const state = socket.state ?? connection.state;
    const classes = useMemo(() => classesFromTaxonomy(state.labels), [state.labels]);
    const [context, setContext] = useState("0.25");
-   const embed = record.embed_config!;
-   const loadImage = useImageLoader(pipeId, embed.system, embed.imageDir, token);
+   const loadImage = useImageLoader(pipeId, inputs.system, inputs.image_dir, token);
 
    const advancing = state.status === "advancing" || state.status === "restoring";
    const finished = !socket.batch && !!state.finish_reason && state.finish_reason !== "failed";
@@ -513,18 +518,22 @@ export default function ProtoRCDTriage() {
    const [busy, setBusy] = useState<"start" | "resume" | null>(null);
    const [setupError, setSetupError] = useState<string | null>(null);
 
+   const [readiness, setReadiness] = useState<TriageReadiness | null>(null);
+
    const load = useCallback(async () => {
       if (!pipeId || !token) return;
       const res = await getProtoRCD(pipeId, token);
       if (res.ok && res.data) setRecord(res.data);
       else setLoadError(res.detail ?? "The pipeline's ProtoRCD settings could not be loaded.");
+      const ready = await getTriageReadiness(pipeId, token);
+      setReadiness(ready.ok && ready.data
+         ? ready.data
+         : { ready: false, inputs: null, problem: ready.detail ?? "Could not check the embedding jobs." });
    }, [pipeId, token]);
 
    useEffect(() => {
       load();
    }, [load]);
-
-   const embedJob = useJobStatus(record?.embed_job_id, token);
 
    const start = async (config: TriageConfig) => {
       if (record?.triage_session_id &&
@@ -562,11 +571,13 @@ export default function ProtoRCDTriage() {
 
    const notReadyReason = !record.triage_service_configured
       ? "The triage service is not configured on this server, so sessions cannot be started. Ask an administrator to set TRIAGE_SERVICE_URL."
-      : !record.embed_job_id
-         ? "Run the proposal and embedding jobs first."
-         : !embedJob.finished
-            ? `The embedding job is ${embedJob.status?.toLowerCase() ?? "not finished"}. Sessions can start once it has finished.`
-            : null;
+      : !readiness
+         ? "Checking the embedding jobs…"
+         : readiness.ready
+            ? null
+            : readiness.problem ?? "The embedding jobs have not finished.";
+   // A running session keeps using the files it started with, even after newer embedding jobs finish.
+   const sessionInputs = record.triage_config?.inputs ?? readiness?.inputs ?? null;
 
    return (
       <Stack gap="lg" maw={1600} mx="auto">
@@ -588,8 +599,8 @@ export default function ProtoRCDTriage() {
             </Alert>
          )}
 
-         {connection && record.embed_config ? (
-            <LiveSession pipeId={pipeId} token={token} connection={connection} record={record}
+         {connection && sessionInputs ? (
+            <LiveSession pipeId={pipeId} token={token} connection={connection} inputs={sessionInputs}
                onLeave={() => { setConnection(null); load(); }} />
          ) : (
             <SessionSetup record={record} ready={!notReadyReason} notReadyReason={notReadyReason}

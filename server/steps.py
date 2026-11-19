@@ -375,11 +375,11 @@ def _protorcd_job(digid, body, *, app, name, description, sif, sif_target, mount
     }
 
 
-def _record_protorcd_job(digid, res, what, updates_on_success):
+def _record_protorcd_job(res, what, on_success):
     sid = res.get("uuid") if res.get("status") == "success" else None
     if sid:
         print(f"{what} job submitted successfully with UUID: {sid}")
-        update_protorcd(digid, {k: (sid if v is None else v) for k, v in updates_on_success.items()})
+        on_success(sid)
     else:
         print(f"Error submitting {what} job (HTTP {res.get('httpStatus')}): {res.get('message')}")
     return res
@@ -419,12 +419,16 @@ class ProtoRCDDetect:
         apply_hf_token(data, secret)
         print("Submitting ProtoRCD detect job with data:", data)
         res = submit_tapis_job(data, token)
-        return _record_protorcd_job(digid, res, "ProtoRCD detect",
-                                    {"detect_config": body, "detect_job_id": None})
+        return _record_protorcd_job(res, "ProtoRCD detect", lambda sid: update_protorcd(
+            digid, {"detect_config": body, "detect_job_id": sid}))
 
 
 class ProtoRCDEmbed:
-    """Stage 2: DINOv3 + BioCLIP embeddings of every proposal in the stage-1 COCO file."""
+    """Stage 2: embeddings of every proposal in the stage-1 COCO file, one .npz per model.
+
+    A pipeline may run several of these, e.g. DINOv3 and BioCLIP as two parallel jobs,
+    or both models in one job; triage picks the files from whichever have finished.
+    """
 
     @staticmethod
     def run(digid, token, body, secret):
@@ -459,8 +463,9 @@ class ProtoRCDEmbed:
         apply_hf_token(data, secret)
         print("Submitting ProtoRCD embed job with data:", data)
         res = submit_tapis_job(data, token)
-        # A new embedding run invalidates any dataset registered from the old files.
-        return _record_protorcd_job(digid, res, "ProtoRCD embed", {
-            "embed_config": body, "embed_job_id": None,
-            "triage_dataset_id": "", "triage_dataset_key": "",
-        })
+        def record(sid):
+            add_protorcd_embed_job(digid, sid, body)
+            # New embeddings may replace files a registered triage dataset was built from.
+            update_protorcd(digid, {"triage_dataset_id": "", "triage_dataset_key": ""})
+
+        return _record_protorcd_job(res, "ProtoRCD embed", record)
