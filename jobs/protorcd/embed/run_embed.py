@@ -39,8 +39,12 @@ from PIL import Image
 from tqdm import tqdm
 
 if __package__ in (None, ""):
-    # invoked as a bare script: make the sibling `embed` package importable.
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    # invoked as a bare script: Python put embed/ itself on sys.path, where our
+    # bioclip.py would shadow the installed `bioclip` package. Swap it for the
+    # parent so the sibling `embed` package is importable instead.
+    _here = Path(__file__).resolve().parent
+    sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != _here]
+    sys.path.insert(0, str(_here.parent))
 
 from embed.crops import proposal_crop
 from embed.proposals import Proposal
