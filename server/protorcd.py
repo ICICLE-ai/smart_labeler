@@ -3,7 +3,7 @@ Smart Labeler side of ProtoRCD triage: hand the jobs' outputs to the triage serv
 
 The triage service (jobs/protorcd/triage) runs the human-in-the-loop session; this
 module is the only place that talks to it. It picks the embedding files from the
-pipeline's finished embed jobs, downloads them from the HPC system through Tapis,
+pipeline's finished embed jobs (or files the user already had), downloads them from the HPC system through Tapis,
 registers them as a triage dataset, creates
 sessions, and returns a WebSocket URL carrying the session's own token, so the
 service-wide TRIAGE_API_TOKEN never reaches a browser.
@@ -12,6 +12,7 @@ service-wide TRIAGE_API_TOKEN never reaches a browser.
 import hashlib
 import json
 import os
+import posixpath
 import tempfile
 import urllib.parse
 
@@ -121,6 +122,24 @@ def select_inputs(embed_jobs, statuses):
                   f"{_describe(bg_jobs, statuses, 'DINOv3')}; {_describe(fg_jobs, statuses, 'BioCLIP')}.")
 
 
+def files_inputs(files):
+    """Triage inputs from files the user already has (made outside these jobs).
+
+    `files` is the saved ProtoRCDTriageFilesRequest. Exports are saved next to the
+    BioCLIP file unless an output directory was given. The triage service checks that
+    both .npz files hold the right model and were built from this COCO file.
+    """
+    return {
+        "system": files["system"],
+        "image_dir": files["imageDir"],
+        "coco": files["cocoPath"],
+        "dinov3": files["dinov3Path"],
+        "bioclip": files["bioclipPath"],
+        "output_dir": (files.get("outputDir") or posixpath.dirname(files["bioclipPath"])).rstrip("/"),
+        "job_ids": None,
+    }
+
+
 def dataset_key(inputs, labels):
     """Identifies a registration: same files from the same jobs, same taxonomy."""
     blob = json.dumps({"inputs": inputs, "labels": labels}, sort_keys=True)
@@ -168,7 +187,7 @@ def register_dataset(name, inputs, labels, token):
     if resp.status_code != 201:
         # 400 means the files themselves were refused (mismatched COCO, wrong
         # model); that is the user's to fix, so it is passed on as such.
-        raise TriageError(f"The triage service refused the job outputs: {_detail(resp)}",
+        raise TriageError(f"The triage service refused the proposals or embedding files: {_detail(resp)}",
                           400 if resp.status_code == 400 else 502)
     return resp.json()["dataset_id"]
 
@@ -221,12 +240,82 @@ def connection(state):
     return {"session_id": state["session_id"], "websocket_url": url, "state": state}
 
 
-def save_to_tapis(system, path, content, token):
+def save_to_tapis(system, path, content, token, what="the export"):
     url = f"{TAPIS_BASE_URL}/v3/files/ops/{system}/{urllib.parse.quote(path.lstrip('/'), safe='/-_.')}"
     files = [("file", (os.path.basename(path), content, "application/json"))]
     try:
         resp = requests.post(url, headers={"X-Tapis-Token": token}, files=files, timeout=300)
     except requests.exceptions.RequestException as e:
-        raise TriageError(f"Could not save the export to {system}: {e}", 502) from e
+        raise TriageError(f"Could not save {what} to {system}: {e}", 502) from e
     if resp.status_code != 200:
-        raise TriageError(f"Could not save the export to {system}:{path} (HTTP {resp.status_code}).", 502)
+        raise TriageError(f"Could not save {what} to {system}:{path} (HTTP {resp.status_code}).", 502)
+
+
+def read_json_from_tapis(system, path, token):
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "file.json")
+        _download(system, path, dest, token)
+        with open(dest, "rb") as f:
+            return json.load(f)
+
+
+# ── Review in the annotator ───────────────────────────────────────────────────
+# Flags the annotator shows and filters by. "review" is its built-in "Needs Review".
+REVIEW_FLAG_AUTO = "auto-decided"
+REVIEW_FLAG_NEEDS_REVIEW = "review"
+UNKNOWN_LABEL = "unknown"
+
+
+def review_coco(export, proposals=None, flag_auto=True, include_background=False):
+    """The annotator's starting file for reviewing a session's results.
+
+    `export` is the triage export with background included, so every decided
+    proposal is in it. Each box keeps its proposal id, and is flagged by what a
+    reviewer still has to do:
+    - labelled by a person, or an auto-decision a spot check covered: no flag;
+    - auto-decided and never checked: REVIEW_FLAG_AUTO when `flag_auto`
+      (removing the flag in the annotator is how a reviewer confirms it);
+    - in `proposals` (the source COCO) but never decided, i.e. deferred or not
+      embedded: labelled UNKNOWN_LABEL and flagged REVIEW_FLAG_NEEDS_REVIEW.
+    Detector scores are dropped: the annotator hides boxes under its score
+    threshold, and a reviewer should see every box.
+    """
+    names = {int(c["id"]): c["name"] for c in export["categories"]}
+    annotations, decided = [], set()
+
+    def box(a, category_id, flag=None):
+        out = {"id": a["id"], "image_id": a["image_id"], "category_id": category_id,
+               "bbox": a["bbox"], "area": a.get("area", a["bbox"][2] * a["bbox"][3]), "iscrowd": 0}
+        if flag:
+            out["flag"] = flag
+        return out
+
+    for a in export["annotations"]:
+        decided.add(a["id"])
+        if a["category_id"] == 0 and not include_background:
+            continue
+        triage = a.get("triage") or {}
+        unchecked_auto = triage.get("source") in ("auto_resolve", "auto_clear") and triage.get("validated") is None
+        annotations.append(box(a, a["category_id"], REVIEW_FLAG_AUTO if flag_auto and unchecked_auto else None))
+
+    undecided = [a for a in (proposals or {}).get("annotations", []) if a["id"] not in decided]
+    if undecided:
+        unknown_id = max(names, default=0) + 1
+        names[unknown_id] = UNKNOWN_LABEL
+        annotations += [box(a, unknown_id, REVIEW_FLAG_NEEDS_REVIEW) for a in undecided]
+
+    used = {a["category_id"] for a in annotations}
+    info = export.get("info", {})
+    return {
+        "info": {
+            "description": "ProtoRCD triage results for review",
+            "date_created": info.get("date_created"),
+            "session_id": info.get("session_id"),
+            "counts": info.get("counts"),
+        },
+        "licenses": [],
+        "images": export["images"],
+        "categories": [{"id": i, "name": n} for i, n in sorted(names.items())
+                       if i in used or (i != 0 and n != UNKNOWN_LABEL)],
+        "annotations": annotations,
+    }

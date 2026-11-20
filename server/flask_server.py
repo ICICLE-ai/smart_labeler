@@ -34,8 +34,9 @@ from schemas import (
     ClassSupportTensorUpdate, ObjectDetectionUpdate,
     JobStatusOut, IsAdminOut,
     VaultSecretWrite, VaultSecretRead,
-    ProtoRCDDetectJobRequest, ProtoRCDEmbedJobRequest, ProtoRCDTriageSessionRequest,
-    ProtoRCDExportQuery,
+    ProtoRCDDetectJobRequest, ProtoRCDEmbedJobRequest, ProtoRCDTriageFilesRequest,
+    ProtoRCDTriageSessionRequest,
+    ProtoRCDExportQuery, ProtoRCDReviewRequest,
 )
 import protorcd
 from protorcd import TriageError
@@ -130,8 +131,8 @@ vault_blp = APIBlueprint("vault", __name__, url_prefix="/api/vault",
 
 protorcd_blp = APIBlueprint("protorcd", __name__, url_prefix="/protorcd",
                             abp_tags=[Tag(name="ProtoRCD", description=(
-                                "ProtoRCD detection: proposal and embedding jobs, then the "
-                                "human-in-the-loop triage session"))],
+                                "ProtoRCD detection: proposal and embedding jobs, the "
+                                "human-in-the-loop triage session, then review in the annotator"))],
                             abp_security=_auth_sec)
 
 
@@ -961,8 +962,10 @@ def _protorcd_view(rec):
         "detect_config": rec["detect_config"] or None,
         "detect_job_id": rec["detect_job_id"] or None,
         "embed_jobs": rec["embed_jobs"],
+        "triage_files": rec["triage_files"] or None,
         "triage_session_id": rec["triage_session_id"] or None,
         "triage_config": rec["triage_config"] or None,
+        "review": rec["review"] or None,
         "triage_service_configured": protorcd.configured(),
         "proposals_file": PROTORCD_PROPOSALS_FILE,
     }
@@ -1011,7 +1014,10 @@ def protorcd_embed_job(path: PipeIdPath, body: ProtoRCDEmbedJobRequest):
 
 
 def _triage_inputs(rec, token):
-    """(inputs, None) from the finished embed jobs, or (None, why not yet)."""
+    """(inputs, None) from the user's own files when set, else from the finished embed
+    jobs; or (None, why not yet)."""
+    if rec["triage_files"]:
+        return protorcd.files_inputs(rec["triage_files"]), None
     statuses = {}
     for job in rec["embed_jobs"]:
         status = _get_tapis_job_status(job["job_id"], token)
@@ -1019,8 +1025,29 @@ def _triage_inputs(rec, token):
     return protorcd.select_inputs(rec["embed_jobs"], statuses)
 
 
+@protorcd_blp.put("/<int:pipeId>/triage/files",
+                  summary="Triage existing proposals and embeddings instead of the embedding jobs' outputs")
+def protorcd_set_triage_files(path: PipeIdPath, body: ProtoRCDTriageFilesRequest):
+    token, user = getAuth(request)
+    _own_pipeline(path.pipeId, user)
+    files = {k: v.strip() for k, v in body.model_dump().items()}
+    if files["dinov3Path"] == files["bioclipPath"]:
+        abort(400, description="The DINOv3 and BioCLIP embeddings must be two different files.")
+    update_protorcd(path.pipeId, {"triage_files": files})
+    return jsonify(_protorcd_view(get_protorcd(path.pipeId)))
+
+
+@protorcd_blp.delete("/<int:pipeId>/triage/files",
+                     summary="Go back to triaging the embedding jobs' outputs")
+def protorcd_clear_triage_files(path: PipeIdPath):
+    token, user = getAuth(request)
+    _own_pipeline(path.pipeId, user)
+    update_protorcd(path.pipeId, {"triage_files": {}})
+    return jsonify(_protorcd_view(get_protorcd(path.pipeId)))
+
+
 @protorcd_blp.get("/<int:pipeId>/triage/inputs",
-                  summary="Whether triage can start, and which embedding files it would use")
+                  summary="Whether triage can start, and which files it would use")
 def protorcd_triage_inputs(path: PipeIdPath):
     token, user = getAuth(request)
     _own_pipeline(path.pipeId, user)
@@ -1029,7 +1056,7 @@ def protorcd_triage_inputs(path: PipeIdPath):
 
 
 @protorcd_blp.post("/<int:pipeId>/triage/session",
-                   summary="Start a triage session on the finished embedding jobs' outputs")
+                   summary="Start a triage session on the embedding jobs' outputs or the user's own files")
 def protorcd_start_triage(path: PipeIdPath, body: ProtoRCDTriageSessionRequest):
     token, user = getAuth(request)
     _own_pipeline(path.pipeId, user)
@@ -1110,6 +1137,64 @@ def protorcd_export(path: PipeIdPath, query: ProtoRCDExportQuery):
         saved_path = f"{inputs['output_dir']}/triage_{rec['triage_session_id']}.coco.json"
         protorcd.save_to_tapis(inputs["system"], saved_path, json.dumps(coco).encode(), token)
     return jsonify({"saved_path": saved_path, "coco": coco})
+
+
+def _point_annotator_at(pipe_id, system, image_dir, annotation_path):
+    """Make the pipeline's annotator open these images with this annotation file."""
+    config = {"system": system, "srcImgDir": image_dir, "annotationFilePath": annotation_path,
+              "fileType": "coco", "annotationSystem": system}
+    configs = get_all_annotator_configurations(pipe_id)
+    if configs:
+        # The annotator opens the newest configuration.
+        update_annotator_configuration(configs[-1]["id"], config)
+    else:
+        create_annotator_configuration(pipe_id, config)
+
+
+@protorcd_blp.post("/<int:pipeId>/review",
+                   summary="Open the triage results in the annotator: write a review file on HPC and point the annotator at it")
+def protorcd_review(path: PipeIdPath, body: ProtoRCDReviewRequest):
+    token, user = getAuth(request)
+    _own_pipeline(path.pipeId, user)
+    rec = get_protorcd(path.pipeId)
+    session_id = rec["triage_session_id"]
+    if not session_id:
+        abort(404, description="This pipeline has no triage session.")
+    inputs = rec["triage_config"].get("inputs")
+    if not inputs:
+        abort(409, description="This session predates review files; start a new session to review it in the annotator.")
+
+    # Reopen the last review of this session unless asked for a fresh one: the
+    # reviewer saves their edits into that file, and rebuilding would lose them.
+    review = rec["review"]
+    if review.get("session_id") == session_id and not body.rebuild:
+        _point_annotator_at(path.pipeId, inputs["system"], inputs["image_dir"], review["path"])
+        return jsonify(review)
+
+    export = protorcd.export(session_id, include_background=True)
+    proposals = protorcd.read_json_from_tapis(inputs["system"], inputs["coco"], token) if body.includeUndecided else None
+    coco = protorcd.review_coco(export, proposals, flag_auto=body.flagAuto, include_background=body.includeBackground)
+    # A new file every time, so an earlier review (and its saved edits) is never overwritten.
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    review_path = f"{inputs['output_dir']}/triage_{session_id}.review-{stamp}.coco.json"
+    protorcd.save_to_tapis(inputs["system"], review_path, json.dumps(coco).encode(), token, what="the review file")
+    _point_annotator_at(path.pipeId, inputs["system"], inputs["image_dir"], review_path)
+
+    flags = [a.get("flag") for a in coco["annotations"]]
+    review = {
+        "session_id": session_id,
+        "path": review_path,
+        "system": inputs["system"],
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "options": body.model_dump(exclude={"rebuild"}),
+        "counts": {
+            "boxes": len(flags),
+            "auto_decided": flags.count(protorcd.REVIEW_FLAG_AUTO),
+            "needs_review": flags.count(protorcd.REVIEW_FLAG_NEEDS_REVIEW),
+        },
+    }
+    update_protorcd(path.pipeId, {"review": review})
+    return jsonify(review), 201
 
 
 # ── Register blueprints ───────────────────────────────────────────────────────

@@ -48,9 +48,34 @@ import {
    type TriageReadiness,
    type ValidationSummary,
 } from "~/components/ProtoRCD/api";
-import { classColor, classesFromTaxonomy, LabelingGrid, type LabelClass } from "~/components/ProtoRCD/LabelingGrid";
-import { useImageLoader, type ImageLoader } from "~/components/ProtoRCD/ProposalCrop";
+import { BatchLabeler, type LabelingView } from "~/components/ProtoRCD/BatchLabeler";
+import { classColor, classesFromTaxonomy, type LabelClass } from "~/components/ProtoRCD/LabelingGrid";
+import { useImageStore, type ImageStore } from "~/components/ProtoRCD/imageStore";
+import { ReviewCard } from "~/components/ProtoRCD/ReviewCard";
 import { useTriageSocket, type ConnectionStatus } from "~/components/ProtoRCD/useTriageSocket";
+
+const VIEW_KEY = "protorcd.labelingView";
+
+/** The reviewer's last view, remembered in this browser; images unless they chose crops. */
+function useLabelingView(): [LabelingView, (v: LabelingView) => void] {
+   const [view, setView] = useState<LabelingView>("images");
+   useEffect(() => {
+      try {
+         if (localStorage.getItem(VIEW_KEY) === "crops") setView("crops");
+      } catch {
+         // Storage unavailable: keep the default.
+      }
+   }, []);
+   const choose = (v: LabelingView) => {
+      setView(v);
+      try {
+         localStorage.setItem(VIEW_KEY, v);
+      } catch {
+         // Not remembered; harmless.
+      }
+   };
+   return [view, choose];
+}
 
 const pct = (x: number | null | undefined) => (x === null || x === undefined ? "—" : `${(100 * x).toFixed(1)}%`);
 
@@ -269,7 +294,8 @@ function FinishedPanel({
    state,
    socket,
    classes,
-   loadImage,
+   images,
+   view,
    context,
 }: {
    pipeId: string;
@@ -277,7 +303,8 @@ function FinishedPanel({
    state: SessionState;
    socket: ReturnType<typeof useTriageSocket>;
    classes: LabelClass[];
-   loadImage: ImageLoader;
+   images: ImageStore;
+   view: LabelingView;
    context: number;
 }) {
    const [sample, setSample] = useState<number>(Math.min(50, Math.max(1, state.auto_decided)));
@@ -311,11 +338,12 @@ function FinishedPanel({
                These {socket.validationBatch.proposals.length} proposals were decided automatically. Label them as you
                normally would; the triage's answers are hidden so they cannot sway you.
             </Alert>
-            <LabelingGrid
+            <BatchLabeler
+               view={view}
                batchKey={socket.validationBatch.validation_id}
                proposals={socket.validationBatch.proposals}
                classes={classes}
-               loadImage={loadImage}
+               images={images}
                context={context}
                submitting={socket.pending}
                submitLabel="Submit spot check"
@@ -373,9 +401,11 @@ function FinishedPanel({
             </Grid.Col>
          </Grid>
 
+         <ReviewCard pipeId={pipeId} token={token} sessionId={state.session_id} step={3} />
+
          <Card withBorder radius="md" p="md">
             <Stack gap="sm">
-               <Text fw={700}>3. Export the labels</Text>
+               <Text fw={700}>4. Or export the triage's labels as they are</Text>
                <Text size="sm" c="dimmed">
                   A COCO file of every labelled object: your labels first, then spot-check corrections, then the triage's
                   own decisions. Deferred proposals are left out.
@@ -417,7 +447,8 @@ function LiveSession({
    const state = socket.state ?? connection.state;
    const classes = useMemo(() => classesFromTaxonomy(state.labels), [state.labels]);
    const [context, setContext] = useState("0.25");
-   const loadImage = useImageLoader(pipeId, inputs.system, inputs.image_dir, token);
+   const [view, setView] = useLabelingView();
+   const images = useImageStore(pipeId, inputs.system, inputs.image_dir, token);
 
    const advancing = state.status === "advancing" || state.status === "restoring";
    const finished = !socket.batch && !!state.finish_reason && state.finish_reason !== "failed";
@@ -431,9 +462,15 @@ function LiveSession({
                <Text size="xs" c="dimmed" ff="monospace">session {state.session_id.slice(0, 8)}</Text>
             </Group>
             <Group gap="xs">
-               <Text size="xs" c="dimmed">Crop context</Text>
-               <SegmentedControl size="xs" value={context} onChange={setContext}
-                  data={[{ value: "0", label: "Tight" }, { value: "0.25", label: "Some" }, { value: "0.75", label: "Wide" }]} />
+               <SegmentedControl size="xs" value={view} onChange={(v) => setView(v as LabelingView)}
+                  data={[{ value: "images", label: "Images" }, { value: "crops", label: "Crops" }]} />
+               {view === "crops" && (
+                  <>
+                     <Text size="xs" c="dimmed">Crop context</Text>
+                     <SegmentedControl size="xs" value={context} onChange={setContext}
+                        data={[{ value: "0", label: "Tight" }, { value: "0.25", label: "Some" }, { value: "0.75", label: "Wide" }]} />
+                  </>
+               )}
                <Button size="xs" variant="subtle" leftSection={<IconRefresh size={14} />} onClick={socket.refreshState}>
                   Refresh
                </Button>
@@ -484,11 +521,12 @@ function LiveSession({
                         : "The proposals the triage is least sure about. Your labels become new prototypes; everything it can then decide is removed from the pool."}
                   </Text>
                </Stack>
-               <LabelingGrid
+               <BatchLabeler
+                  view={view}
                   batchKey={socket.batch.batch_id}
                   proposals={socket.batch.proposals}
                   classes={classes}
-                  loadImage={loadImage}
+                  images={images}
                   context={Number(context)}
                   submitting={socket.pending}
                   submitLabel={socket.batch.phase === "calibration" ? "Submit calibration labels" : "Submit round"}
@@ -497,7 +535,7 @@ function LiveSession({
             </Stack>
          ) : finished ? (
             <FinishedPanel pipeId={pipeId} token={token} state={state} socket={socket} classes={classes}
-               loadImage={loadImage} context={Number(context)} />
+               images={images} view={view} context={Number(context)} />
          ) : null}
 
          <RoundHistory state={state} />

@@ -28,6 +28,10 @@ From: python:3.12-bullseye
     export LANG=C.UTF-8
 
 %post
+    # Unprivileged and --fakeroot builds can leave /tmp unwritable inside the image,
+    # and apt needs it for its signature checks ("Couldn't create temporary file").
+    mkdir -p /tmp
+    chmod 1777 /tmp
     apt-get update
     apt-get install -y --no-install-recommends \
         ca-certificates \

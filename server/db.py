@@ -248,15 +248,21 @@ execute_query(
         detect_config TEXT DEFAULT '',
         detect_job_id TEXT DEFAULT '',
         embed_jobs TEXT DEFAULT '',
+        triage_files TEXT DEFAULT '',
         triage_dataset_id TEXT DEFAULT '',
         triage_dataset_key TEXT DEFAULT '',
         triage_session_id TEXT DEFAULT '',
-        triage_config TEXT DEFAULT ''
+        triage_config TEXT DEFAULT '',
+        review TEXT DEFAULT ''
     )""",
     None,
 )
 # Tables created before embedding jobs became a list.
 execute_query("ALTER TABLE protorcd ADD COLUMN IF NOT EXISTS embed_jobs TEXT DEFAULT ''", None)
+# ... and before triage could use files the user already had.
+execute_query("ALTER TABLE protorcd ADD COLUMN IF NOT EXISTS triage_files TEXT DEFAULT ''", None)
+# ... and before triage results could be reviewed in the annotator.
+execute_query("ALTER TABLE protorcd ADD COLUMN IF NOT EXISTS review TEXT DEFAULT ''", None)
 
 _default_system = os.getenv("DEFAULT_SYSTEM", "expanse-tapis-static")
 execute_query(
@@ -766,10 +772,11 @@ def get_latest_query_image_configuration_id(parentpipeid):
 
 # JSON fields and their value when unset. embed_jobs is a list of
 # {"job_id", "config", "submitted"}, oldest first.
-_PROTORCD_JSON_FIELDS = {"detect_config": dict, "embed_jobs": list, "triage_config": dict}
+_PROTORCD_JSON_FIELDS = {"detect_config": dict, "embed_jobs": list, "triage_files": dict, "triage_config": dict,
+                         "review": dict}
 _PROTORCD_FIELDS = (
-    "detect_config", "detect_job_id", "embed_jobs",
-    "triage_dataset_id", "triage_dataset_key", "triage_session_id", "triage_config",
+    "detect_config", "detect_job_id", "embed_jobs", "triage_files",
+    "triage_dataset_id", "triage_dataset_key", "triage_session_id", "triage_config", "review",
 )
 
 

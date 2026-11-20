@@ -132,7 +132,7 @@ so crops can be shown to the reviewer.
 ## Running it from Smart Labeler
 
 In the dashboard, **New Pipeline → Detection approach → ProtoRCD** creates a pipeline
-with two steps:
+with three steps:
 
 1. **Configure jobs** (`/protorcd/configure/:id`). First the proposal job (image
    directory → `proposals.coco.json`), then embedding jobs, pre-filled from it. Each
@@ -145,19 +145,61 @@ with two steps:
      pair is used.
    - **Sessions keep their inputs:** each session remembers the files it was started
      with, so later embedding jobs do not change a session in progress.
+   - **Files you already have:** if the proposals COCO file and both `.npz` files were
+     made some other way, point to them under "Already have proposals and embeddings?"
+     and skip the jobs. While they are set, triage uses them instead of the jobs'
+     outputs. Exports are saved next to the BioCLIP file unless you choose a folder. The
+     triage service checks that both files hold the right model and embed that COCO file.
 2. **Human in the loop** (`/protorcd/triage/:id`). Enter the classes and the triage
    settings (rounds, batch size, calibration size, seed), then start or resume a session.
    - **Labelling:** batches arrive over the WebSocket. Pick a class in the palette (or
-     press 0–9) and click crops to label them.
+     press 0–9: 0 is background), then click proposals to label them; clicking again
+     clears the label. Two views share the same labels, so you can switch mid-batch:
+     - **Images** (default): the annotator's canvas, with only the batch's boxes on
+       the image. The list on the left holds the images in this batch and how many
+       boxes each still needs; press N for the next one. Drag to pan, scroll to zoom.
+     - **Crops:** every proposal in the batch as a crop, quickest for easy batches.
+   - **Images load in the browser** from the HPC system through Tapis
+     (`client/app/components/ProtoRCD/imageStore.ts`):
+     - A batch's images start downloading as soon as it arrives, the one on screen first.
+     - Downloads are kept in the browser's Cache Storage (the newest 500), so a reload
+       or a resumed session doesn't fetch them again.
+     - The Images view shows a copy downscaled to 2048 px on the long side. Crops are
+       cut once from the original.
+     - Downloads that fail with a temporary error (no response, 429 or 5xx) are retried
+       automatically, after 1, 3 and 8 seconds. If an image still fails, the page says why
+       (not found, no permission, login expired, cannot decode). One **Retry** button asks
+       again for every failed image.
+     - To see where the time goes, run `protorcdImageStats()` in the browser console.
+       It shows download sizes and times, time waiting in the queue, and decode times.
    - **When the rounds are done:** draw a blind spot-check sample, run more rounds if
-     the accuracy is too low, then download the COCO export or save it next to the
-     embeddings on HPC.
+     the accuracy is too low, then review the results in the annotator (step 3). You can
+     also download the triage's own COCO export or save it next to the embeddings on HPC.
+3. **Review** (`/protorcd/review/:id`). The session's results open in the shared image
+   annotator, where you can confirm, relabel, resize, delete or flag every box, then save
+   and export.
+   - **Opening a review** ("Open in the annotator") writes a review file next to the
+     embeddings, `triage_<session>.review-<time>.coco.json`, and points the pipeline's
+     annotator configuration at it. Boxes are flagged by what still needs a person:
+     - **auto-decided:** the triage labelled the box on its own and no spot check covered
+       it. Removing the flag confirms it.
+     - **Needs Review:** the triage never decided the proposal (deferred or not embedded).
+       It is labelled `unknown`; give it a class or delete it.
+     - Boxes you labelled or spot-checked carry no flag. Background boxes are left out
+       unless you ask for them.
+   - **Your edits** go into the review file through the annotator's Save. "Continue
+     reviewing" reopens that file. "Start a fresh review" writes a new file from the
+     triage results and leaves the old one untouched.
+   - **Folders:** images in sub-folders appear once you open those folders in the
+     annotator's File Explorer.
 
-The backend (`server/protorcd.py`, routes under `/protorcd/…`) does three things:
-- submits the jobs, and picks the triage files from the finished embedding jobs
-  (`GET /protorcd/:id/triage/inputs` reports which, or why triage cannot start yet);
-- copies the embed job's outputs from the HPC system to the triage service;
-- hands the browser a WebSocket URL carrying a token for that one session.
+The backend (`server/protorcd.py`, routes under `/protorcd/…`) does four things:
+- submits the jobs, and picks the triage files: the user's own files when set
+  (`PUT`/`DELETE /protorcd/:id/triage/files`), otherwise the finished embedding jobs'
+  outputs (`GET /protorcd/:id/triage/inputs` reports which, or why triage cannot start yet);
+- copies those files from the HPC system to the triage service;
+- hands the browser a WebSocket URL carrying a token for that one session;
+- writes review files for the annotator (`POST /protorcd/:id/review`, see `review_coco`).
 
 The service-wide `TRIAGE_API_TOKEN` stays on the server. Crops are cut in the browser
 from the original images, which are fetched through Tapis, so the triage service needs

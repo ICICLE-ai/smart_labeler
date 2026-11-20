@@ -106,7 +106,19 @@ export interface EmbedJob {
    submitted: string;
 }
 
-/** The files a triage session is built from, picked by the backend from finished embed jobs. */
+/** Proposals and embeddings the user already has, made outside this pipeline's jobs. */
+export interface TriageFiles {
+   system: string;
+   imageDir: string;
+   cocoPath: string;
+   dinov3Path: string;
+   bioclipPath: string;
+   /** Where exports are saved; empty means next to the BioCLIP file. */
+   outputDir: string;
+}
+
+/** The files a triage session is built from: the user's own files when set, else picked
+ * by the backend from finished embed jobs. */
 export interface TriageInputs {
    system: string;
    image_dir: string;
@@ -114,7 +126,8 @@ export interface TriageInputs {
    dinov3: string;
    bioclip: string;
    output_dir: string;
-   job_ids: { dinov3: string; bioclip: string };
+   /** null when the files are the user's own. */
+   job_ids: { dinov3: string; bioclip: string } | null;
 }
 
 export interface TriageReadiness {
@@ -123,13 +136,38 @@ export interface TriageReadiness {
    problem: string | null;
 }
 
+/** What goes into the annotator's starting file. */
+export interface ReviewOptions {
+   /** Flag auto-decided boxes nobody checked; removing the flag confirms one. */
+   flagAuto: boolean;
+   /** Add proposals the triage did not decide, labelled "unknown" and flagged Needs Review. */
+   includeUndecided: boolean;
+   includeBackground: boolean;
+}
+
+export const REVIEW_DEFAULTS: ReviewOptions = { flagAuto: true, includeUndecided: true, includeBackground: false };
+
+export interface Review {
+   session_id: string;
+   /** The review file on the HPC system; the annotator loads and saves it. */
+   path: string;
+   system: string;
+   created: string;
+   options: ReviewOptions;
+   counts: { boxes: number; auto_decided: number; needs_review: number };
+}
+
 export interface ProtoRCDRecord {
    detect_config: DetectConfig | null;
    detect_job_id: string | null;
    /** Oldest first. */
    embed_jobs: EmbedJob[];
+   /** When set, triage uses these instead of the embed jobs' outputs. */
+   triage_files: TriageFiles | null;
    triage_session_id: string | null;
    triage_config: (TriageConfig & { inputs?: TriageInputs }) | null;
+   /** The last review file written for the annotator, if any. */
+   review: Review | null;
    triage_service_configured: boolean;
    proposals_file: string;
 }
@@ -280,6 +318,12 @@ export const getProtoRCD = (pipeId: string, token: string) =>
 export const getTriageReadiness = (pipeId: string, token: string) =>
    request<TriageReadiness>("GET", `/protorcd/${pipeId}/triage/inputs`, token);
 
+export const setTriageFiles = (pipeId: string, files: TriageFiles, token: string) =>
+   request<ProtoRCDRecord>("PUT", `/protorcd/${pipeId}/triage/files`, token, files);
+
+export const clearTriageFiles = (pipeId: string, token: string) =>
+   request<ProtoRCDRecord>("DELETE", `/protorcd/${pipeId}/triage/files`, token);
+
 export const startTriage = (pipeId: string, config: TriageConfig, token: string) =>
    request<TriageConnection>("POST", `/protorcd/${pipeId}/triage/session`, token, config);
 
@@ -295,6 +339,10 @@ export const exportTriage = (pipeId: string, token: string, opts: { includeBackg
       `/protorcd/${pipeId}/triage/export?include_background=${opts.includeBackground}&save=${opts.save}`,
       token,
    );
+
+/** Write a review file for the session (or reopen the last one) and point the annotator at it. */
+export const openReview = (pipeId: string, token: string, options: ReviewOptions & { rebuild: boolean }) =>
+   request<Review>("POST", `/protorcd/${pipeId}/review`, token, options);
 
 /** Join a directory on the HPC system with a COCO file_name relative to it. */
 export const joinImagePath = (dir: string, fileName: string) =>

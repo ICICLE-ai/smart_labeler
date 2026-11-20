@@ -439,6 +439,27 @@ class ProtoRCDTriageSessionRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+class ProtoRCDTriageFilesRequest(BaseModel):
+    """Proposals and embeddings made outside this pipeline's jobs, all on one HPC system."""
+    system: str
+    imageDir: str = Field(description="Image directory the proposals' file names are relative to")
+    cocoPath: str = Field(description="Stage-1 proposals COCO file")
+    dinov3Path: str = Field(pattern=r"\.npz$", description="DINOv3 (or debiased DINOv3) embeddings of cocoPath")
+    bioclipPath: str = Field(pattern=r"\.npz$", description="BioCLIP embeddings of cocoPath")
+    outputDir: str = Field("", description="Where exports are saved; defaults to bioclipPath's directory")
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class ProtoRCDReviewRequest(BaseModel):
+    """What goes into the annotator's starting file (see protorcd.review_coco)."""
+    flagAuto: bool = Field(True, description="Flag auto-decided boxes nobody checked, so the reviewer can confirm them")
+    includeUndecided: bool = Field(True, description="Add proposals the triage did not decide, as 'unknown' flagged for review")
+    includeBackground: bool = Field(False, description="Keep boxes labelled background")
+    rebuild: bool = Field(False, description="Write a fresh file from the triage results instead of reopening the last one")
+    model_config = ConfigDict(extra="ignore")
+
+
 class ProtoRCDExportQuery(BaseModel):
     include_background: bool = False
     save: bool = Field(False, description="Also write the export next to the embeddings on the HPC system")

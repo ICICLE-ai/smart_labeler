@@ -19,25 +19,28 @@ import {
    TextInput,
    Title,
 } from "@mantine/core";
-import { IconAlertCircle, IconArrowRight, IconInfoCircle, IconRocket } from "@tabler/icons-react";
+import { IconAlertCircle, IconArrowRight, IconFolderCheck, IconInfoCircle, IconRocket } from "@tabler/icons-react";
 import { useNavigate, useParams } from "@remix-run/react";
 import { Formik, type FormikProps } from "formik";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useCookies } from "react-cookie";
 import FormikTapisFileWrapper from "~/components/FileExplorer/FormikTapisFileWrapper";
 import {
+   clearTriageFiles,
    DETECT_DEFAULTS,
    EMBED_DEFAULTS,
    EMBED_MODELS,
    embedModelLabel,
    getProtoRCD,
    getTriageReadiness,
+   setTriageFiles,
    type DetectConfig,
    type EmbedConfig,
    type EmbedJob,
    type EmbedModel,
    type HPCResources,
    type ProtoRCDRecord,
+   type TriageFiles,
    type TriageReadiness,
 } from "~/components/ProtoRCD/api";
 import { JobStatusLine } from "~/components/ProtoRCD/JobStatusLine";
@@ -118,6 +121,120 @@ function EmbedJobRow({ job, token, onStatus }: {
    );
 }
 
+/** Triage proposals and embeddings the user already has, instead of running the jobs. */
+function ExistingFilesCard({ record, pipeId, token, isDemo, onSaved }: {
+   record: ProtoRCDRecord | null;
+   pipeId: string;
+   token: string;
+   isDemo: boolean;
+   onSaved: (record: ProtoRCDRecord) => void;
+}) {
+   const saved = record?.triage_files ?? null;
+   const detected = record?.detect_config;
+   const proposalsFile = record?.proposals_file ?? "proposals.coco.json";
+   const initialValues: TriageFiles = saved ?? {
+      system: detected?.system ?? DEFAULT_SYSTEM,
+      imageDir: detected?.imageDir ?? "",
+      cocoPath: detected?.outputDir ? join(detected.outputDir, proposalsFile) : "",
+      dinov3Path: "",
+      bioclipPath: "",
+      outputDir: "",
+   };
+   const [clearing, setClearing] = useState(false);
+   // Open while the files are in use; the record arrives after the first render.
+   const inUse = !!saved;
+   const [open, setOpen] = useState<string | null>(null);
+   useEffect(() => {
+      if (inUse) setOpen("files");
+   }, [inUse]);
+
+   const save = async (v: TriageFiles) => {
+      const problem = await verifyJobPaths(v.system, [
+         { label: "Image directory", path: v.imageDir },
+         { label: "Proposals file", path: v.cocoPath },
+         { label: "DINOv3 embeddings", path: v.dinov3Path },
+         { label: "BioCLIP embeddings", path: v.bioclipPath },
+         ...(v.outputDir ? [{ label: "Export directory", path: v.outputDir, allowMissing: true }] : []),
+      ], token);
+      if (problem) {
+         // verifyJobPaths words its message for job submission.
+         alert(problem.replace("The job was not submitted", "The files were not saved"));
+         return;
+      }
+      const res = await setTriageFiles(pipeId, v, token);
+      if (res.ok && res.data) onSaved(res.data);
+      else alert(res.detail ?? "The files could not be saved.");
+   };
+
+   const clear = async () => {
+      setClearing(true);
+      const res = await clearTriageFiles(pipeId, token);
+      setClearing(false);
+      if (res.ok && res.data) onSaved(res.data);
+      else alert(res.detail ?? "The files could not be cleared.");
+   };
+
+   return (
+      <Accordion variant="contained" radius="md" value={open} onChange={setOpen}>
+         <Accordion.Item value="files">
+            <Accordion.Control icon={<IconFolderCheck size={18} />}>
+               <Group gap="xs">
+                  <Text fw={600}>Already have proposals and embeddings?</Text>
+                  {saved && <Badge size="sm" color="teal" variant="light">In use for triage</Badge>}
+               </Group>
+            </Accordion.Control>
+            <Accordion.Panel>
+               <Formik enableReinitialize initialValues={initialValues} onSubmit={save}>
+                  {(form) => (
+                     <form onSubmit={form.handleSubmit}>
+                        <Stack gap="sm">
+                           <Text size="sm" c="dimmed">
+                              If you made the proposals COCO file and both embedding files some other way, point to them
+                              here and skip the jobs above. While these are set, triage uses them instead of the embedding
+                              jobs. Both .npz files must be embeddings of this proposals file; that is checked when the
+                              session starts.
+                           </Text>
+                           <Select label="HPC system" data={allowed_systems} value={form.values.system}
+                              onChange={(v) => form.setFieldValue("system", v ?? DEFAULT_SYSTEM)} allowDeselect={false} />
+                           <SimpleGrid cols={{ base: 1, md: 2 }}>
+                              <FormikTapisFileWrapper name="imageDir" label="Image directory" required
+                                 description="File names in the proposals file are relative to it."
+                                 systemId={form.values.system} files={false} dirs />
+                              <FormikTapisFileWrapper name="cocoPath" label="Proposals file" required
+                                 description="Stage-1 COCO file"
+                                 systemId={form.values.system} files dirs={false} />
+                              <FormikTapisFileWrapper name="dinov3Path" label="DINOv3 embeddings" required
+                                 description="e.g. dinov3_box.npz (debiased DINOv3 also works)"
+                                 systemId={form.values.system} files dirs={false} />
+                              <FormikTapisFileWrapper name="bioclipPath" label="BioCLIP embeddings" required
+                                 description="e.g. bioclip_box.npz"
+                                 systemId={form.values.system} files dirs={false} />
+                           </SimpleGrid>
+                           <FormikTapisFileWrapper name="outputDir" label="Export directory"
+                              description="Where labelled COCO exports are saved. Leave empty to use the BioCLIP file's folder."
+                              systemId={form.values.system} files={false} dirs />
+                           <Group justify="flex-end">
+                              {saved && (
+                                 <Button variant="default" loading={clearing} onClick={clear}>
+                                    Use the embedding jobs instead
+                                 </Button>
+                              )}
+                              <Button type="submit" leftSection={<IconFolderCheck size={16} />} loading={form.isSubmitting}
+                                 disabled={isDemo || !form.values.imageDir || !form.values.cocoPath
+                                    || !form.values.dinov3Path || !form.values.bioclipPath}>
+                                 {saved ? "Update files" : "Use these files"}
+                              </Button>
+                           </Group>
+                        </Stack>
+                     </form>
+                  )}
+               </Formik>
+            </Accordion.Panel>
+         </Accordion.Item>
+      </Accordion>
+   );
+}
+
 export default function ConfigureProtoRCD() {
    const { id: pipeId = "" } = useParams();
    const navigate = useNavigate();
@@ -142,20 +259,21 @@ export default function ConfigureProtoRCD() {
 
    const detectJob = useJobStatus(record?.detect_job_id, token);
 
-   // Whether triage can start is decided by the backend from all embed jobs; ask again
-   // whenever one of them changes status.
+   // Whether triage can start is decided by the backend from the user's own files or all
+   // embed jobs; ask again whenever those change or a job changes status.
    const [embedStatuses, setEmbedStatuses] = useState<Record<string, string | null>>({});
    const onEmbedStatus = useCallback((jobId: string, status: string | null) =>
       setEmbedStatuses((prev) => (prev[jobId] === status ? prev : { ...prev, [jobId]: status })), []);
    const [readiness, setReadiness] = useState<TriageReadiness | null>(null);
    const statusKey = JSON.stringify(embedStatuses);
+   const filesKey = JSON.stringify(record?.triage_files ?? null);
    useEffect(() => {
-      if (!pipeId || !token || !record?.embed_jobs.length) {
+      if (!pipeId || !token || !(record?.embed_jobs.length || record?.triage_files)) {
          setReadiness(null);
          return;
       }
       getTriageReadiness(pipeId, token).then((res) => setReadiness(res.ok && res.data ? res.data : null));
-   }, [pipeId, token, record?.embed_jobs.length, statusKey]);
+   }, [pipeId, token, record?.embed_jobs.length, statusKey, filesKey]);
 
    const proposalsFile = record?.proposals_file ?? "proposals.coco.json";
    const detectValues: DetectConfig = {
@@ -216,7 +334,8 @@ export default function ConfigureProtoRCD() {
                HPC jobs prepare the triage. The proposal job finds candidate objects with SAM3 and writes a COCO file;
                embedding jobs then describe every proposal with DINOv3 (is it background?) and BioCLIP (which species?).
                Run both models in one job, or one job per model to run them in parallel. When DINOv3 and BioCLIP
-               embeddings of the same proposals have finished, continue to the human-in-the-loop step.
+               embeddings of the same proposals have finished, continue to the human-in-the-loop step. Already have
+               those files? Point to them at the bottom of the page instead.
             </Text>
          </Stack>
 
@@ -436,11 +555,15 @@ export default function ConfigureProtoRCD() {
             </Grid.Col>
          </Grid>
 
+         <ExistingFilesCard record={record} pipeId={pipeId} token={token} isDemo={isDemo} onSaved={setRecord} />
+
          <Card withBorder radius="md" p="md">
             <Group justify="space-between">
                <Text size="sm" c={readiness?.ready ? undefined : "dimmed"}>
                   {readiness?.ready
-                     ? "DINOv3 and BioCLIP embeddings are ready. Set up the labelling session next."
+                     ? record?.triage_files
+                        ? "Triage will use your own proposals and embedding files. Set up the labelling session next."
+                        : "DINOv3 and BioCLIP embeddings are ready. Set up the labelling session next."
                      : readiness?.problem
                         ?? "Human-in-the-loop labelling opens once DINOv3 and BioCLIP embeddings have finished."}
                </Text>
