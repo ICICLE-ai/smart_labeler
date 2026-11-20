@@ -1,5 +1,8 @@
 Bootstrap: docker
-From: python:3.12-bullseye
+From: python:3.12-bookworm
+
+# Debian 12. Bullseye (11) is past its end of life and its security packages are
+# gone from the mirrors, so a bullseye image can no longer install anything.
 
 # Build from this folder:  apptainer build protorcd_detect.sif detect.def
 # Run:  apptainer run --nv --env HF_TOKEN=... protorcd_detect.sif \
@@ -21,11 +24,15 @@ From: python:3.12-bullseye
     export LANG=C.UTF-8
 
 %post
+    # Unprivileged and --fakeroot builds can leave /tmp unwritable inside the image,
+    # and apt needs it for its signature checks ("Couldn't create temporary file").
+    mkdir -p /tmp
+    chmod 1777 /tmp
     apt-get update
     apt-get install -y --no-install-recommends \
         ca-certificates \
         git \
-        libgl1-mesa-glx \
+        libgl1 \
         libglib2.0-0
     rm -rf /var/lib/apt/lists/*
 

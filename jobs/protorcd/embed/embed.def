@@ -1,5 +1,8 @@
 Bootstrap: docker
-From: python:3.12-bullseye
+From: python:3.12-bookworm
+
+# Debian 12. Bullseye (11) is past its end of life and its security packages are
+# gone from the mirrors, so a bullseye image can no longer install anything.
 
 # Build from this folder:  apptainer build protorcd_embed.sif embed.def
 # Run:  apptainer run --nv --bind /path/to/weights:/weights protorcd_embed.sif \
@@ -36,7 +39,7 @@ From: python:3.12-bullseye
     apt-get install -y --no-install-recommends \
         ca-certificates \
         git \
-        libgl1-mesa-glx \
+        libgl1 \
         libglib2.0-0
     rm -rf /var/lib/apt/lists/*
 
